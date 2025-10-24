@@ -4,4 +4,23 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "loguru>=0.7.3",
+    "orjson>=3.11.3",
+    "pydantic>=2.12.3",
+    "torch>=2.9.0",
+    "transformers>=4.57.1",
+]
+
+[dependency-groups]
+dev = [
+    "notebook>=7.4.7",
+    "pre-commit>=4.3.0",
+]
+
+[tool.pyright]
+typeCheckingMode = "basic" # "off" | "basic" | "standard" | "strict"
+reportMissingTypeStubs = false
+exclude = [
+    ".venv/",
+]
