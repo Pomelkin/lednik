@@ -9,6 +9,7 @@ dependencies = [
     "orjson>=3.11.3",
     "pydantic>=2.12.3",
     "torch>=2.9.0",
+    "tqdm>=4.67.1",
     "transformers>=4.57.1",
 ]
 
@@ -22,5 +23,67 @@ dev = [
 typeCheckingMode = "basic" # "off" | "basic" | "standard" | "strict"
 reportMissingTypeStubs = false
 exclude = [
-    ".venv/",
+    ".venv",
+    "build",
+    "dist",
+    "__pycache__",
+    "migrations",
+    "notebooks",
 ]
+
+[tool.ruff]
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "__pycache__",
+    "migrations",
+    "notebooks",
+    "tests",
+]
+
+[tool.ruff.lint]
+select = [
+    # Annotations: Enforce type annotations
+    "ANN",
+    # Complexity: Enforce a maximum cyclomatic complexity
+    "C90",
+    # Pydocstyle: Enforce docstrings
+    "D",
+    # Numpy: Enforce numpy style
+    "NPY",
+    # Print: Forbid print statements
+    "T20",
+    "E",  # pycodestyle (ошибки форматирования)
+    "F",  # pyflakes (ошибки логики)
+    "B",  # flake8-bugbear (подозрительные места)
+    "UP", # pyupgrade (современный синтаксис Python)
+    "N",  # pep8-naming (правильные имена классов/функций)
+    "S",  # flake8-bandit (безопасность)
+    "C4", # flake8-comprehensions
+    "T20",# flake8-print (отладочные print)
+    "TID",# flake8-tidy-imports (запрет относительных импортов)
+    "A",  # flake8-builtins (не переопределять встроенные имена)
+    "PTH",# flake8-use-pathlib
+    "RUF",# собственные правила Ruff
+]
+
+ignore = [
+    "ANN001", 
+    "ANN002", 
+    "ANN401",
+    "D100", 
+    "D101", 
+    "D104", 
+    "D203", 
+    "D212", 
+    "D401", 
+    "E501",
+]
+
+[tool.ruff.isort]
+known-first-party = ["src", "app", "core", "lednik"]
+combine-as-imports = true
+force-single-line = true
+lines-after-imports = 2
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
