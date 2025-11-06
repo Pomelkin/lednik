@@ -15,12 +15,20 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "ipykernel==6.29.5",
+    "ipywidgets==7.7.2",
     "notebook>=7.4.7",
     "pre-commit>=4.3.0",
+    "rich>=14.2.0",
+    "traitlets==5.9.0",
+]
+train = [
+    "lightning>=2.5.6",
+    "tensorboard>=2.20.0",
 ]
 
 [tool.pyright]
-typeCheckingMode = "basic" # "off" | "basic" | "standard" | "strict"
+typeCheckingMode = "standard" # "off" | "basic" | "standard" | "strict"
 reportMissingTypeStubs = false
 exclude = [
     ".venv",
@@ -32,6 +40,8 @@ exclude = [
 ]
 
 [tool.ruff]
+
+[tool.ruff.lint]
 exclude = [
     ".venv",
     "build",
@@ -42,46 +52,42 @@ exclude = [
     "tests",
 ]
 
-[tool.ruff.lint]
 select = [
-    # Annotations: Enforce type annotations
-    "ANN",
-    # Complexity: Enforce a maximum cyclomatic complexity
-    "C90",
-    # Pydocstyle: Enforce docstrings
-    "D",
-    # Numpy: Enforce numpy style
-    "NPY",
-    # Print: Forbid print statements
-    "T20",
-    "E",  # pycodestyle (ошибки форматирования)
-    "F",  # pyflakes (ошибки логики)
-    "B",  # flake8-bugbear (подозрительные места)
-    "UP", # pyupgrade (современный синтаксис Python)
-    "N",  # pep8-naming (правильные имена классов/функций)
-    "S",  # flake8-bandit (безопасность)
-    "C4", # flake8-comprehensions
-    "T20",# flake8-print (отладочные print)
-    "TID",# flake8-tidy-imports (запрет относительных импортов)
-    "A",  # flake8-builtins (не переопределять встроенные имена)
-    "PTH",# flake8-use-pathlib
-    "RUF",# собственные правила Ruff
+    "ANN",  # Enforce type annotations
+    "C90",  # Enforce maximum cyclomatic complexity
+    "D",    # Enforce docstrings
+    "NPY",  # Enforce numpy style
+    "E",    # Pycodestyle formatting errors
+    "F",    # Pyflakes logic errors
+    "B",    # Flake8-bugbear suspicious code patterns
+    "UP",   # Pyupgrade modern Python syntax
+    "N",    # Pep8-naming correct class/function names
+    "S",    # Flake8-bandit security issues
+    "C4",   # Flake8-comprehensions better comprehensions
+    "T20",  # Flake8-print forbid debug print statements
+    "TID",  # Flake8-tidy-imports forbid relative imports
+    "A",    # Flake8-builtins avoid shadowing built-ins
+    "PTH",  # Flake8-use-pathlib prefer pathlib over os.path
+    "RUF",  # Ruff-specific rules
 ]
-
 ignore = [
-    "ANN001", 
-    "ANN002", 
-    "ANN401",
-    "D100", 
-    "D101", 
-    "D104", 
-    "D203", 
-    "D212", 
-    "D401", 
-    "E501",
+    "ANN001",  # Missing type annotation for function argument
+    "ANN002",  # Missing type annotation for *args
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
+    "D100",    # Missing docstring in public module
+    "D101",    # Missing docstring in public class
+    "D104",    # Missing docstring in public package
+    "D203",    # 1 blank line required before class docstring
+    "D212",    # Multi-line docstring summary should start at the first line
+    "D401",    # First line of docstring should be in imperative mood
+    "E501",    # Line too long
+    "N806",   # Variable in function should be lowercase
+    "N803",   # Argument name should be lowercase
+    "N812",   # Import alias should be lowercase
 ]
 
-[tool.ruff.isort]
+
+[tool.ruff.lint.isort]
 known-first-party = ["src", "app", "core", "lednik"]
 combine-as-imports = true
 force-single-line = true
