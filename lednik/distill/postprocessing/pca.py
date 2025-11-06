@@ -1,0 +1,93 @@
+import torch
+from torch import nn
+
+
+class PCA(nn.Module):
+    def __init__(self, n_components: int, compile_transform: bool = False) -> None:
+        """Initialize PCA with the number of components."""
+        super().__init__()
+        self.n_components = n_components
+        self.compile_transform = compile_transform
+        self.components_: torch.Tensor | None = None
+        self.mean_: torch.Tensor | None = None
+        self.explained_variance_: torch.Tensor | None = None
+        self.explained_variance_ratio_: torch.Tensor | None = None
+        return
+
+    @property
+    def components(self) -> torch.Tensor:
+        """Get PCA components."""
+        if self.components_ is None:
+            raise ValueError("Must call transform() first")
+        return self.components_
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """Get mean of training data."""
+        if self.mean_ is None:
+            raise ValueError("Must call transform() first")
+        return self.mean_
+
+    @property
+    def explained_variance(self) -> torch.Tensor:
+        """Get explained variance."""
+        if self.explained_variance_ is None:
+            raise ValueError("Must call transform() first")
+        return self.explained_variance_
+
+    @property
+    def explained_variance_ratio(self) -> torch.Tensor:
+        """Get explained variance ratio."""
+        if self.explained_variance_ratio_ is None:
+            raise ValueError("Must call transform() first")
+        return self.explained_variance_ratio_
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        """Forward pass to apply PCA transformation."""
+        X = (
+            self.transform(X)
+            if not self.compile_transform
+            else self.compiled_transform(X)
+        )
+        return X
+
+    @torch.compile(dynamic=True)
+    def compiled_transform(self, X: torch.Tensor) -> torch.Tensor:
+        """Apply the dimensionality reduction on X with compilation."""
+        return self.transform(X)
+
+    @torch.no_grad()
+    def transform(self, X: torch.Tensor) -> torch.Tensor:
+        """Apply the dimensionality reduction on X."""
+        if X.dim() != 2:
+            raise ValueError("Input data must be a 2D tensor.")
+        original_dtype = X.dtype
+        X = X.to(torch.float64)
+        n_samples, n_features = X.shape
+
+        self.mean_ = X.mean(dim=0, keepdim=True)
+        X_centered = X - self.mean_
+
+        U, S, Vh = torch.linalg.svd(X_centered, full_matrices=False)
+
+        idx = torch.argmax(torch.abs(U), dim=0)
+        signs = torch.sign(U[idx, torch.arange(U.size(1), device=U.device)])
+        signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+
+        U = U * signs.unsqueeze(0)
+        Vh = Vh * signs.unsqueeze(1)
+
+        U = U[:, : self.n_components]
+        S = S[: self.n_components]
+        self.components_ = Vh[: self.n_components, :]
+
+        Z = U * S
+
+        self.explained_variance_ = ((S**2) / (n_samples - 1)).to(original_dtype)
+        total_var = X_centered.pow(2).sum() / (n_samples - 1)
+        self.explained_variance_ratio_ = (self.explained_variance / total_var).to(
+            original_dtype
+        )
+
+        Z = Z.to(original_dtype)
+        return Z
