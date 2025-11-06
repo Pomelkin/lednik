@@ -17,6 +17,7 @@ from torchmetrics import MeanSquaredError
 from torchmetrics import Metric
 from torchmetrics import MetricCollection
 from transformers import PreTrainedModel
+from transformers import PreTrainedTokenizerBase
 from transformers.modeling_outputs import BaseModelOutput
 
 from lednik.distill.dim_reduction import Autoencoder
@@ -27,15 +28,16 @@ from lednik.distill.training.metrics_formatting import apply_suffix
 from lednik.static_embeddings.modeling import StaticEmbeddingsModelForPostTraining
 from lednik.utils.logging import setup_logger
 
-
 logger = setup_logger(add_rank=True)
 
 
 @dataclass
 class BaseStepOutput:
     loss: torch.Tensor
+    semantic_loss: torch.Tensor
     teacher_embeddings: torch.Tensor
     student_embeddings: torch.Tensor
+    reconstruction_loss: torch.Tensor | None = None
 
 
 def metric_factory() -> MetricCollection:
@@ -56,6 +58,7 @@ class PostTrainModule(L.LightningModule):
         teacher: PreTrainedModel,
         static_model: StaticEmbeddingsModelForPostTraining,
         train_cfg: TrainConfig,
+        tokenizer: PreTrainedTokenizerBase,
     ) -> None:
         """
         Initialize Post-Training Lightning Module.
@@ -64,6 +67,7 @@ class PostTrainModule(L.LightningModule):
             teacher : The pre-trained teacher hf model.
             static_model : The static embeddings model to be trained.
             train_cfg : Training configuration.
+            tokenizer : The tokenizer corresponding to the teacher model.
 
         """
         super().__init__()
@@ -88,6 +92,7 @@ class PostTrainModule(L.LightningModule):
 
         self.loss = torch.nn.CosineEmbeddingLoss()
 
+        self.tokenizer = tokenizer
         self.train_metrics = metric_factory()
         self.val_metrics = metric_factory()
         return
@@ -230,14 +235,17 @@ class PostTrainModule(L.LightningModule):
             )
             teacher_embeddings: torch.Tensor = teacher_outputs[0]
 
-        non_pad_mask = (
-            batch["attention_mask"].flatten() != self.static_model.config.pad_token_id
-        ).bool()
+        flattened_input_ids = batch["input_ids"].flatten()
+        special_tokens_mask_list = self.tokenizer.get_special_tokens_mask(
+            flattened_input_ids.tolist(), already_has_special_tokens=True
+        )
+        special_tokens_mask = torch.tensor(special_tokens_mask_list, dtype=torch.bool)
+
         student_embeddings = student_embeddings.flatten(start_dim=0, end_dim=1)[
-            non_pad_mask
+            ~special_tokens_mask
         ]
         teacher_embeddings = teacher_embeddings.flatten(start_dim=0, end_dim=1)[
-            non_pad_mask
+            ~special_tokens_mask
         ]
 
         if self.dim_reduction is not None:
@@ -249,17 +257,25 @@ class PostTrainModule(L.LightningModule):
         target = torch.ones(
             student_embeddings.size(0), device=student_embeddings.device
         )
-        loss = self.loss(
+        semantic_loss = self.loss(
             student_embeddings,
             teacher_embeddings,
             target,
         )
+
+        loss = semantic_loss
+        reconstruction_loss = None
         if dim_reduce_output is not None:
             if dim_reduce_output.reconstruction_loss is not None:
-                loss = loss + dim_reduce_output.reconstruction_loss * 0.3
+                reconstruction_loss = dim_reduce_output.reconstruction_loss * 0.3
+                loss = (
+                    loss + dim_reduce_output.reconstruction_loss * reconstruction_loss
+                )
 
         output = BaseStepOutput(
             loss=loss,
+            semantic_loss=semantic_loss,
+            reconstruction_loss=reconstruction_loss,
             teacher_embeddings=teacher_embeddings,
             student_embeddings=student_embeddings,
         )
@@ -274,7 +290,10 @@ class PostTrainModule(L.LightningModule):
             output.student_embeddings,
             output.teacher_embeddings,
         )
-        metrics.update({"loss": output.loss.detach()})
+        metrics["loss"] = output.loss.detach()
+        if output.reconstruction_loss is not None:
+            metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
+            metrics["semantic_loss"] = output.semantic_loss.detach()
 
         self.log_dict(
             metrics,
@@ -297,13 +316,18 @@ class PostTrainModule(L.LightningModule):
         return output.loss
 
     @override
-    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
+    def validation_step(
+        self, batch: dict[str, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
         output = self.base_step(batch)
         metrics = self.val_metrics(
             output.student_embeddings,
             output.teacher_embeddings,
         )
-        metrics.update({"loss": output.loss.detach()})
+        metrics["loss"] = output.loss.detach()
+        if output.reconstruction_loss is not None:
+            metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
+            metrics["semantic_loss"] = output.semantic_loss.detach()
 
         self.log_dict(
             metrics,
@@ -323,4 +347,4 @@ class PostTrainModule(L.LightningModule):
             logger=False,
             sync_dist=True,
         )
-        return
+        return output.loss
