@@ -59,16 +59,6 @@ class StaticEmbeddingsModelForPostTraining(StaticEmbeddingsPreTrainedModel):
 
         self.register_buffer("token_weights", torch.ones(config.vocab_size))
 
-        match config.norm_type:
-            case "layernorm":
-                self.norm = nn.LayerNorm(config.embedding_dim)
-            case "rmsnorm":
-                self.norm = nn.RMSNorm(config.embedding_dim)
-            case None:
-                self.norm = nn.Identity()
-            case _:
-                raise ValueError(f"Unsupported norm type: {config.norm_type}")
-
         if config.dropout_p > 0.0:
             self.dropout = nn.Dropout(config.dropout_p)
         else:
@@ -118,11 +108,6 @@ class StaticEmbeddingsModelForPostTraining(StaticEmbeddingsPreTrainedModel):
             ).log()
         return scales
 
-    @torch.compile(dynamic=True)
-    def compiled_postprocessing(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Apply normalization and dropout in a compiled manner."""
-        return self.dropout(self.norm(embeddings))
-
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
         if input_ids.dtype != torch.long:
@@ -132,13 +117,7 @@ class StaticEmbeddingsModelForPostTraining(StaticEmbeddingsPreTrainedModel):
         if self.config.qat:
             scales = self.dequant_scales(input_ids).exp()
             embeddings = embeddings * scales
-
-        embeddings = (
-            self.compiled_postprocessing(embeddings)
-            if self.config.model_compile
-            else self.dropout(self.norm(embeddings))
-        )
-        return embeddings
+        return self.dropout(embeddings)
 
 
 @dataclass

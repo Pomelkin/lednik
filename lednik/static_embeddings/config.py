@@ -11,11 +11,9 @@ class StaticEmbeddingsConfig(PretrainedConfig):
         self,
         vocab_size: int,
         embedding_dim: int = 300,
-        norm_type: Literal["layernorm", "rmsnorm"] | None = None,
         dropout_p: float = 0.0,
         pad_token_id: int | None = None,
-        model_compile: bool = False,
-        dtype: Literal["float32", "float16", "bfloat16"] = "float32",
+        dtype: Literal["float32", "float16", "bfloat16"] = "bfloat16",
         embeddings_int8: bool = False,
         trainable_scales: bool = False,
         qat: bool = False,
@@ -41,11 +39,9 @@ class StaticEmbeddingsConfig(PretrainedConfig):
         super().__init__(**kwargs)  # type: ignore
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
-        self.norm_type = norm_type
         self.dropout_p = dropout_p
         self.pad_token_id = pad_token_id
         self.dtype = dtype
-        self.model_compile = model_compile
         self.embeddings_int8 = embeddings_int8
         self.trainable_scales = trainable_scales
         self.qat = qat
