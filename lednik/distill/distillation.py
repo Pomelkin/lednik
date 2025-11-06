@@ -5,8 +5,8 @@ import torch
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizer
 
+from .dim_reduction import PCA
 from .embedding_extraction import extract_embeddings
-from .postprocessing import PCA
 from lednik.static_embeddings.config import StaticEmbeddingsConfig
 from lednik.static_embeddings.modeling import StaticEmbeddingsModelForPostTraining
 from lednik.utils.logging import setup_logger
@@ -44,8 +44,8 @@ def distill_with_postraining(
         device=embedding_extraction_device,
     )
     pca = PCA(n_components=embedding_dim)
-    embeddings_t = pca.transform(embeddings_t)
-    embeddings_t = embeddings_t.cpu()
+    output = pca.transform(embeddings_t)
+    embeddings_t = output.reduced_data.cpu()
 
     static_embeddings = torch.nn.Embedding(
         num_embeddings=vocab_len,

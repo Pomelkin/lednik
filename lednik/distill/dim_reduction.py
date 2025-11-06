@@ -1,5 +1,44 @@
+from dataclasses import dataclass
+
 import torch
+import torch.nn.functional as F
 from torch import nn
+
+
+@dataclass
+class DimReductionOutput:
+    reduced_data: torch.Tensor
+    reconstruction_loss: torch.Tensor | None = None
+
+
+class Autoencoder(nn.Module):
+    def __init__(self, input_dim: int, latent_dim: int) -> None:
+        """Initialize Autoencoder with input and latent dimensions."""
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.RMSNorm(input_dim),
+            nn.GELU(),
+            nn.Linear(input_dim, latent_dim, bias=False),
+        )
+        self.decoder = nn.Sequential(
+            nn.RMSNorm(latent_dim),
+            nn.GELU(),
+            nn.Linear(latent_dim, input_dim, bias=False),
+        )
+        return
+
+    def forward(self, X: torch.Tensor) -> DimReductionOutput:
+        """Forward pass to apply Autoencoder transformation."""
+        output = self.transform(X)
+        return output
+
+    def transform(self, X: torch.Tensor) -> DimReductionOutput:
+        """Apply the dimensionality reduction on X."""
+        latent = self.encoder(X)
+        X_rec = self.decoder(latent)
+        loss = F.mse_loss(X, X_rec)
+        output = DimReductionOutput(reduced_data=latent, reconstruction_loss=loss)
+        return output
 
 
 class PCA(nn.Module):
@@ -42,28 +81,28 @@ class PCA(nn.Module):
             raise ValueError("Must call transform() first")
         return self.explained_variance_ratio_
 
-    def forward(self, X: torch.Tensor) -> torch.Tensor:
+    def forward(self, X: torch.Tensor) -> DimReductionOutput:
         """Forward pass to apply PCA transformation."""
-        X = (
+        output = (
             self.transform(X)
             if not self.compile_transform
             else self.compiled_transform(X)
         )
-        return X
+        return output
 
     @torch.compile(dynamic=True)
-    def compiled_transform(self, X: torch.Tensor) -> torch.Tensor:
+    def compiled_transform(self, X: torch.Tensor) -> DimReductionOutput:
         """Apply the dimensionality reduction on X with compilation."""
         return self.transform(X)
 
     @torch.no_grad()
-    def transform(self, X: torch.Tensor) -> torch.Tensor:
+    def transform(self, X: torch.Tensor) -> DimReductionOutput:
         """Apply the dimensionality reduction on X."""
         if X.dim() != 2:
             raise ValueError("Input data must be a 2D tensor.")
         original_dtype = X.dtype
         X = X.to(torch.float64)
-        n_samples, n_features = X.shape
+        n_samples, _ = X.shape
 
         self.mean_ = X.mean(dim=0, keepdim=True)
         X_centered = X - self.mean_
@@ -90,4 +129,5 @@ class PCA(nn.Module):
         )
 
         Z = Z.to(original_dtype)
-        return Z
+        output = DimReductionOutput(reduced_data=Z)
+        return output
