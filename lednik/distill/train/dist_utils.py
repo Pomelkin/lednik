@@ -3,7 +3,7 @@ import os
 
 import torch.distributed as dist
 
-from lednik.distill.training.configs import TrainConfig
+from lednik.distill.train.configs import TrainConfig
 from lednik.utils.logging import setup_logger
 
 logger = setup_logger(add_rank=True)

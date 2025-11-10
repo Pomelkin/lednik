@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,10 +24,11 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from lednik.distill.dim_reduction import Autoencoder
 from lednik.distill.dim_reduction import PCA
-from lednik.distill.training.configs import TrainConfig
-from lednik.distill.training.dist_utils import scale_lrs_by_world_size
-from lednik.distill.training.metrics_formatting import apply_suffix
+from lednik.distill.train.configs import TrainConfig
+from lednik.distill.train.dist_utils import scale_lrs_by_world_size
+from lednik.distill.train.metrics_formatting import apply_suffix
 from lednik.static_embeddings.modeling import StaticEmbeddingsModelForPostTraining
+from lednik.static_embeddings.outputs import StaticEmbeddingsOutput
 from lednik.utils.logging import setup_logger
 
 logger = setup_logger(add_rank=True)
@@ -162,6 +165,7 @@ class PostTrainModule(L.LightningModule):
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
+        self.freeze_teacher()
         if dist.is_initialized():
             scale_lrs_by_world_size(
                 lr_config=self.train_cfg,
@@ -226,7 +230,8 @@ class PostTrainModule(L.LightningModule):
             BaseStepOutput: An object containing the computed loss, teacher embeddings, and student embeddings.
 
         """
-        student_embeddings: torch.Tensor = self.static_model(batch["input_ids"])
+        student_output: StaticEmbeddingsOutput = self.static_model(batch["input_ids"])
+        student_embeddings = student_output.embeddings
 
         with torch.no_grad():
             teacher_outputs: BaseModelOutput = self.teacher(
