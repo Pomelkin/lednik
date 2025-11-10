@@ -22,11 +22,14 @@ dev = [
     "rich>=14.2.0",
     "traitlets==5.9.0",
 ]
-train = [
+distill = [
     "lightning>=2.5.6",
     "tensorboard>=2.20.0",
     "torchmetrics>=1.8.2",
 ]
+
+[tool.uv]
+default-groups = ["dev", "distill"]
 
 [tool.pyright]
 typeCheckingMode = "standard" # "off" | "basic" | "standard" | "strict"

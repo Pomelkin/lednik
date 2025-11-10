@@ -1037,7 +1037,7 @@ dev = [
     { name = "rich" },
     { name = "traitlets" },
 ]
-train = [
+distill = [
     { name = "lightning" },
     { name = "tensorboard" },
     { name = "torchmetrics" },
@@ -1062,7 +1062,7 @@ dev = [
     { name = "rich", specifier = ">=14.2.0" },
     { name = "traitlets", specifier = "==5.9.0" },
 ]
-train = [
+distill = [
     { name = "lightning", specifier = ">=2.5.6" },
     { name = "tensorboard", specifier = ">=2.20.0" },
     { name = "torchmetrics", specifier = ">=1.8.2" },
