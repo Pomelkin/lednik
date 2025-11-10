@@ -2,19 +2,19 @@ repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
   hooks:
-    - id: check-symlinks
-    - id: destroyed-symlinks
-    - id: trailing-whitespace
-    - id: end-of-file-fixer
-    - id: check-yaml
-    - id: check-toml
-    - id: check-ast
-    - id: check-added-large-files
-    - id: check-merge-conflict
-    - id: check-executables-have-shebangs
-    - id: check-shebang-scripts-are-executable
-    - id: detect-private-key
-    - id: debug-statements
+  - id: check-symlinks
+  - id: destroyed-symlinks
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-yaml
+  - id: check-toml
+  - id: check-ast
+  - id: check-added-large-files
+  - id: check-merge-conflict
+  - id: check-executables-have-shebangs
+  - id: check-shebang-scripts-are-executable
+  - id: detect-private-key
+  - id: debug-statements
 
 - repo: https://github.com/asottile/reorder-python-imports
   rev: v3.16.0
@@ -22,7 +22,7 @@ repos:
   - id: reorder-python-imports
     args:
     - --py312-plus
-    - --application-directories=.:core
+    - --application-directories=.:lednik
     types_or: [ python, pyi ]
 
 - repo: https://github.com/asottile/pyupgrade
@@ -53,7 +53,6 @@ repos:
   hooks:
   - id: hadolint-docker
     types_or: [ dockerfile ]
-
 
 # - repo: https://github.com/hoxbro/clean_notebook
 #   rev: v0.1.17
