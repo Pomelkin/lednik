@@ -179,7 +179,7 @@ class StaticEmbeddingsModelForPostTraining(StaticEmbeddingsPreTrainedModel):
     def initialize(
         cls: type["StaticEmbeddingsModelForPostTraining"],
         config: StaticEmbeddingsConfig,
-        embeddings: nn.Embedding,
+        embeddings: torch.Tensor,
     ) -> "StaticEmbeddingsModelForPostTraining":
         """Initialize model with given embeddings."""
         model = cls(config)
@@ -225,15 +225,15 @@ class StaticEmbeddingsModelForPostTraining(StaticEmbeddingsPreTrainedModel):
         )
         return model
 
-    def update_embeddings(self, new_embeddings: nn.Embedding) -> None:
-        """Replace the current model embeddings with given one."""
-        self.embeddings = new_embeddings
+    def update_embeddings(self, new_embeddings: torch.Tensor) -> None:
+        """Replace the current model embeddings weights with given one."""
+        self.embeddings.weight.data = new_embeddings.clone()
         return
 
     def to_static_model(
         self, token_pos_weights: torch.Tensor, tokenizer: PreTrainedTokenizerBase
     ) -> "StaticEmbeddingsModel":
-        """Convert to StaticEmbeddingsModel."""
+        """Convert PostTraining model to StaticEmbeddingsModel."""
         original_device = self.device
 
         self.cpu()
