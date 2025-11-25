@@ -5,6 +5,8 @@ from transformers import PretrainedConfig
 
 
 class StaticEmbeddingsConfig(PretrainedConfig):
+    """Configuration class for Static Embeddings Model."""
+
     model_type = "StaticEmbeddingsPreTrainedModel"
 
     def __init__(

@@ -1,15 +1,21 @@
 from typing import Literal
 
+from kostyl.utils.logging import setup_logger
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
-
-from lednik.utils.logging import setup_logger
 
 logger = setup_logger(fmt="only_message")
 
 
 class TrainConfig(BaseModel):
+    """
+    Configuration schema for the training process.
+
+    This class defines the hyperparameters and settings required for training the distillation model,
+    including learning rate schedules, dimension reduction strategies, and model dimensions.
+    """
+
     warmup_iters: int | None = Field(default=None, gt=0, validate_default=False)
     warmup_lr: float | None = Field(default=None, gt=0, validate_default=False)
     base_lr: float

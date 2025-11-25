@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "kernels>=0.11.1",
+    "kostyl-toolkit>=0.1.1",
     "loguru>=0.7.3",
     "orjson>=3.11.3",
     "pydantic>=2.12.3",
@@ -73,13 +75,13 @@ select = [
     "A",    # Flake8-builtins avoid shadowing built-ins
     "PTH",  # Flake8-use-pathlib prefer pathlib over os.path
     "RUF",  # Ruff-specific rules
+    "Q",   # quotes checks
 ]
 ignore = [
     "ANN001",  # Missing type annotation for function argument
     "ANN002",  # Missing type annotation for *args
     "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
     "D100",    # Missing docstring in public module
-    "D101",    # Missing docstring in public class
     "D104",    # Missing docstring in public package
     "D203",    # 1 blank line required before class docstring
     "D212",    # Multi-line docstring summary should start at the first line
@@ -88,6 +90,7 @@ ignore = [
     "N806",   # Variable in function should be lowercase
     "N803",   # Argument name should be lowercase
     "N812",   # Import alias should be lowercase
+    "N817",
 ]
 
 

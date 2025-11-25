@@ -16,7 +16,6 @@ from transformers import PreTrainedTokenizerBase
 from transformers.utils import logging
 
 from .outputs import StaticEmbeddingsOutput
-from .outputs import StaticEmbeddingsPostTrainingOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
 from lednik.static_embeddings.config import StaticEmbeddingsConfig
 
@@ -26,6 +25,13 @@ TPreTrainedModel = TypeVar("TPreTrainedModel", bound="PreTrainedModel")
 
 
 class StaticEmbeddingsPreTrainedModel(PreTrainedModel):
+    """
+    An abstract base class for static embedding models, inheriting from `PreTrainedModel`.
+
+    This class handles the initialization of weights, tokenizer integration, and provides
+    overridden methods for loading and saving pretrained models that include tokenizer handling.
+    """
+
     tokenizer: PreTrainedTokenizerBase | None
     config: StaticEmbeddingsConfig
     base_model_prefix = "model"
@@ -157,108 +163,6 @@ class StaticEmbeddingsPreTrainedModel(PreTrainedModel):
         return
 
 
-class StaticEmbeddingsModelForPostTraining(StaticEmbeddingsPreTrainedModel):
-    """Static Embeddings for post-training only."""
-
-    def __init__(self, config: StaticEmbeddingsConfig) -> None:
-        """Initialize model."""
-        super().__init__(config)
-        self.embeddings = nn.Embedding(
-            config.vocab_size, config.embedding_dim, padding_idx=config.pad_token_id
-        )
-        if config.embedding_dropout > 0.0:
-            self.dropout = nn.Dropout(config.embedding_dropout)
-        else:
-            self.dropout = nn.Identity()
-        self.config = config
-        # Initialize weights and apply final processing
-        self.post_init()
-        return
-
-    @classmethod
-    def initialize(
-        cls: type["StaticEmbeddingsModelForPostTraining"],
-        config: StaticEmbeddingsConfig,
-        embeddings: torch.Tensor,
-    ) -> "StaticEmbeddingsModelForPostTraining":
-        """Initialize model with given embeddings."""
-        model = cls(config)
-        model.update_embeddings(embeddings)
-        return model
-
-    @override
-    @classmethod
-    def from_pretrained(
-        cls: type["StaticEmbeddingsModelForPostTraining"],
-        pretrained_model_name_or_path: str | os.PathLike | None,
-        *model_args,
-        config: PretrainedConfig | str | os.PathLike | None = None,
-        cache_dir: str | os.PathLike | None = None,
-        ignore_mismatched_sizes: bool = False,
-        force_download: bool = False,
-        local_files_only: bool = False,
-        token: str | bool | None = None,
-        revision: str = "main",
-        use_safetensors: bool | None = None,
-        weights_only: bool = True,
-        load_tokenizer: bool = True,
-        **kwargs: dict[str, Any],
-    ) -> "StaticEmbeddingsModelForPostTraining":
-        if load_tokenizer:
-            raise ValueError(
-                "Loading tokenizer is not supported for StaticEmbeddingsModelForPostTraining."
-            )
-        model = super().from_pretrained(
-            pretrained_model_name_or_path,
-            *model_args,
-            config=config,
-            cache_dir=cache_dir,
-            ignore_mismatched_sizes=ignore_mismatched_sizes,
-            force_download=force_download,
-            local_files_only=local_files_only,
-            token=token,
-            revision=revision,
-            use_safetensors=use_safetensors,
-            weights_only=weights_only,
-            load_tokenizer=load_tokenizer,
-            **kwargs,
-        )
-        return model
-
-    def update_embeddings(self, new_embeddings: torch.Tensor) -> None:
-        """Replace the current model embeddings weights with given one."""
-        self.embeddings.weight.data = new_embeddings.clone()
-        return
-
-    def to_static_model(
-        self, token_pos_weights: torch.Tensor, tokenizer: PreTrainedTokenizerBase
-    ) -> "StaticEmbeddingsModel":
-        """Convert PostTraining model to StaticEmbeddingsModel."""
-        original_device = self.device
-
-        self.cpu()
-        token_pos_weights = token_pos_weights.to("cpu")
-        with torch.device("cpu"):
-            cfg = self.config
-            static_model = StaticEmbeddingsModel(cfg)
-
-            embeddings_weights = self.embeddings.weight.data.clone()
-            static_model.embeddings.weight.data = embeddings_weights
-
-            static_model.token_pos_weights.data = token_pos_weights.clone()
-            static_model.add_tokenizer(tokenizer)
-        return static_model.to(original_device)  # type: ignore
-
-    def forward(self, input_ids: torch.Tensor) -> StaticEmbeddingsPostTrainingOutput:
-        """Forward pass."""
-        if input_ids.dtype != torch.long:
-            input_ids = input_ids.long()
-        embeddings = self.embeddings(input_ids)
-        embeddings = self.dropout(embeddings)
-        output = StaticEmbeddingsPostTrainingOutput(embeddings=embeddings)
-        return output
-
-
 class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
     """Static Embeddings Model."""
 
@@ -271,6 +175,11 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
             padding_idx=config.pad_token_id,
         )
         self.token_pos_weights = nn.Parameter(torch.ones(config.vocab_size, 1))
+        if config.embedding_dropout > 0.0:
+            self.dropout = nn.Dropout(config.embedding_dropout)
+        else:
+            self.dropout = nn.Identity()
+
         self.config = config
         self.tokenizer: PreTrainedTokenizerBase | None = None
 
@@ -283,12 +192,33 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         self.tokenizer = tokenizer
         return
 
+    def update_embeddings(self, new_embeddings: torch.Tensor) -> None:
+        """Replace the current model embeddings weights with given one."""
+        self.embeddings.weight.data = new_embeddings.clone()
+        return
+
+    def update_pos_weights(self, new_pos_weights: torch.Tensor) -> None:
+        """Replace the current model position weights with given one."""
+        self.token_pos_weights.data = new_pos_weights.clone()
+        return
+
+    @classmethod
+    def initialize(
+        cls: type["StaticEmbeddingsModel"],
+        config: StaticEmbeddingsConfig,
+        embeddings: torch.Tensor,
+    ) -> "StaticEmbeddingsModel":
+        """Initialize model with given embeddings."""
+        model = cls(config)
+        model.update_embeddings(embeddings)
+        return model
+
     def encode(
         self,
         texts: list[str] | str,
         batch_size: int = -1,
         add_progress_bar: bool = False,
-    ) -> list[StaticEmbeddingsOutput]:
+    ) -> StaticEmbeddingsOutput:
         """
         Encode texts into static embeddings.
 
@@ -298,7 +228,7 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
             add_progress_bar: Whether to display a progress bar during encoding.
 
         Returns:
-            A list of StaticEmbeddingsOutput containing embeddings, position weights, and sentence embeddings for each text.
+            StaticEmbeddingsOutput containing embeddings, position weights, and sentence embeddings for each text.
 
         """
         if isinstance(texts, str):
@@ -315,36 +245,41 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
             )
             encoding = cast(dict[str, torch.Tensor], encoding)
             input_tokens_list.append(encoding["input_ids"].squeeze(0))
-        input_tokens = torch.nn.utils.rnn.pad_sequence(
-            input_tokens_list,
-            batch_first=True,
-            padding_value=self.config.pad_token_id,
-        ).to(self.device)
 
-        batch_size = batch_size if batch_size > 0 else len(input_tokens)
+        batch_size = batch_size if batch_size > 0 else len(input_tokens_list)
         outputs = []
         pg = (
-            tqdm(total=len(input_tokens), desc="Encoding", unit="text")
+            tqdm(total=len(input_tokens_list), desc="Encoding", unit="text")
             if add_progress_bar
             else None
         )
-        for i in range(0, len(input_tokens), batch_size):
-            input_ids = input_tokens[i : i + batch_size]
+        for i in range(0, len(input_tokens_list), batch_size):
+            input_ids_nc = input_tokens_list[i : i + batch_size]
+
+            input_ids = torch.nn.utils.rnn.pad_sequence(
+                input_ids_nc,
+                batch_first=True,
+                padding_value=self.config.pad_token_id,
+            ).to(self.device)
+
             mask = (input_ids != self.config.pad_token_id).long()
             batch_output: StaticEmbeddingsOutput = self(input_ids, mask)
-            for j in range(input_ids.size(0)):
-                outputs.append(
-                    StaticEmbeddingsOutput(
-                        embeddings=batch_output.embeddings[j],
-                        pos_weights=batch_output.pos_weights[j],
-                        sentence_embeddings=batch_output.sentence_embeddings[j],
-                    )
-                )
+            outputs.append(batch_output)
             if pg is not None:
                 pg.update(input_ids.size(0))
         if pg is not None:
             pg.close()
-        return outputs
+
+        result = outputs[0]
+        for output in outputs[1:]:
+            result.embeddings = torch.cat((result.embeddings, output.embeddings), dim=0)
+            result.pos_weights = torch.cat(
+                (result.pos_weights, output.pos_weights), dim=0
+            )
+            result.sentence_embeddings = torch.cat(
+                (result.sentence_embeddings, output.sentence_embeddings), dim=0
+            )
+        return result
 
     def forward(
         self, input_ids: torch.Tensor, mask: torch.Tensor
@@ -353,21 +288,24 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         if input_ids.dtype != torch.long:
             input_ids = input_ids.long()
         embeddings = self.embeddings(input_ids)
+        embeddings = self.dropout(embeddings)
+        masked_embeddings = embeddings * mask.unsqueeze(-1)
 
         token_weights = self.token_pos_weights[input_ids]  # type: ignore
-        masked_embeddings = embeddings * mask.unsqueeze(-1)
-        sentence_embeddings = (embeddings * token_weights).sum(dim=1) / mask.sum(
+        sentence_embeddings = (masked_embeddings * token_weights).sum(dim=1) / mask.sum(
             dim=1, keepdim=True
         )
         output = StaticEmbeddingsOutput(
-            embeddings=masked_embeddings,
+            embeddings=embeddings,
             pos_weights=token_weights,
             sentence_embeddings=sentence_embeddings,
         )
         return output
 
 
-class StaticEmbeddingsClassfier(nn.Module):
+class StaticEmbeddingsClassificationHead(nn.Module):
+    """Classification head for static embeddings."""
+
     def __init__(self, config: StaticEmbeddingsConfig) -> None:
         """Initialize classifier."""
         super().__init__()
@@ -394,7 +332,7 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
         """Initialize model."""
         super().__init__(config)
         self.model = StaticEmbeddingsModel(config)
-        self.classifier = StaticEmbeddingsClassfier(config)
+        self.classifier = StaticEmbeddingsClassificationHead(config)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -406,18 +344,23 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
         return
 
     def forward(
-        self, input_ids: torch.Tensor, mask: torch.Tensor
+        self,
+        input_ids: torch.Tensor,
+        mask: torch.Tensor,
+        labels: torch.Tensor | None = None,
     ) -> StaticEmbeddingsSequenceClassifierOutput:
         """Forward pass."""
         if input_ids.dtype != torch.long:
             input_ids = input_ids.long()
         embeddings_output = self.model(input_ids, mask)
         logits = self.classifier(embeddings_output.sentence_embeddings)
+        if labels is not None:
+            loss = self.loss_function(logits, labels)
+        else:
+            loss = None
         output = StaticEmbeddingsSequenceClassifierOutput(
             logits=logits,
-            pos_weights=embeddings_output.pos_weights,
-            embeddings=embeddings_output.embeddings,
-            sentence_embeddings=embeddings_output.sentence_embeddings,
+            loss=loss,
         )
         return output
 
@@ -426,7 +369,7 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
         texts: list[str] | str,
         batch_size: int = -1,
         add_progress_bar: bool = False,
-    ) -> list[StaticEmbeddingsSequenceClassifierOutput]:
+    ) -> StaticEmbeddingsSequenceClassifierOutput:
         """
         Classify texts into static embeddings.
 
@@ -436,7 +379,7 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
             add_progress_bar: Whether to display a progress bar during classification.
 
         Returns:
-            A list of StaticEmbeddingsSequenceClassifierOutput containing logits, position weights, embeddings, and sentence embeddings for each text.
+            A StaticEmbeddingsSequenceClassifierOutput containing logits, position weights, embeddings, and sentence embeddings for each text.
 
         """
         if isinstance(texts, str):
@@ -460,29 +403,27 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
         ).to(self.device)
 
         batch_size = batch_size if batch_size > 0 else len(input_tokens)
-        outputs: list[StaticEmbeddingsSequenceClassifierOutput] = []
         pg = (
             tqdm(total=len(input_tokens), desc="Classifying", unit="text")
             if add_progress_bar
             else None
         )
+
+        outputs: list[StaticEmbeddingsSequenceClassifierOutput] = []
         for i in range(0, len(input_tokens), batch_size):
             input_ids = input_tokens[i : i + batch_size]
             mask = (input_ids != self.config.pad_token_id).long()
             batch_output: StaticEmbeddingsSequenceClassifierOutput = self(
                 input_ids, mask
             )
-            for j in range(input_ids.size(0)):
-                outputs.append(
-                    StaticEmbeddingsSequenceClassifierOutput(
-                        logits=batch_output.logits[j],
-                        pos_weights=batch_output.pos_weights[j],
-                        embeddings=batch_output.embeddings[j],
-                        sentence_embeddings=batch_output.sentence_embeddings[j],
-                    )
-                )
+            outputs.append(batch_output)
             if pg is not None:
                 pg.update(input_ids.size(0))
         if pg is not None:
             pg.close()
-        return outputs
+        result = outputs[0]
+        for output in outputs[1:]:
+            result.logits = torch.cat((result.logits, output.logits), dim=0)
+            if result.loss is not None and output.loss is not None:
+                result.loss += output.loss
+        return result

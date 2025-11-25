@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 from typing import override
 
-import lightning as L
 import torch
 import torch.distributed as dist
+from kostyl.ml_core.dist_utils import scale_lrs_by_world_size
+from kostyl.ml_core.lightning.extenstions import KostylLightningModule
+from kostyl.ml_core.params_groups import create_params_groups
+from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
-from torch.distributed import ProcessGroup
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torchmetrics import CosineSimilarity
 from torchmetrics import MeanAbsolutePercentageError
 from torchmetrics import MeanSquaredError
-from torchmetrics import Metric
 from torchmetrics import MetricCollection
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
@@ -24,18 +22,15 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from lednik.distill.dim_reduction import Autoencoder
 from lednik.distill.dim_reduction import PCA
-from lednik.distill.train.configs import TrainConfig
-from lednik.distill.train.dist_utils import scale_lrs_by_world_size
-from lednik.distill.train.metrics_formatting import apply_suffix
-from lednik.static_embeddings.modeling import StaticEmbeddingsModelForPostTraining
+from lednik.distill.training.configs import TrainConfig
+from lednik.static_embeddings.modeling import StaticEmbeddingsModel
 from lednik.static_embeddings.outputs import StaticEmbeddingsOutput
-from lednik.utils.logging import setup_logger
 
 logger = setup_logger(add_rank=True)
 
 
 @dataclass
-class BaseStepOutput:
+class _BaseStepOutput:
     loss: torch.Tensor
     semantic_loss: torch.Tensor
     teacher_embeddings: torch.Tensor
@@ -55,16 +50,18 @@ def metric_factory() -> MetricCollection:
     return collection
 
 
-class PostTrainModule(L.LightningModule):
+class FineTuningModule(KostylLightningModule):
+    """A PyTorch Lightning module for fine-tuning a static embeddings model via knowledge distillation."""
+
     def __init__(
         self,
         teacher: PreTrainedModel,
-        static_model: StaticEmbeddingsModelForPostTraining,
+        static_model: StaticEmbeddingsModel,
         train_cfg: TrainConfig,
         tokenizer: PreTrainedTokenizerBase,
     ) -> None:
         """
-        Initialize Post-Training Lightning Module.
+        Initialize Fine-Tuning Lightning Module.
 
         Args:
             teacher : The pre-trained teacher hf model.
@@ -106,71 +103,19 @@ class PostTrainModule(L.LightningModule):
             param.requires_grad = False
         return
 
-    @property
-    def process_group(self) -> ProcessGroup | None:
-        """Get the process group in distributed training."""
-        if not dist.is_initialized():
-            return None
-
-        if self.device_mesh is not None:
-            dp_mesh = self.device_mesh["data_parallel"]
-            if dp_mesh.size() == 1:
-                logger.warning("Data parallel mesh size is 1, returning None")
-                return None
-            dp_pg = dp_mesh.get_group()
-        else:
-            dp_pg = dist.group.WORLD
-        return dp_pg
-
-    @override
-    def log_dict(
-        self,
-        dictionary: Mapping[str, Metric | torch.Tensor | int | float]
-        | MetricCollection,
-        prog_bar: bool = False,
-        logger: bool | None = None,
-        on_step: bool | None = None,
-        on_epoch: bool | None = None,
-        reduce_fx: str | Callable[..., Any] = "mean",
-        enable_graph: bool = False,
-        sync_dist: bool = False,
-        sync_dist_group: Any | None = None,
-        add_dataloader_idx: bool = True,
-        batch_size: int | None = None,
-        rank_zero_only: bool = False,
-        stage: str | None = None,
-    ) -> None:
-        if stage is not None:
-            dictionary = apply_suffix(
-                metrics=dictionary,
-                suffix=stage,
-                add_dist_rank=False,
-            )
-
-        super().log_dict(
-            dictionary,
-            prog_bar,
-            logger,
-            on_step,
-            on_epoch,
-            reduce_fx,
-            enable_graph,
-            sync_dist,
-            sync_dist_group,
-            add_dataloader_idx,
-            batch_size,
-            rank_zero_only,
-        )
-        return
-
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
         self.freeze_teacher()
         if dist.is_initialized():
-            scale_lrs_by_world_size(
-                lr_config=self.train_cfg,
-                group=self.process_group,
+            lrs = {
+                "warmup_lr": self.train_cfg.warmup_lr,
+                "base_lr": self.train_cfg.base_lr,
+            }
+            scaled_lrs = scale_lrs_by_world_size(
+                lrs=lrs, group=self.get_process_group(), verbose="only-zero-rank"
             )
+            for key, value in scaled_lrs.items():
+                setattr(self.train_cfg, key, value)
 
         params = [
             {
@@ -180,20 +125,11 @@ class PostTrainModule(L.LightningModule):
             }
         ]
         if self.dim_reduction is not None:
-            for name, param in self.dim_reduction.named_parameters():
-                if "bias" in name or "norm" in name:
-                    params[0]["params"].append(param)
-                else:
-                    if len(params) == 1:
-                        params.append(
-                            {
-                                "params": [param],
-                                "lr": self.train_cfg.base_lr,
-                                "weight_decay": self.train_cfg.weight_decay,
-                            }
-                        )
-                    else:
-                        params[1]["params"].append(param)
+            params += create_params_groups(
+                model=self.dim_reduction,
+                lr=self.train_cfg.base_lr,
+                weight_decay=self.train_cfg.weight_decay,
+            )
         optim = AdamW(params)
 
         if self.train_cfg.warmup_iters is None or self.train_cfg.warmup_lr is None:
@@ -213,7 +149,7 @@ class PostTrainModule(L.LightningModule):
             },
         }
 
-    def base_step(self, batch: dict[str, torch.Tensor]) -> BaseStepOutput:
+    def base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
         """
         Performs a single training step for knowledge distillation.
 
@@ -277,7 +213,7 @@ class PostTrainModule(L.LightningModule):
                     loss + dim_reduce_output.reconstruction_loss * reconstruction_loss
                 )
 
-        output = BaseStepOutput(
+        output = _BaseStepOutput(
             loss=loss,
             semantic_loss=semantic_loss,
             reconstruction_loss=reconstruction_loss,

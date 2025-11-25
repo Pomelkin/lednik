@@ -3,21 +3,18 @@ from dataclasses import dataclass
 import torch
 
 
-@dataclass(slots=True, frozen=True)
-class StaticEmbeddingsPostTrainingOutput:
-    embeddings: torch.Tensor
-
-
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True)
 class StaticEmbeddingsOutput:
+    """Output class for static embeddings models."""
+
     embeddings: torch.Tensor
     pos_weights: torch.Tensor
     sentence_embeddings: torch.Tensor
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True)
 class StaticEmbeddingsSequenceClassifierOutput:
+    """Output class for static embeddings sequence classifier models."""
+
     logits: torch.Tensor
-    pos_weights: torch.Tensor
-    embeddings: torch.Tensor
-    sentence_embeddings: torch.Tensor
+    loss: torch.Tensor | None = None
