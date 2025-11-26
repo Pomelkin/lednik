@@ -68,7 +68,7 @@ def _replace_post_processor(
     return tokenizer
 
 
-def modify_tokenizer(tokenizer: PreTrainedTokenizerBase) -> PreTrainedTokenizerBase:
+def customize_tokenizer(tokenizer: PreTrainedTokenizerBase) -> PreTrainedTokenizerBase:
     """
     Modify the tokenizer by replacing its normalizer and post-processor.
 
@@ -83,7 +83,6 @@ def modify_tokenizer(tokenizer: PreTrainedTokenizerBase) -> PreTrainedTokenizerB
     backend_tokenizer = cast(Tokenizer, backend_tokenizer)
     _replace_normalizer(backend_tokenizer)
     _replace_post_processor(backend_tokenizer)
-    tokenizer.backend_tokenizer = backend_tokenizer
     return tokenizer
 
 

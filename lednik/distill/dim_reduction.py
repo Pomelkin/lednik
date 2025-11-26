@@ -7,22 +7,32 @@ from torch import nn
 
 @dataclass
 class DimReductionOutput:
+    """Data class to hold the output of a dimensionality reduction process."""
+
     reduced_data: torch.Tensor
     reconstruction_loss: torch.Tensor | None = None
 
 
 class Autoencoder(nn.Module):
+    """
+    A simple Autoencoder neural network for dimensionality reduction.
+
+    This module implements a symmetric autoencoder architecture using RMSNorm normalization
+    and GELU activation functions. It projects high-dimensional input data into a lower-dimensional
+    latent space and attempts to reconstruct the original input from this latent representation.
+    """
+
     def __init__(self, input_dim: int, latent_dim: int) -> None:
         """Initialize Autoencoder with input and latent dimensions."""
         super().__init__()
         self.encoder_norm = nn.RMSNorm(input_dim)
         self.encoder = nn.Sequential(
-            nn.GELU(),
+            nn.GELU("tanh"),
             nn.Linear(input_dim, latent_dim, bias=False),
         )
         self.decoder_norm = nn.RMSNorm(latent_dim)
         self.decoder = nn.Sequential(
-            nn.GELU(),
+            nn.GELU("tanh"),
             nn.Linear(latent_dim, input_dim, bias=False),
         )
         self.apply(self._init_weights)
@@ -58,6 +68,14 @@ class Autoencoder(nn.Module):
 
 
 class PCA(nn.Module):
+    """
+    Principal Component Analysis (PCA) implementation as a PyTorch Module.
+
+    This class performs linear dimensionality reduction using Singular Value Decomposition (SVD)
+    of the data to project it to a lower dimensional space. It is designed to be compatible
+    with PyTorch's neural network modules and supports optional compilation for performance.
+    """
+
     def __init__(self, n_components: int, compile_transform: bool = False) -> None:
         """Initialize PCA with the number of components."""
         super().__init__()
@@ -136,7 +154,7 @@ class PCA(nn.Module):
         S = S[: self.n_components]
         self.components_ = Vh[: self.n_components, :]
 
-        Z = U * S
+        Z = U * S.unsqueeze(0)
 
         self.explained_variance_ = ((S**2) / (n_samples - 1)).to(original_dtype)
         total_var = X_centered.pow(2).sum() / (n_samples - 1)

@@ -12,7 +12,7 @@ def extract_embeddings(
     model: PreTrainedModel,
     vocab_tokens: list[list[int]] | list[torch.Tensor],
     pad_token: int,
-    pooling: Literal["mean", "last"],
+    pooling: Literal["mean", "last", "cls"],
     batch_size: int,
     device: str | torch.device,
 ) -> torch.Tensor:
@@ -35,25 +35,26 @@ def extract_embeddings(
     """
     model.eval()
 
-    inputs = [
+    inputs_l = [
         torch.tensor(tokens, dtype=torch.long)
         if isinstance(tokens, list)
         else tokens.long()
         for tokens in vocab_tokens
     ]
 
-    progress_bar = tqdm(total=len(inputs), desc="Extracting embeddings", unit="token")
+    progress_bar = tqdm(total=len(inputs_l), desc="Extracting embeddings", unit="token")
     embeddings_list = []
-    for i in range(0, len(inputs), batch_size):
-        batch_inputs = inputs[i : i + batch_size]
-        inputs = torch.nn.utils.rnn.pad_sequence(
+    for i in range(0, len(inputs_l), batch_size):
+        batch_inputs = inputs_l[i : i + batch_size]
+
+        inputs_t = torch.nn.utils.rnn.pad_sequence(
             batch_inputs,
             batch_first=True,
             padding_value=pad_token,
         ).to(device)
-        attention_mask = (inputs != pad_token).to(device, dtype=torch.long)
+        attention_mask = (inputs_t != pad_token).to(device, dtype=torch.long)
 
-        outputs = model(input_ids=inputs, attention_mask=attention_mask)
+        outputs = model(input_ids=inputs_t, attention_mask=attention_mask)
         last_hidden_state: torch.Tensor = outputs[0]
 
         match pooling:
@@ -67,6 +68,8 @@ def extract_embeddings(
                 batch_embeddings = last_hidden_state[
                     torch.arange(last_hidden_state.size(0)), lengths
                 ]
+            case "cls":
+                batch_embeddings = last_hidden_state[:, 0, :]
             case _:
                 raise ValueError(f"Unsupported pooling method: {pooling}")
 

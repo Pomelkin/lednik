@@ -7,19 +7,19 @@ from typing import TypeVar
 
 import torch
 import torch.nn.functional as F
+from kostyl.utils import setup_logger
 from torch import nn
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
-from transformers.utils import logging
 
 from .outputs import StaticEmbeddingsOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
 from lednik.static_embeddings.config import StaticEmbeddingsConfig
 
-logger = logging.get_logger(__name__)
+logger = setup_logger(fmt="only_message")
 
 TPreTrainedModel = TypeVar("TPreTrainedModel", bound="PreTrainedModel")
 
@@ -74,7 +74,7 @@ class StaticEmbeddingsPreTrainedModel(PreTrainedModel):
         use_safetensors: bool | None = None,
         weights_only: bool = True,
         load_tokenizer: bool = True,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ) -> TPreTrainedModel:
         model = super().from_pretrained(
             pretrained_model_name_or_path,
@@ -91,15 +91,22 @@ class StaticEmbeddingsPreTrainedModel(PreTrainedModel):
             **kwargs,
         )
         if load_tokenizer:
-            tokenizer = AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path,
-                cache_dir=cache_dir,
-                use_fast=True,
-                revision=revision,
-                local_files_only=local_files_only,
-                token=token,
-            )
-            model.add_tokenizer(tokenizer)
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    pretrained_model_name_or_path,
+                    cache_dir=cache_dir,
+                    use_fast=True,
+                    revision=revision,
+                    local_files_only=local_files_only,
+                    token=token,
+                )
+                model.add_tokenizer(tokenizer)
+            except (TypeError, FileNotFoundError) as e:
+                logger.warning(
+                    "Tokenizer could not be loaded. Make sure the tokenizer files are present."
+                )
+                logger.debug(f"Tokenizer loading error: {e}")
+                pass
         return model
 
     def save_pretrained(  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -192,13 +199,29 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         self.tokenizer = tokenizer
         return
 
+    def get_tokenizer(self) -> PreTrainedTokenizerBase:
+        """Get tokenizer from the model."""
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is not set for the model.")
+        return self.tokenizer
+
     def update_embeddings(self, new_embeddings: torch.Tensor) -> None:
         """Replace the current model embeddings weights with given one."""
+        if new_embeddings.size() != self.embeddings.weight.data.size():
+            raise ValueError(
+                f"new_embeddings should have size {self.embeddings.weight.data.size()}, "
+                f"but got {new_embeddings.size()}."
+            )
         self.embeddings.weight.data = new_embeddings.clone()
         return
 
     def update_pos_weights(self, new_pos_weights: torch.Tensor) -> None:
         """Replace the current model position weights with given one."""
+        if new_pos_weights.dim() != self.token_pos_weights.dim():
+            raise ValueError(
+                f"new_pos_weights should have {self.token_pos_weights.dim()} dimensions, "
+                f"but got {new_pos_weights.dim()}."
+            )
         self.token_pos_weights.data = new_pos_weights.clone()
         return
 
@@ -282,19 +305,19 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         return result
 
     def forward(
-        self, input_ids: torch.Tensor, mask: torch.Tensor
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> StaticEmbeddingsOutput:
         """Forward pass."""
         if input_ids.dtype != torch.long:
             input_ids = input_ids.long()
         embeddings = self.embeddings(input_ids)
         embeddings = self.dropout(embeddings)
-        masked_embeddings = embeddings * mask.unsqueeze(-1)
+        masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
 
         token_weights = self.token_pos_weights[input_ids]  # type: ignore
-        sentence_embeddings = (masked_embeddings * token_weights).sum(dim=1) / mask.sum(
-            dim=1, keepdim=True
-        )
+        sentence_embeddings = (masked_embeddings * token_weights).sum(
+            dim=1
+        ) / attention_mask.sum(dim=1, keepdim=True)
         output = StaticEmbeddingsOutput(
             embeddings=embeddings,
             pos_weights=token_weights,
@@ -315,13 +338,13 @@ class StaticEmbeddingsClassificationHead(nn.Module):
             else nn.Identity()
         )
         self.norm = nn.RMSNorm(config.embedding_dim)
-        self.classifier = nn.Linear(config.embedding_dim, config.num_classes)
+        self.head = nn.Linear(config.embedding_dim, config.num_classes)
         return
 
     def forward(self, sentence_embeddings: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
         x = F.relu(self.dropout(self.norm(sentence_embeddings)))
-        logits = self.classifier(x)
+        logits = self.head(x)
         return logits
 
 
@@ -346,18 +369,20 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
     def forward(
         self,
         input_ids: torch.Tensor,
-        mask: torch.Tensor,
+        attention_mask: torch.Tensor,
         labels: torch.Tensor | None = None,
     ) -> StaticEmbeddingsSequenceClassifierOutput:
         """Forward pass."""
         if input_ids.dtype != torch.long:
             input_ids = input_ids.long()
-        embeddings_output = self.model(input_ids, mask)
+        embeddings_output = self.model(input_ids, attention_mask)
         logits = self.classifier(embeddings_output.sentence_embeddings)
+
         if labels is not None:
             loss = self.loss_function(logits, labels)
         else:
             loss = None
+
         output = StaticEmbeddingsSequenceClassifierOutput(
             logits=logits,
             loss=loss,

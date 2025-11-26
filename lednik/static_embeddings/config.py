@@ -11,13 +11,14 @@ class StaticEmbeddingsConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size: int,
-        pad_token_id: int,
+        vocab_size: int = 30522,
+        pad_token_id: int = 30125,
         embedding_dim: int = 300,
         embedding_dropout: float = 0.0,
         classifier_dropout: float = 0.0,
+        num_classes: int = 1,
         dtype: Literal["float32", "float16", "bfloat16"] = "bfloat16",
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ) -> None:
         """
         Initialize the configuration for static embeddings.
@@ -30,6 +31,7 @@ class StaticEmbeddingsConfig(PretrainedConfig):
             pad_token_id: The ID of the padding token. Defaults to None.
             classifier_dropout: Classifier dropout probability. Defaults to 0.0.
             dtype: The data type for the embeddings. Defaults to "float32".
+            num_classes: Number of classes for classification tasks. Defaults to 1.
             kwargs: Additional keyword arguments passed to the parent class.
 
         """
@@ -39,5 +41,6 @@ class StaticEmbeddingsConfig(PretrainedConfig):
         self.embedding_dropout = embedding_dropout
         self.pad_token_id = pad_token_id
         self.classifier_dropout = classifier_dropout
+        self.num_classes = num_classes
         self.dtype = dtype
         return
