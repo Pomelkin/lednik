@@ -2,6 +2,7 @@ from typing import Literal
 
 import lightning as L
 import torch
+from clearml import Task
 from kostyl.utils.logging import setup_logger
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
@@ -26,8 +27,30 @@ def finetune(
     trainer: L.Trainer,
     train_cfg: TrainConfig,
     data: L.LightningDataModule | dict[str, torch.utils.data.DataLoader],
+    task: Task | None = None,
 ) -> StaticEmbeddingsModel:
-    """Distill static embeddings from pretrained transformer with CosineEmbeddingLoss."""
+    """
+    Distill static embeddings from a pretrained transformer using CosineEmbeddingLoss.
+
+    This function orchestrates the distillation process by wrapping the teacher model,
+    static model, and training configuration into a `FineTuningModule` (a LightningModule)
+    and executing the training loop via the provided PyTorch Lightning Trainer.
+
+    Args:
+        teacher (PreTrainedModel): The source transformer model to distill knowledge from.
+        tokenizer (PreTrainedTokenizerBase): The tokenizer corresponding to the teacher model.
+        static_model (StaticEmbeddingsModel): The target model that will learn static embeddings.
+        trainer (L.Trainer): The PyTorch Lightning Trainer instance to manage the training process.
+        train_cfg (TrainConfig): Configuration object containing hyperparameters for training.
+        data (L.LightningDataModule | dict[str, torch.utils.data.DataLoader]): The training data,
+            provided either as a LightningDataModule or a dictionary of DataLoaders.
+        task (Task | None, optional): An optional specific task configuration defining how
+            embeddings are processed or evaluated. Defaults to None.
+
+    Returns:
+        StaticEmbeddingsModel: The trained static embeddings model after the distillation process.
+
+    """
     if isinstance(data, dict):
         data_container = data
     else:
@@ -38,6 +61,7 @@ def finetune(
         static_model=static_model,
         teacher=teacher,
         tokenizer=tokenizer,
+        task=task,
     )
     trainer.fit(model=finetuning_module, **data_container)  # type: ignore
 
@@ -55,7 +79,35 @@ def distill(
     modify_tokenizer: bool = True,
     sif_coefficient: float | None = 1e-4,
 ) -> StaticEmbeddingsModel:
-    """Distill static embeddings from pretrained transformer with CosineEmbeddingLoss."""
+    """
+    Distill static embeddings from pretrained transformer with CosineEmbeddingLoss.
+
+    This function extracts embeddings from a pretrained transformer model's vocabulary,
+    reduces their dimensionality using PCA, and creates a static embeddings model.
+
+    Args:
+        model: A pretrained transformer model to extract embeddings from.
+        tokenizer: The tokenizer associated with the pretrained model.
+        embedding_dim: The target dimensionality for the output embeddings after PCA.
+        pooling: The pooling strategy to use when extracting embeddings.
+            Must be one of "mean", "last", or "cls".
+        embedding_extraction_batch_size: Batch size for extracting embeddings from the model.
+        device: The device to run computations on (e.g., "cuda", "cpu").
+        dtype: The data type for model computations. Defaults to "bfloat16".
+        modify_tokenizer: Whether to customize the tokenizer for the static model.
+            Defaults to True.
+        sif_coefficient: Coefficient for Smooth Inverse Frequency (SIF) weighting.
+            If None, uniform weights are used. Defaults to 1e-4.
+
+    Returns:
+        StaticEmbeddingsModel: A static embeddings model containing the distilled
+            embeddings with the associated tokenizer.
+
+    Note:
+        The function temporarily changes the default PyTorch dtype during execution
+        and restores it before returning.
+
+    """
     if isinstance(device, str):
         device = torch.device(device)
     if isinstance(dtype, str):
@@ -65,7 +117,7 @@ def distill(
 
     original_default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype_)
-    model.to(dtype=dtype_, device=device)  # type: ignore
+    model.to(dtype=dtype_, device=device).eval()  # type: ignore
 
     vocab_tokens_ids = [[tok_id] for tok_id in tokenizer.get_vocab().values()]
     vocab_len = len(vocab_tokens_ids)

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from typing import override
 
+import plotly.graph_objects as go
 import torch
 import torch.distributed as dist
+from clearml import Task
 from kostyl.ml_core.dist_utils import scale_lrs_by_world_size
 from kostyl.ml_core.lightning.extenstions import KostylLightningModule
 from kostyl.ml_core.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
+from plotly.subplots import make_subplots
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torchmetrics import CosineSimilarity
@@ -38,6 +42,20 @@ class _BaseStepOutput:
     reconstruction_loss: torch.Tensor | None = None
 
 
+@dataclass
+class _EvalResult:
+    teacher_embeddings: torch.Tensor
+    student_embeddings: torch.Tensor
+    labels: torch.Tensor
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if not isinstance(value, torch.Tensor):
+            raise ValueError(f"Attribute {name} must be a torch.Tensor")
+        value = value.detach().cpu()
+        super().__setattr__(name, value)
+        return
+
+
 def metric_factory() -> MetricCollection:
     """Create a collection of metrics for evaluation."""
     collection = MetricCollection(
@@ -59,6 +77,7 @@ class FineTuningModule(KostylLightningModule):
         static_model: StaticEmbeddingsModel,
         train_cfg: TrainConfig,
         tokenizer: PreTrainedTokenizerBase,
+        task: Task | None = None,
     ) -> None:
         """
         Initialize Fine-Tuning Lightning Module.
@@ -68,6 +87,7 @@ class FineTuningModule(KostylLightningModule):
             static_model : The static embeddings model to be trained.
             train_cfg : Training configuration.
             tokenizer : The tokenizer corresponding to the teacher model.
+            task : ClearML Task for logging (optional).
 
         """
         super().__init__()
@@ -95,6 +115,9 @@ class FineTuningModule(KostylLightningModule):
         self.tokenizer = tokenizer
         self.train_metrics = metric_factory()
         self.val_metrics = metric_factory()
+        self.task = task
+
+        self.eval_outputs: list[_EvalResult] = []
         return
 
     def freeze_teacher(self) -> None:
@@ -177,8 +200,10 @@ class FineTuningModule(KostylLightningModule):
             teacher_embeddings: torch.Tensor = teacher_outputs[0]
 
         flattened_input_ids = batch["input_ids"].flatten()
+
         special_tokens_mask_list = self.tokenizer.get_special_tokens_mask(
-            flattened_input_ids.tolist(), already_has_special_tokens=True
+            flattened_input_ids.tolist(),
+            already_has_special_tokens=True,
         )
         special_tokens_mask = torch.tensor(special_tokens_mask_list, dtype=torch.bool)
 
@@ -270,6 +295,15 @@ class FineTuningModule(KostylLightningModule):
             metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
             metrics["semantic_loss"] = output.semantic_loss.detach()
 
+        if self.trainer.is_global_zero:
+            self.eval_outputs.append(
+                _EvalResult(
+                    teacher_embeddings=output.teacher_embeddings,
+                    student_embeddings=output.student_embeddings,
+                    labels=batch["labels"],
+                )
+            )
+
         self.log_dict(
             metrics,
             prog_bar=False,
@@ -289,3 +323,73 @@ class FineTuningModule(KostylLightningModule):
             sync_dist=True,
         )
         return output.loss
+
+    @override
+    def on_validation_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and self.task is not None:
+            all_teacher_embeddings = torch.cat(
+                [output.teacher_embeddings for output in self.eval_outputs],
+                dim=0,
+            )
+            all_student_embeddings = torch.cat(
+                [output.student_embeddings for output in self.eval_outputs],
+                dim=0,
+            )
+            all_labels = torch.cat(
+                [output.labels for output in self.eval_outputs],
+                dim=0,
+            )
+            pca = PCA(n_components=2)
+
+            teacher_embeddings_2d = pca.transform(
+                all_teacher_embeddings.to(self.device)
+            ).reduced_data.cpu()
+            student_embeddings_2d = pca.transform(
+                all_student_embeddings.to(self.device)
+            ).reduced_data.cpu()
+
+            fig = make_subplots(
+                rows=1,
+                cols=2,
+                subplot_titles=("Teacher embeddings", "Student embeddings"),
+                horizontal_spacing=0.08,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=teacher_embeddings_2d[:, 0].float(),
+                    y=teacher_embeddings_2d[:, 1].float(),
+                    mode="markers",
+                    marker={"color": all_labels.tolist(), "showscale": False},
+                    name="Teacher",
+                ),
+                row=1,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=student_embeddings_2d[:, 0].float(),
+                    y=student_embeddings_2d[:, 1].float(),
+                    mode="markers",
+                    marker={"color": all_labels.tolist(), "showscale": False},
+                    name="Student",
+                ),
+                row=1,
+                col=2,
+            )
+
+            fig.update_xaxes(title_text="dim0", row=1, col=1)
+            fig.update_yaxes(title_text="dim1", row=1, col=1)
+            fig.update_xaxes(title_text="dim0", row=1, col=2)
+            fig.update_yaxes(title_text="dim1", row=1, col=2)
+
+            self.task.get_logger().report_plotly(
+                title="Embeddings Plots",
+                series="Embeddings Teacher vs Student Scatter",
+                figure=fig,
+                iteration=self.global_step,
+            )
+            self.eval_outputs = []
+
+        if dist.is_initialized():
+            dist.barrier()
+        return
