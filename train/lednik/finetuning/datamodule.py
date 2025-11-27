@@ -52,10 +52,10 @@ class DataModule(L.LightningDataModule):
 
         self.train_clearml_datasets = collect_clearml_datasets(data_cfg.train_datasets)
         self.val_clearml_datasets = collect_clearml_datasets(data_cfg.val_datasets)
-        self.all_clearml_datasets = {
-            **self.train_clearml_datasets,
-            **self.val_clearml_datasets,
-        }
+        self.all_clearml_datasets = [
+            *self.train_clearml_datasets.values(),
+            *self.val_clearml_datasets.values(),
+        ]
         self.batch_size = data_cfg.batch_size
         self.num_workers = data_cfg.num_workers
         self.train_tokens_column = data_cfg.train_tokens_column
@@ -202,6 +202,7 @@ class DataModule(L.LightningDataModule):
                 pad_token_id=self.pad_token_id,
                 tokens_key=self.val_tokens_column,
                 label_key=self.val_label_column,
+                max_length=self.max_length,
             ),
         )
 
@@ -249,40 +250,44 @@ def train_collator(
 
 
 def val_collator(
-    batch: list[dict[str, list[int]]],
+    batch: list[dict[str, list[int] | int]],
     pad_token_id: int,
     tokens_key: str,
+    max_length: int,
     label_key: str,
 ) -> dict[str, torch.Tensor]:
     """
     Collates a batch of validation data into padded tensors.
 
     Args:
-        batch (list[dict[str, list[int]]]): A list of data items, where each item is a
+        batch (list[dict[str, list[int] | int]]): A list of data items, where each item is a
             dictionary containing token IDs and labels.
         pad_token_id (int): The integer ID used for padding sequences.
         tokens_key (str): The dictionary key used to access token IDs in the batch items.
         label_key (str): The dictionary key used to access labels in the batch items.
+        max_length (int): The maximum allowed sequence length. Sequences longer
+            than this will be truncated.
 
     Returns:
         dict[str, torch.Tensor]: A dictionary containing the collated batch with keys:
             - "input_ids": Padded tensor of input token IDs (batch_size, max_seq_len).
             - "attention_mask": Tensor indicating non-padded elements (batch_size, max_seq_len).
-            - "labels": Stacked tensor of labels (batch_size, ...).
+            - "labels": Tensor of labels (batch_size,).
 
     """
-    input_ids_list = []
-    labels_list = []
+    input_ids_list: list[torch.Tensor] = []
+    labels_list: list[int] = []
     for item in batch:
         input_ids_list.append(torch.tensor(item[tokens_key], dtype=torch.long))
-        labels_list.append(torch.tensor(item[label_key], dtype=torch.long))
+        labels_list.append(item[label_key])  # type: ignore
 
     input_ids = torch.nn.utils.rnn.pad_sequence(
         input_ids_list,
         batch_first=True,
         padding_value=pad_token_id,
     )
-    labels = torch.stack(labels_list, dim=0)
+    input_ids = input_ids[:, :max_length]
+    labels = torch.tensor(labels_list, dtype=torch.long)
     attention_mask = (input_ids != pad_token_id).long()
     return {
         "input_ids": input_ids,
