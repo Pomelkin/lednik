@@ -37,11 +37,21 @@ distill = [
 [tool.uv]
 default-groups = ["dev", "distill"]
 
-[tool.ty.environment]
-extra-paths = ["./types"]
+[tool.pyright]
+typeCheckingMode = "standard" # "off" | "basic" | "standard" | "strict"
+reportMissingTypeStubs = false
+reportIncompatibleMethodOverride = false
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "__pycache__",
+    "migrations",
+    "notebooks",
+]
+
 
 [tool.ruff]
-
 [tool.ruff.lint]
 exclude = [
     ".venv",
