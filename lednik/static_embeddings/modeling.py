@@ -19,6 +19,7 @@ from .outputs import StaticEmbeddingsOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
 from lednik.static_embeddings.config import StaticEmbeddingsConfig
 
+
 logger = setup_logger(fmt="only_message")
 
 TPreTrainedModel = TypeVar("TPreTrainedModel", bound="PreTrainedModel")
@@ -109,7 +110,7 @@ class StaticEmbeddingsPreTrainedModel(PreTrainedModel):
                 pass
         return model
 
-    def save_pretrained(  # pyright: ignore[reportIncompatibleMethodOverride]
+    def save_pretrained(  # type: ignore
         self,
         save_directory: str | os.PathLike,
         is_main_process: bool = True,
@@ -282,10 +283,10 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
             input_ids = torch.nn.utils.rnn.pad_sequence(
                 input_ids_nc,
                 batch_first=True,
-                padding_value=self.config.pad_token_id,
+                padding_value=int(self.config.pad_token_id),  # type: ignore
             ).to(self.device)
 
-            mask = (input_ids != self.config.pad_token_id).long()
+            mask = (input_ids != int(self.config.pad_token_id)).long()  # type: ignore
             batch_output: StaticEmbeddingsOutput = self(input_ids, mask)
             outputs.append(batch_output)
             if pg is not None:
@@ -424,7 +425,7 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
         input_tokens = torch.nn.utils.rnn.pad_sequence(
             input_tokens_list,
             batch_first=True,
-            padding_value=self.config.pad_token_id,
+            padding_value=int(self.config.pad_token_id),  # type: ignore
         ).to(self.device)
 
         batch_size = batch_size if batch_size > 0 else len(input_tokens)
@@ -437,7 +438,7 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
         outputs: list[StaticEmbeddingsSequenceClassifierOutput] = []
         for i in range(0, len(input_tokens), batch_size):
             input_ids = input_tokens[i : i + batch_size]
-            mask = (input_ids != self.config.pad_token_id).long()
+            mask = (input_ids != int(self.config.pad_token_id)).long()  # type: ignore
             batch_output: StaticEmbeddingsSequenceClassifierOutput = self(
                 input_ids, mask
             )

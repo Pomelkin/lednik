@@ -30,6 +30,7 @@ from lednik.distill.training.configs import TrainConfig
 from lednik.static_embeddings.modeling import StaticEmbeddingsModel
 from lednik.static_embeddings.outputs import StaticEmbeddingsOutput
 
+
 logger = setup_logger(add_rank=True)
 
 

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
 
+
 logger = setup_logger(fmt="only_message")
 
 

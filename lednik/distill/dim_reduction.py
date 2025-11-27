@@ -88,13 +88,6 @@ class PCA(nn.Module):
         return
 
     @property
-    def components(self) -> torch.Tensor:
-        """Get PCA components."""
-        if self.components_ is None:
-            raise ValueError("Must call transform() first")
-        return self.components_
-
-    @property
     def mean(self) -> torch.Tensor:
         """Get mean of training data."""
         if self.mean_ is None:
