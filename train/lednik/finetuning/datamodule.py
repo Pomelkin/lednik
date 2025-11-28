@@ -82,20 +82,28 @@ class DataModule(L.LightningDataModule):
 
     @staticmethod
     def _collect_split_paths(
-        datasets_paths: dict[str, Path], split_name: str
+        datasets_paths: dict[str, Path],
+        split_name: str | None = None,
     ) -> dict[str, Path]:
-        split_paths: dict[str, Path] = {}
-        for name, path in datasets_paths.items():
-            found_paths = list(path.glob(f"**/{split_name}/"))
+        if split_name is not None:
+            split_paths: dict[str, Path] = {}
+            for dataset_name, dataset_path in datasets_paths.items():
+                found_paths = list(dataset_path.glob(f"**/{split_name}/"))
 
-            if len(found_paths) == 0:
-                logger.warning(
-                    f"No {split_name} data found in dataset {name} at path {path}."
-                )
-                continue
+                if len(found_paths) == 0:
+                    logger.warning(
+                        f"No {split_name} data found in dataset {dataset_name} at path {dataset_path}."
+                    )
+                    continue
 
-            for p in found_paths:
-                split_paths[f"{name}/{p.parent.name}"] = p
+                for p in found_paths:
+                    split_paths[f"{dataset_name}/{p.name}"] = p
+        else:
+            split_paths: dict[str, Path] = {}
+            for dataset_name, dataset_path in datasets_paths.items():
+                for path in dataset_path.iterdir():
+                    if path.is_dir():
+                        split_paths[f"{dataset_name}/{path.name}"] = path
         return split_paths
 
     @staticmethod
@@ -114,7 +122,7 @@ class DataModule(L.LightningDataModule):
 
                 if len(col2remove) == len(ds.column_names):
                     raise ValueError(
-                        f"None of the specified data_columns {data_columns} found in dataset {name}."
+                        f"None of the specified data_columns {data_columns} found in {name}."
                     )
                 ds = ds.remove_columns(col2remove)
 
@@ -146,7 +154,7 @@ class DataModule(L.LightningDataModule):
 
         if len(split_paths) == 0:
             raise ValueError(
-                f"No {split_name} data found in any of the provided datasets: {list(datasets_paths.keys())}"
+                f"No {dataset_type} data found in any of the provided datasets: {list(datasets_paths.keys())}"
             )
 
         dataset = self._concat_splits(split_paths, data_columns=data_columns)

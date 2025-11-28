@@ -18,6 +18,7 @@ class StaticEmbeddingsConfig(PretrainedConfig):
         classifier_dropout: float = 0.0,
         num_classes: int = 1,
         dtype: Literal["float32", "float16", "bfloat16"] = "bfloat16",
+        tokenizer_modified: bool = True,
         **kwargs: Any,
     ) -> None:
         """
@@ -32,6 +33,7 @@ class StaticEmbeddingsConfig(PretrainedConfig):
             classifier_dropout: Classifier dropout probability. Defaults to 0.0.
             dtype: The data type for the embeddings. Defaults to "float32".
             num_classes: Number of classes for classification tasks. Defaults to 1.
+            tokenizer_modified: Whether the tokenizer has been modified. Defaults to True.
             kwargs: Additional keyword arguments passed to the parent class.
 
         """
@@ -42,5 +44,6 @@ class StaticEmbeddingsConfig(PretrainedConfig):
         self.pad_token_id = pad_token_id
         self.classifier_dropout = classifier_dropout
         self.num_classes = num_classes
+        self.tokenizer_modified = tokenizer_modified
         self.dtype = dtype
         return

@@ -143,8 +143,9 @@ def distill(
         "vocab_size": vocab_len,
         "pad_token_id": pad_token,
         "embedding_dim": embedding_dim,
-        "dropout_p": 0.0,
+        "embedding_dropout": 0.0,
         "dtype": dtype_,
+        "tokenizer_modified": modify_tokenizer,
     }
 
     static_model_cfg = StaticEmbeddingsConfig.from_dict(config_dict)
