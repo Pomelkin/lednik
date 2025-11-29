@@ -1,4 +1,3 @@
-from kostyl.ml.clearml.config_mixin import ClearMLConfigMixin
 from kostyl.ml.configs import CheckpointConfig
 from kostyl.ml.configs import EarlyStoppingConfig
 from kostyl.ml.configs import KostylBaseModel
@@ -6,10 +5,10 @@ from kostyl.ml.configs.training_settings import LightningTrainerParameters
 from pydantic import BaseModel
 from pydantic import Field
 
-from lednik.distill.training.configs import TrainConfig
+from lednik.distill.training.configs import TrainConfig as LednikTrainConfig
 
 
-class ClearMLTrainConfig(TrainConfig, KostylBaseModel, ClearMLConfigMixin):
+class TrainConfig(LednikTrainConfig, KostylBaseModel):
     """Configuration schema for the training process with ClearML functionality."""
 
     embedding_dropout: float = 0.0
@@ -27,7 +26,7 @@ class DataConfig(BaseModel):
     val_label_column: str
 
 
-class TrainingSettings(KostylBaseModel, ClearMLConfigMixin):
+class TrainingSettings(KostylBaseModel):
     """Training parameters configuration."""
 
     teacher_model_id: str
@@ -35,5 +34,5 @@ class TrainingSettings(KostylBaseModel, ClearMLConfigMixin):
     tokenizer_id: str
     trainer: LightningTrainerParameters
     early_stopping: EarlyStoppingConfig | None = None
-    checkpoint: CheckpointConfig
+    checkpoint: CheckpointConfig = CheckpointConfig()
     data: DataConfig

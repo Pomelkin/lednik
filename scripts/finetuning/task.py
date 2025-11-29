@@ -7,7 +7,6 @@ from typing import cast
 import click
 import lightning as L
 import torch
-from clearml import InputModel
 from clearml import Task
 from kostyl.ml.clearml.pulling_utils import get_model_from_clearml
 from kostyl.ml.clearml.pulling_utils import get_tokenizer_from_clearml
@@ -33,11 +32,12 @@ from transformers import PreTrainedModel
 
 from lednik.distill.training.training_modules import FineTuningModule
 from lednik.static_embeddings import StaticEmbeddingsModel
+from scripts.finetuning.configs import TrainConfig
+from scripts.finetuning.configs import TrainingSettings
+from scripts.finetuning.datamodule import DataModule
 
-from .configs import ClearMLTrainConfig
-from .configs import TrainingSettings
-from .datamodule import DataModule
 
+torch.set_float32_matmul_precision("high")
 
 logger = setup_logger(fmt="only_message")
 
@@ -136,7 +136,7 @@ def _setup_loggers(task: Task, root_path: Path) -> list[TensorBoardLogger]:
 def _setup_strategy(
     training_settings: TrainingSettings,
     auto_wrap_policy: set[type[Module]] | None = None,
-) -> Literal["single_device"] | FSDPStrategy | DDPStrategy:
+) -> Literal["auto"] | FSDPStrategy | DDPStrategy:
     if isinstance(training_settings.trainer.devices, list):
         num_devices = len(training_settings.trainer.devices)
     else:
@@ -174,7 +174,7 @@ def _setup_strategy(
         case SingleDeviceStrategyConfig():
             if num_devices != 1:
                 raise ValueError("SingleDevice strategy requires exactly one device.")
-            strategy = "single_device"
+            strategy = "auto"
         case _:
             raise ValueError(
                 f"Unsupported strategy type: {type(training_settings.trainer.strategy)}"
@@ -212,8 +212,8 @@ def _finetune_static_model(
         fast_dev_run_ = False
 
     task: Task = Task.init(
-        project_name="Lednik)",
-        task_name="Static Model Finetuning (Distillation)",
+        project_name="Lednik",
+        task_name="Static Model Finetuning",
         task_type=Task.TaskTypes.training,
         reuse_last_task_id=True,
         auto_connect_frameworks={
@@ -225,9 +225,9 @@ def _finetune_static_model(
         tags=["distillation"],
     )
 
-    ROOT_PATH = Path(__file__).parent.parent.parent.parent
+    ROOT_PATH = Path(__file__).parent.parent.parent
 
-    train_config = ClearMLTrainConfig.connect_as_dict(
+    train_config = TrainConfig.connect_as_dict(
         task, ROOT_PATH / "configs" / "finetuning" / "train_config.yaml"
     )
     train_settings = TrainingSettings.connect_as_file(
@@ -246,25 +246,25 @@ def _finetune_static_model(
     else:
         profiler = None
 
-    teacher = get_model_from_clearml(
+    teacher, _ = get_model_from_clearml(
         model_id=train_settings.teacher_model_id,
         model=AutoModel,  # pyright: ignore[reportArgumentType]
+        name="Teacher Model",
         task=task,
     )
     teacher = cast(PreTrainedModel, teacher)
-    student = get_model_from_clearml(
+    student, clearml_static_model = get_model_from_clearml(
         model_id=train_settings.student_model_id,
         model=StaticEmbeddingsModel,
         task=task,
+        name="Student Static Embeddings Model",
         embedding_dropout=train_config.embedding_dropout,
     )
-    clearml_static_model = InputModel(
-        model_id=train_settings.student_model_id,
-    )
 
-    tokenizer = get_tokenizer_from_clearml(
+    tokenizer, _ = get_tokenizer_from_clearml(
         model_id=train_settings.tokenizer_id,
         task=task,
+        name="Tokenizer",
     )
     datamodule = DataModule(data_cfg=train_settings.data, tokenizer=tokenizer)
 
