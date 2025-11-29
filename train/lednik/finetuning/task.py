@@ -1,23 +1,23 @@
 from dataclasses import astuple
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 from typing import Literal
+from typing import cast
 
 import click
 import lightning as L
 import torch
 from clearml import InputModel
 from clearml import Task
-from kostyl.ml_core.clearml.pulling_utils import get_model_from_clearml
-from kostyl.ml_core.clearml.pulling_utils import get_tokenizer_from_clearml
-from kostyl.ml_core.configs import DDPStrategyConfig
-from kostyl.ml_core.configs import FSDP1StrategyConfig
-from kostyl.ml_core.configs import SingleDeviceStrategyConfig
-from kostyl.ml_core.lightning.callbacks import ClearMLRegistryUploaderCallback
-from kostyl.ml_core.lightning.callbacks import setup_checkpoint_callback
-from kostyl.ml_core.lightning.callbacks import setup_early_stopping_callback
-from kostyl.ml_core.lightning.loggers.tb_logger import setup_tb_logger
+from kostyl.ml.clearml.pulling_utils import get_model_from_clearml
+from kostyl.ml.clearml.pulling_utils import get_tokenizer_from_clearml
+from kostyl.ml.configs import DDPStrategyConfig
+from kostyl.ml.configs import FSDP1StrategyConfig
+from kostyl.ml.configs import SingleDeviceStrategyConfig
+from kostyl.ml.lightning.callbacks import ClearMLRegistryUploaderCallback
+from kostyl.ml.lightning.callbacks import setup_checkpoint_callback
+from kostyl.ml.lightning.callbacks import setup_early_stopping_callback
+from kostyl.ml.lightning.loggers.tb_logger import setup_tb_logger
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.callbacks import EarlyStopping
@@ -31,11 +31,12 @@ from torch.nn import Module
 from transformers import AutoModel
 from transformers import PreTrainedModel
 
-from .config import ClearMLTrainConfig
-from .config import TrainingSettings
-from .datamodule import DataModule
 from lednik.distill.training.training_modules import FineTuningModule
 from lednik.static_embeddings import StaticEmbeddingsModel
+
+from .configs import ClearMLTrainConfig
+from .configs import TrainingSettings
+from .datamodule import DataModule
 
 
 logger = setup_logger(fmt="only_message")
@@ -255,6 +256,7 @@ def _finetune_static_model(
         model_id=train_settings.student_model_id,
         model=StaticEmbeddingsModel,
         task=task,
+        embedding_dropout=train_config.embedding_dropout,
     )
     clearml_static_model = InputModel(
         model_id=train_settings.student_model_id,

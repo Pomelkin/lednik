@@ -1,25 +1,77 @@
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
+from typing import Any
 from typing import Literal
 from typing import override
 
 import lightning as L
-import torch
-from kostyl.ml_core.clearml.dataset_utils import collect_clearml_datasets
-from kostyl.ml_core.clearml.dataset_utils import download_clearml_datasets
-from kostyl.ml_core.clearml.dataset_utils import get_datasets_paths
+from kostyl.ml.clearml.dataset_utils import collect_clearml_datasets
+from kostyl.ml.clearml.dataset_utils import download_clearml_datasets
+from kostyl.ml.clearml.dataset_utils import get_datasets_paths
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
 from torch.utils.data import DataLoader
+from transformers import DataCollatorWithPadding
 from transformers import PreTrainedTokenizerBase
+from transformers.data.data_collator import DataCollatorMixin
 
-from .config import DataConfig
-from datasets import concatenate_datasets
 from datasets import Dataset as HFDataset
+from datasets import concatenate_datasets
+
+from .configs import DataConfig
 
 
 logger = setup_logger(fmt="only_message")
+
+
+def align_keys_and_collate_batch(
+    batch: list[dict[str, Any]],
+    collator: DataCollatorWithPadding | DataCollatorMixin,
+    keys_mapping: dict[str, str] | None = None,
+    keys_to_keep: set[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Aligns keys in a batch of dictionaries according, then collates the batch using the provided collator.
+
+    Args:
+        batch (list[dict[str, Any]]): A list of dictionaries representing the data batch.
+        collator (DataCollatorWithPadding | DataCollatorMixin): A callable (usually a Hugging Face
+            DataCollator) that takes a list of dictionaries and returns a collated batch (e.g., padded tensors).
+        keys_mapping (dict[str, str] | None, optional): A dictionary mapping original keys to new keys.
+            Defaults to None.
+        keys_to_keep (set[str] | None, optional): A set of keys to retain as-is from the original items.
+            Defaults to None.
+
+    Returns:
+        dict[str, Any]: The collated batch returned by the `collator`.
+
+    """
+    if (keys_mapping is None) and (keys_to_keep is None):
+        raise ValueError("Either keys_mapping or keys_to_keep must be provided.")
+
+    if keys_mapping is None:
+        keys_mapping = {}
+    if keys_to_keep is None:
+        keys_to_keep = set()
+
+    keys_mapping = deepcopy(keys_mapping)  # To avoid modifying the original dict
+
+    keys_to_keep_mapping = {v: v for v in keys_to_keep}
+    keys_mapping.update(keys_to_keep_mapping)
+
+    aligned_batch = []
+    for item in batch:
+        new_item = {}
+        for k in item.keys():
+            new_key = keys_mapping.get(k, None)
+            if new_key is not None:
+                new_item[new_key] = item[k]
+        aligned_batch.append(new_item)
+
+    collated_batch = collator(aligned_batch)
+    return collated_batch
 
 
 class DataModule(L.LightningDataModule):
@@ -67,6 +119,15 @@ class DataModule(L.LightningDataModule):
         self.max_length = int(tokenizer.model_max_length)  # pyright: ignore[reportArgumentType]
         self.data_cfg = data_cfg
 
+        self.train_collator = DataCollatorWithPadding(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=8,
+        )
+        self.val_collator = DataCollatorWithPadding(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=8,
+        )
+
         self.train_datasets_paths: dict[str, Path] | None = None
         self.val_datasets_paths: dict[str, Path] | None = None
 
@@ -97,7 +158,7 @@ class DataModule(L.LightningDataModule):
                     continue
 
                 for p in found_paths:
-                    split_paths[f"{dataset_name}/{p.name}"] = p
+                    split_paths[f"{dataset_name}/{p.parent.name}"] = p
         else:
             split_paths: dict[str, Path] = {}
             for dataset_name, dataset_path in datasets_paths.items():
@@ -187,10 +248,9 @@ class DataModule(L.LightningDataModule):
             drop_last=True,
             num_workers=self.num_workers,
             collate_fn=partial(
-                train_collator,
-                pad_token_id=self.pad_token_id,
-                max_length=self.max_length,
-                tokens_key=self.train_tokens_column,
+                align_keys_and_collate_batch,
+                keys_mapping={self.train_tokens_column: "input_ids"},
+                collator=self.train_collator,
             ),
         )
 
@@ -206,99 +266,11 @@ class DataModule(L.LightningDataModule):
             drop_last=True,
             num_workers=self.num_workers,
             collate_fn=partial(
-                val_collator,
-                pad_token_id=self.pad_token_id,
-                tokens_key=self.val_tokens_column,
-                label_key=self.val_label_column,
-                max_length=self.max_length,
+                align_keys_and_collate_batch,
+                keys_mapping={
+                    self.val_tokens_column: "input_ids",
+                    self.val_label_column: "labels",
+                },
+                collator=self.val_collator,
             ),
         )
-
-
-def train_collator(
-    batch: list[dict[str, list[int]]],
-    pad_token_id: int,
-    max_length: int,
-    tokens_key: str,
-) -> dict[str, torch.Tensor]:
-    """
-    Collates a batch of examples into padded tensors for training.
-
-    Args:
-        batch (list[dict[str, list[int]]]): A list of examples, where each example
-            is a dictionary containing the token IDs under `tokens_key`.
-        pad_token_id (int): The integer ID used for padding sequences.
-        max_length (int): The maximum allowed sequence length. Sequences longer
-            than this will be truncated.
-        tokens_key (str): The key in the input dictionaries where the token ID
-            list is stored.
-
-    Returns:
-        dict[str, torch.Tensor]: A dictionary containing:
-            - "input_ids": A tensor of shape (batch_size, sequence_length) containing
-                padded token IDs.
-            - "attention_mask": A tensor of shape (batch_size, sequence_length)
-                containing 1s for valid tokens and 0s for padding tokens.
-
-    """
-    input_ids_list = [
-        torch.tensor(item[tokens_key], dtype=torch.long) for item in batch
-    ]
-    input_ids = torch.nn.utils.rnn.pad_sequence(
-        input_ids_list,
-        batch_first=True,
-        padding_value=pad_token_id,
-    )
-    input_ids = input_ids[:, :max_length]
-    attention_mask = (input_ids != pad_token_id).long()
-    return {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-    }
-
-
-def val_collator(
-    batch: list[dict[str, list[int] | int]],
-    pad_token_id: int,
-    tokens_key: str,
-    max_length: int,
-    label_key: str,
-) -> dict[str, torch.Tensor]:
-    """
-    Collates a batch of validation data into padded tensors.
-
-    Args:
-        batch (list[dict[str, list[int] | int]]): A list of data items, where each item is a
-            dictionary containing token IDs and labels.
-        pad_token_id (int): The integer ID used for padding sequences.
-        tokens_key (str): The dictionary key used to access token IDs in the batch items.
-        label_key (str): The dictionary key used to access labels in the batch items.
-        max_length (int): The maximum allowed sequence length. Sequences longer
-            than this will be truncated.
-
-    Returns:
-        dict[str, torch.Tensor]: A dictionary containing the collated batch with keys:
-            - "input_ids": Padded tensor of input token IDs (batch_size, max_seq_len).
-            - "attention_mask": Tensor indicating non-padded elements (batch_size, max_seq_len).
-            - "labels": Tensor of labels (batch_size,).
-
-    """
-    input_ids_list: list[torch.Tensor] = []
-    labels_list: list[int] = []
-    for item in batch:
-        input_ids_list.append(torch.tensor(item[tokens_key], dtype=torch.long))
-        labels_list.append(item[label_key])  # type: ignore
-
-    input_ids = torch.nn.utils.rnn.pad_sequence(
-        input_ids_list,
-        batch_first=True,
-        padding_value=pad_token_id,
-    )
-    input_ids = input_ids[:, :max_length]
-    labels = torch.tensor(labels_list, dtype=torch.long)
-    attention_mask = (input_ids != pad_token_id).long()
-    return {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "labels": labels,
-    }
