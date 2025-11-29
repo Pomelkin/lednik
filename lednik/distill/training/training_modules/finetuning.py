@@ -14,6 +14,7 @@ from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from plotly.subplots import make_subplots
+from torch import nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torchmetrics import CosineSimilarity
@@ -126,6 +127,12 @@ class FineTuningModule(KostylLightningModule):
     def grad_clip_val(self) -> float | None:
         return self.train_cfg.grad_clip_val
 
+    @property
+    @override
+    def model_instance(self) -> PreTrainedModel | nn.Module:
+        """Returns the underlying model."""
+        return self.static_model
+
     def freeze_teacher(self) -> None:
         """Freeze the teacher model parameters."""
         for param in self.teacher.parameters():
@@ -195,7 +202,10 @@ class FineTuningModule(KostylLightningModule):
             BaseStepOutput: An object containing the computed loss, teacher embeddings, and student embeddings.
 
         """
-        student_output: StaticEmbeddingsOutput = self.static_model(batch["input_ids"])
+        student_output: StaticEmbeddingsOutput = self.static_model(
+            batch["input_ids"],
+            batch["attention_mask"],
+        )
         student_embeddings = student_output.embeddings
 
         with torch.no_grad():
@@ -213,9 +223,9 @@ class FineTuningModule(KostylLightningModule):
         )
         special_tokens_mask = torch.tensor(special_tokens_mask_list, dtype=torch.bool)
 
-        B, T, C = student_embeddings.size()
-        student_embeddings = student_embeddings.view(B * T, C)[~special_tokens_mask]
-        teacher_embeddings = teacher_embeddings.view(B * T, C)[~special_tokens_mask]
+        B, T, _ = student_embeddings.size()
+        student_embeddings = student_embeddings.view(B * T, -1)[~special_tokens_mask]
+        teacher_embeddings = teacher_embeddings.view(B * T, -1)[~special_tokens_mask]
 
         if self.dim_reduction is not None:
             dim_reduce_output = self.dim_reduction.transform(teacher_embeddings)

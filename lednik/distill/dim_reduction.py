@@ -127,6 +127,10 @@ class PCA(nn.Module):
         """Apply the dimensionality reduction on X."""
         if X.dim() != 2:
             raise ValueError("Input data must be a 2D tensor.")
+        if self.n_components > min(X.shape):
+            raise ValueError(
+                f"n_components={self.n_components} must be <= min(n_samples, n_features)={min(X.shape)}"
+            )
         original_dtype = X.dtype
         X = X.to(torch.float64)
         n_samples, _ = X.shape
