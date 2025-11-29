@@ -1,0 +1,9 @@
+grad_clip_val: 1.0
+warmup_iters: 200
+warmup_lr: 5e-5
+base_lr: 9e-5
+weight_decay: 0.0
+teacher_dim_reduction_type: autoencoder
+student_dim: 300
+teacher_dim: 1024
+embedding_dropout: 0.2
