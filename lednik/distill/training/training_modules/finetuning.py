@@ -8,9 +8,9 @@ import plotly.graph_objects as go
 import torch
 import torch.distributed as dist
 from clearml import Task
-from kostyl.ml_core.dist_utils import scale_lrs_by_world_size
-from kostyl.ml_core.lightning.extenstions import KostylLightningModule
-from kostyl.ml_core.params_groups import create_params_groups
+from kostyl.ml.dist_utils import scale_lrs_by_world_size
+from kostyl.ml.lightning.extenstions import KostylLightningModule
+from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from plotly.subplots import make_subplots
@@ -24,8 +24,8 @@ from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
 from transformers.modeling_outputs import BaseModelOutput
 
-from lednik.distill.dim_reduction import Autoencoder
 from lednik.distill.dim_reduction import PCA
+from lednik.distill.dim_reduction import Autoencoder
 from lednik.distill.training.configs import TrainConfig
 from lednik.static_embeddings.modeling import StaticEmbeddingsModel
 from lednik.static_embeddings.outputs import StaticEmbeddingsOutput
@@ -94,7 +94,6 @@ class FineTuningModule(KostylLightningModule):
         super().__init__()
         self.teacher = teacher
         self.static_model = static_model
-        self.train_cfg = train_cfg
 
         match train_cfg.teacher_dim_reduction_type:
             case "pca":
@@ -112,6 +111,7 @@ class FineTuningModule(KostylLightningModule):
                 )
 
         self.loss = torch.nn.CosineEmbeddingLoss()
+        self.train_cfg = train_cfg
 
         self.tokenizer = tokenizer
         self.train_metrics = metric_factory()
@@ -120,6 +120,11 @@ class FineTuningModule(KostylLightningModule):
 
         self.eval_outputs: list[_EvalResult] = []
         return
+
+    @property
+    @override
+    def grad_clip_val(self) -> float | None:
+        return self.train_cfg.grad_clip_val
 
     def freeze_teacher(self) -> None:
         """Freeze the teacher model parameters."""
@@ -208,12 +213,9 @@ class FineTuningModule(KostylLightningModule):
         )
         special_tokens_mask = torch.tensor(special_tokens_mask_list, dtype=torch.bool)
 
-        student_embeddings = student_embeddings.flatten(start_dim=0, end_dim=1)[
-            ~special_tokens_mask
-        ]
-        teacher_embeddings = teacher_embeddings.flatten(start_dim=0, end_dim=1)[
-            ~special_tokens_mask
-        ]
+        B, T, C = student_embeddings.size()
+        student_embeddings = student_embeddings.view(B * T, C)[~special_tokens_mask]
+        teacher_embeddings = teacher_embeddings.view(B * T, C)[~special_tokens_mask]
 
         if self.dim_reduction is not None:
             dim_reduce_output = self.dim_reduction.transform(teacher_embeddings)
@@ -222,7 +224,8 @@ class FineTuningModule(KostylLightningModule):
             dim_reduce_output = None
 
         target = torch.ones(
-            student_embeddings.size(0), device=student_embeddings.device
+            student_embeddings.size(0),
+            device=student_embeddings.device,
         )
         semantic_loss = self.loss(
             student_embeddings,

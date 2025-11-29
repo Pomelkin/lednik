@@ -17,6 +17,7 @@ class TrainConfig(BaseModel):
     including learning rate schedules, dimension reduction strategies, and model dimensions.
     """
 
+    grad_clip_val: float | None = Field(default=None, gt=0, validate_default=False)
     warmup_iters: int | None = Field(default=None, gt=0, validate_default=False)
     warmup_lr: float | None = Field(default=None, gt=0, validate_default=False)
     base_lr: float
