@@ -343,18 +343,19 @@ class FineTuningModule(KostylLightningModule):
     @override
     def on_validation_epoch_end(self) -> None:
         if self.trainer.is_global_zero and self.task is not None:
-            all_teacher_embeddings = torch.cat(
-                [output.teacher_embeddings for output in self.eval_outputs],
-                dim=0,
-            )
-            all_student_embeddings = torch.cat(
-                [output.student_embeddings for output in self.eval_outputs],
-                dim=0,
-            )
-            all_labels = torch.cat(
-                [output.labels for output in self.eval_outputs],
-                dim=0,
-            )
+            num_outputs2log = 500
+            all_teacher_embeddings_list = []
+            all_student_embeddings_list = []
+            all_labels_list = []
+            for output in self.eval_outputs[:num_outputs2log]:
+                all_teacher_embeddings_list.append(output.teacher_embeddings)
+                all_student_embeddings_list.append(output.student_embeddings)
+                all_labels_list.append(output.labels)
+
+            all_teacher_embeddings = torch.cat(all_teacher_embeddings_list, dim=0)
+            all_student_embeddings = torch.cat(all_student_embeddings_list, dim=0)
+            all_labels = torch.cat(all_labels_list, dim=0)
+
             pca = PCA(n_components=2)
 
             teacher_embeddings_2d = pca.transform(
@@ -364,6 +365,7 @@ class FineTuningModule(KostylLightningModule):
                 all_student_embeddings.to(self.device)
             ).reduced_data.cpu()
 
+            labels_list = all_labels.tolist()
             fig = make_subplots(
                 rows=1,
                 cols=2,
@@ -372,10 +374,15 @@ class FineTuningModule(KostylLightningModule):
             )
             fig.add_trace(
                 go.Scatter(
-                    x=teacher_embeddings_2d[:, 0].float(),
-                    y=teacher_embeddings_2d[:, 1].float(),
+                    x=teacher_embeddings_2d[:, 0].float().tolist(),
+                    y=teacher_embeddings_2d[:, 1].float().tolist(),
                     mode="markers",
-                    marker={"color": all_labels.tolist(), "showscale": False},
+                    marker={
+                        "color": labels_list,
+                        "colorscale": "Viridis",
+                        "showscale": True,
+                        "opacity": 0.7,
+                    },
                     name="Teacher",
                 ),
                 row=1,
@@ -383,10 +390,15 @@ class FineTuningModule(KostylLightningModule):
             )
             fig.add_trace(
                 go.Scatter(
-                    x=student_embeddings_2d[:, 0].float(),
-                    y=student_embeddings_2d[:, 1].float(),
+                    x=student_embeddings_2d[:, 0].float().tolist(),
+                    y=student_embeddings_2d[:, 1].float().tolist(),
                     mode="markers",
-                    marker={"color": all_labels.tolist(), "showscale": False},
+                    marker={
+                        "color": labels_list,
+                        "colorscale": "Viridis",
+                        "showscale": False,
+                        "opacity": 0.7,
+                    },
                     name="Student",
                 ),
                 row=1,
