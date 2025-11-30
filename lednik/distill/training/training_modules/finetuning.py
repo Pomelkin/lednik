@@ -237,6 +237,8 @@ class FineTuningModule(KostylLightningModule):
             student_embeddings.size(0),
             device=student_embeddings.device,
         )
+        student_embeddings = student_embeddings.contiguous()
+        teacher_embeddings = teacher_embeddings.contiguous()
         semantic_loss = self.loss(
             student_embeddings,
             teacher_embeddings,
