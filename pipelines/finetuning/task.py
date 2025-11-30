@@ -32,9 +32,9 @@ from transformers import PreTrainedModel
 
 from lednik.distill.training.training_modules import FineTuningModule
 from lednik.static_embeddings import StaticEmbeddingsModel
-from scripts.finetuning.configs import TrainConfig
-from scripts.finetuning.configs import TrainingSettings
-from scripts.finetuning.datamodule import DataModule
+from pipelines.finetuning.configs import TrainConfig
+from pipelines.finetuning.configs import TrainingSettings
+from pipelines.finetuning.datamodule import DataModule
 
 
 torch.set_float32_matmul_precision("high")
