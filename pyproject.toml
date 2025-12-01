@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "kernels>=0.11.1",
-    "kostyl-toolkit[ml-core]>=0.1.1",
+    "kostyl-toolkit[ml-core]>=0.1.20",
     "loguru>=0.7.3",
     "orjson>=3.11.3",
     "pydantic>=2.12.3",

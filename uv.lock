@@ -1204,15 +1204,15 @@ wheels = [
 
 [[package]]
 name = "kostyl-toolkit"
-version = "0.1.19"
+version = "0.1.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "case-converter" },
     { name = "loguru" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/03/f37fceaa27899bd8bb5e28cbe8c914fcab5de7bca0f330ebf4d63e970551/kostyl_toolkit-0.1.19.tar.gz", hash = "sha256:034344db2844d8cc50d28a9b233e9b8883a323b3e16de6c683de01e2c39c875b", size = 20708, upload-time = "2025-11-30T13:39:02.583Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/78/7b0c9c4ca694892eb0f71de5b59c7eff1739084a9bccc2c52418229d7635/kostyl_toolkit-0.1.20.tar.gz", hash = "sha256:bd9b10876870c36934a25b831efa01ad667f2c862db2197ea254cb8c6b69fda4", size = 20927, upload-time = "2025-12-01T13:45:06.073Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/5a/b6e253e10dc6a5f18550932cbd009b74d63db2c68f56d18634521f254dc4/kostyl_toolkit-0.1.19-py3-none-any.whl", hash = "sha256:791216d26c0dbe4f0f1d91d283d900904f22865d133333bb880fdc91a959c272", size = 31211, upload-time = "2025-11-30T13:39:01.564Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/4b/ce696af182d885bdf7b51ba9d08f7091569b3c9815ffb4e873c6fea9a335/kostyl_toolkit-0.1.20-py3-none-any.whl", hash = "sha256:210b8c5e3d55f77993554bff47d90202d075feb4177725add8fb36cf01fbdf81", size = 31427, upload-time = "2025-12-01T13:45:04.998Z" },
 ]
 
 [package.optional-dependencies]
@@ -1271,7 +1271,7 @@ distill = [
 [package.metadata]
 requires-dist = [
     { name = "kernels", specifier = ">=0.11.1" },
-    { name = "kostyl-toolkit", extras = ["ml-core"], specifier = ">=0.1.1" },
+    { name = "kostyl-toolkit", extras = ["ml-core"], specifier = ">=0.1.20" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "orjson", specifier = ">=3.11.3" },
     { name = "pydantic", specifier = ">=2.12.3" },
