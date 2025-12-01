@@ -4,8 +4,8 @@ data:
     Cultura-Ru(train): f3f9ac08e9054d39928853d797a4ab8d
   val_datasets:
     Telegram-Financial-Sentiment(val): 15a6b40eb988463a9654e5109f784619
-  batch_size: 4
-  num_workers: 4
+  batch_size: 2
+  num_workers: 10
   train_tokens_column: USER-bge-m3
   val_tokens_column: USER-bge-m3
   val_label_column: label
@@ -15,12 +15,18 @@ trainer:
   max_epochs: 1
   strategy:
     type: "single_device"
-  val_check_interval: 0.25
+  val_check_interval: 0.1
   devices: 1
   precision: bf16-true
   log_every_n_steps: 25
   limit_train_batches: 10
   limit_val_batches: 10
+
+early_stopping:
+  monitor: "val_loss"
+  patience: 3
+  mode: "min"
+  min_delta: 0.01
 
 checkpoint:
   save_top_k: 3
