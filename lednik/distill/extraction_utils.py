@@ -57,23 +57,42 @@ def extract_embeddings(
         outputs = model(input_ids=inputs_t, attention_mask=attention_mask)
         last_hidden_state: torch.Tensor = outputs[0]
 
-        match pooling:
-            case "mean":
-                last_hidden_state = last_hidden_state * attention_mask.unsqueeze(-1)
-                sum_embeddings = last_hidden_state.sum(dim=1)
-                lengths = attention_mask.sum(dim=1, keepdim=True).clamp(min=1)
-                batch_embeddings = sum_embeddings / lengths
-            case "last":
-                lengths = (attention_mask.cumsum(dim=-1) - 1).amax(dim=-1)
-                batch_embeddings = last_hidden_state[
-                    torch.arange(last_hidden_state.size(0)), lengths
-                ]
-            case "cls":
-                batch_embeddings = last_hidden_state[:, 0, :]
-            case _:
-                raise ValueError(f"Unsupported pooling method: {pooling}")
+        batch_embeddings = get_sentence_embedding(
+            last_hidden_state, attention_mask, pooling
+        )
 
         batch_embeddings_list = torch.unbind(batch_embeddings, dim=0)
         embeddings_list.extend(batch_embeddings_list)
         progress_bar.update(len(batch_inputs))
     return torch.stack(embeddings_list, dim=0)
+
+
+def get_sentence_embedding(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    pooling_method: Literal["cls", "mean", "last"],
+) -> torch.Tensor:
+    """
+    Compute sentence embeddings from token embeddings using the specified pooling method.
+
+    Args:
+        input_ids: Tensor of shape (batch_size, seq_length) containing token IDs.
+        attention_mask: Tensor of shape (batch_size, seq_length) indicating valid tokens.
+        pooling_method: The pooling strategy to use. Must be one of "cls", "mean", or "last".
+
+    Returns:
+        Tensor of shape (batch_size, embedding_dim) containing the sentence embeddings.
+
+    """
+    if pooling_method == "cls":
+        return input_ids[:, 0, :]
+    elif pooling_method == "mean":
+        masked_embeddings = input_ids * attention_mask.unsqueeze(-1)
+        sum_embeddings = masked_embeddings.sum(dim=1)
+        lengths = attention_mask.sum(dim=1, keepdim=True).clamp(min=1)
+        return sum_embeddings / lengths
+    elif pooling_method == "last":
+        lengths = (attention_mask.cumsum(dim=-1) - 1).amax(dim=-1)
+        return input_ids[torch.arange(input_ids.size(0)), lengths]
+    else:
+        raise ValueError(f"Unsupported pooling method: {pooling_method}")

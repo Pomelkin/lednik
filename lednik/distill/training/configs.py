@@ -24,7 +24,58 @@ class TrainConfig(BaseModel):
     weight_decay: float = 0.0
     teacher_dim_reduction_type: Literal["pca", "autoencoder"] | None = None
     student_dim: int
+    student_freeze_iters: int = Field(default=0, ge=0)
+    reconstruction_loss_boost_while_frozen: float | None = Field(
+        default=None, ge=0, validate_default=False
+    )
+    reconstruction_loss_weight: float | None = Field(
+        default=None, ge=0, validate_default=False
+    )
     teacher_dim: int
+    teacher_pooling_method: Literal["cls", "mean", "last"]
+
+    @model_validator(mode="after")
+    def validate_reconstruction_params(self) -> "TrainConfig":
+        """Validate that student freeze parameters are set correctly."""
+        if (self.reconstruction_loss_weight is not None) and (
+            self.teacher_dim_reduction_type != "autoencoder"
+        ):
+            logger.warning(
+                "reconstruction_loss_weight is only applicable with 'autoencoder' dimension reduction. Setting reconstruction_loss_weight to None."
+            )
+            self.reconstruction_loss_weight = None
+
+        if (self.reconstruction_loss_weight is None) and (
+            self.teacher_dim_reduction_type == "autoencoder"
+        ):
+            raise ValueError(
+                "reconstruction_loss_weight must be set when using 'autoencoder' dimension reduction."
+            )
+
+        if (self.teacher_dim_reduction_type != "autoencoder") and (
+            self.student_freeze_iters > 0
+        ):
+            logger.warning(
+                "student_freeze_iters is only applicable with 'autoencoder' dimension reduction. Setting student_freeze_iters to 0."
+            )
+            self.student_freeze_iters = 0
+
+        if (self.reconstruction_loss_boost_while_frozen is not None) and (
+            self.reconstruction_loss_weight is None
+        ):
+            logger.warning(
+                "reconstruction_loss_boost_while_frozen is set, but reconstruction_loss_weight is None. The boost will have no effect."
+            )
+            self.reconstruction_loss_boost_while_frozen = None
+
+        if (self.student_freeze_iters == 0) and (
+            self.reconstruction_loss_boost_while_frozen is not None
+        ):
+            logger.warning(
+                "reconstruction_loss_boost_while_frozen is set, but student_freeze_iters is 0. The boost will have no effect."
+            )
+            self.reconstruction_loss_boost_while_frozen = None
+        return self
 
     @model_validator(mode="after")
     def validate_warmup(self) -> "TrainConfig":

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from typing import Literal
+from typing import cast
 from typing import override
 
 import plotly.graph_objects as go
@@ -27,6 +29,7 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from lednik.distill.dim_reduction import PCA
 from lednik.distill.dim_reduction import Autoencoder
+from lednik.distill.extraction_utils import get_sentence_embedding
 from lednik.distill.training.configs import TrainConfig
 from lednik.static_embeddings.modeling import StaticEmbeddingsModel
 from lednik.static_embeddings.outputs import StaticEmbeddingsOutput
@@ -41,6 +44,8 @@ class _BaseStepOutput:
     semantic_loss: torch.Tensor
     teacher_embeddings: torch.Tensor
     student_embeddings: torch.Tensor
+    student_sentence_embeddings: torch.Tensor
+    teacher_sentence_embeddings: torch.Tensor
     reconstruction_loss: torch.Tensor | None = None
 
 
@@ -64,7 +69,7 @@ def metric_factory() -> MetricCollection:
         {
             "RMSE": MeanSquaredError(squared=False),
             "MAPE": MeanAbsolutePercentageError(),
-            "CosineSimilarity": CosineSimilarity(),
+            "CosineSimilarity": CosineSimilarity(reduction="mean"),
         }
     )
     return collection
@@ -133,15 +138,51 @@ class FineTuningModule(KostylLightningModule):
         """Returns the underlying model."""
         return self.static_model
 
-    def freeze_teacher(self) -> None:
-        """Freeze the teacher model parameters."""
-        for param in self.teacher.parameters():
-            param.requires_grad = False
+    def freeze_model(self, target_model: Literal["teacher", "student"]) -> None:
+        """Freezes model so its parameters become non-trainable."""
+        match target_model:
+            case "teacher":
+                for param in self.teacher.parameters():
+                    param.requires_grad = False
+            case "student":
+                for param in self.static_model.parameters():
+                    param.requires_grad = False
+            case _:
+                raise ValueError(f"Unknown model to freeze: {target_model}")
         return
+
+    def unfreeze_model(self, target_model: Literal["teacher", "student"]) -> None:
+        """Unfreezes model so its parameters become trainable again."""
+        match target_model:
+            case "teacher":
+                for param in self.teacher.parameters():
+                    param.requires_grad = True
+            case "student":
+                for param in self.static_model.parameters():
+                    param.requires_grad = True
+            case _:
+                raise ValueError(f"Unknown model to unfreeze: {target_model}")
+        return
+
+    def is_frozen(self, target_model: Literal["teacher", "student"]) -> bool:
+        """Return True if all parameters of the specified model are frozen."""
+        match target_model:
+            case "teacher":
+                return all(
+                    not param.requires_grad for param in self.teacher.parameters()
+                )
+            case "student":
+                return all(
+                    not param.requires_grad for param in self.static_model.parameters()
+                )
+            case _:
+                raise ValueError(
+                    f"Unknown model to check freeze status: {target_model}"
+                )
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        self.freeze_teacher()
+        self.freeze_model("teacher")
         if dist.is_initialized():
             lrs = {
                 "warmup_lr": self.train_cfg.warmup_lr,
@@ -176,6 +217,9 @@ class FineTuningModule(KostylLightningModule):
             total_iters=self.train_cfg.warmup_iters,
         )
 
+        if self.train_cfg.student_freeze_iters > 0:
+            self.freeze_model("student")
+
         return {
             "optimizer": optim,
             "lr_scheduler": {
@@ -185,28 +229,14 @@ class FineTuningModule(KostylLightningModule):
             },
         }
 
-    def base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
-        """
-        Performs a single training step for knowledge distillation.
-
-        Computes embeddings from the student (static) model and teacher model using the input batch.
-        Applies masking to exclude padding tokens, optionally reduces dimensions of teacher embeddings,
-        and calculates the distillation loss. If dimension reduction includes reconstruction loss,
-        it is added to the total loss.
-
-        Args:
-            batch (dict[str, torch.Tensor]): A dictionary containing 'input_ids' and 'attention_mask'
-                tensors for the input sequence.
-
-        Returns:
-            BaseStepOutput: An object containing the computed loss, teacher embeddings, and student embeddings.
-
-        """
+    def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
+        """Performs a single training step for knowledge distillation."""
         student_output: StaticEmbeddingsOutput = self.static_model(
             batch["input_ids"],
             batch["attention_mask"],
         )
         student_embeddings = student_output.embeddings
+        student_sentence_embeddings = student_output.sentence_embeddings
 
         with torch.no_grad():
             teacher_outputs: BaseModelOutput = self.teacher(
@@ -214,6 +244,11 @@ class FineTuningModule(KostylLightningModule):
                 attention_mask=batch["attention_mask"],
             )
             teacher_embeddings: torch.Tensor = teacher_outputs[0]
+            teacher_sentence_embeddings = get_sentence_embedding(
+                teacher_embeddings,
+                batch["attention_mask"],
+                pooling_method=self.train_cfg.teacher_pooling_method,
+            )
 
         flattened_input_ids = batch["input_ids"].flatten()
 
@@ -249,7 +284,14 @@ class FineTuningModule(KostylLightningModule):
         reconstruction_loss = None
         if dim_reduce_output is not None:
             if dim_reduce_output.reconstruction_loss is not None:
-                reconstruction_loss = dim_reduce_output.reconstruction_loss * 0.3
+                if (
+                    self.train_cfg.reconstruction_loss_boost_while_frozen is not None
+                ) and self.is_frozen("student"):
+                    weight = self.train_cfg.reconstruction_loss_boost_while_frozen
+                else:
+                    weight = self.train_cfg.reconstruction_loss_weight
+                weight = cast(float, weight)
+                reconstruction_loss = dim_reduce_output.reconstruction_loss * weight
                 loss = (
                     loss + dim_reduce_output.reconstruction_loss * reconstruction_loss
                 )
@@ -260,6 +302,8 @@ class FineTuningModule(KostylLightningModule):
             reconstruction_loss=reconstruction_loss,
             teacher_embeddings=teacher_embeddings,
             student_embeddings=student_embeddings,
+            student_sentence_embeddings=student_sentence_embeddings,
+            teacher_sentence_embeddings=teacher_sentence_embeddings,
         )
         return output
 
@@ -267,7 +311,22 @@ class FineTuningModule(KostylLightningModule):
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        output = self.base_step(batch)
+        if self.train_cfg.student_freeze_iters > 0:
+            student_frozen = self.is_frozen("student")
+            self.log(
+                name="student_frozen",
+                value=int(student_frozen),
+                prog_bar=True,
+                on_step=True,
+                logger=True,
+                on_epoch=True,
+            )
+            if (self.global_step >= self.train_cfg.student_freeze_iters) and student_frozen:  # fmt: off
+                self.unfreeze_model("student")
+                logger.info(
+                    f"Unfreezing student model at global step {self.global_step}"
+                )
+        output = self._base_step(batch)
         metrics = self.train_metrics(
             output.student_embeddings,
             output.teacher_embeddings,
@@ -301,7 +360,7 @@ class FineTuningModule(KostylLightningModule):
     def validation_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        output = self.base_step(batch)
+        output = self._base_step(batch)
         metrics = self.val_metrics(
             output.student_embeddings,
             output.teacher_embeddings,
@@ -314,8 +373,8 @@ class FineTuningModule(KostylLightningModule):
         if self.trainer.is_global_zero:
             self.eval_outputs.append(
                 _EvalResult(
-                    teacher_embeddings=output.teacher_embeddings,
-                    student_embeddings=output.student_embeddings,
+                    teacher_embeddings=output.teacher_sentence_embeddings,
+                    student_embeddings=output.student_sentence_embeddings,
                     labels=batch["labels"],
                 )
             )
@@ -343,11 +402,10 @@ class FineTuningModule(KostylLightningModule):
     @override
     def on_validation_epoch_end(self) -> None:
         if self.trainer.is_global_zero and self.task is not None:
-            num_outputs2log = 500
             all_teacher_embeddings_list = []
             all_student_embeddings_list = []
             all_labels_list = []
-            for output in self.eval_outputs[:num_outputs2log]:
+            for output in self.eval_outputs:
                 all_teacher_embeddings_list.append(output.teacher_embeddings)
                 all_student_embeddings_list.append(output.student_embeddings)
                 all_labels_list.append(output.labels)

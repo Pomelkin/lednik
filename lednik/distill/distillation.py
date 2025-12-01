@@ -7,14 +7,15 @@ from kostyl.utils.logging import setup_logger
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
 
-from .dim_reduction import PCA
-from .embedding_extraction import extract_embeddings
-from .postprocessing import calculate_token_weights
-from .postprocessing import customize_tokenizer
 from lednik.distill.training.configs import TrainConfig
 from lednik.distill.training.training_modules import FineTuningModule
 from lednik.static_embeddings.config import StaticEmbeddingsConfig
 from lednik.static_embeddings.modeling import StaticEmbeddingsModel
+
+from .dim_reduction import PCA
+from .extraction_utils import extract_embeddings
+from .postprocessing import calculate_token_weights
+from .postprocessing import customize_tokenizer
 
 
 logger = setup_logger(fmt="only_message")
