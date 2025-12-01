@@ -35,6 +35,8 @@ class TrainConfig(BaseModel):
         default=None, ge=0, validate_default=False
     )
 
+    semantic_loss_weight: float
+
     teacher_dim: int
     teacher_pooling_method: Literal["cls", "mean", "last"]
 

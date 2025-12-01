@@ -20,7 +20,6 @@ from torch import nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torchmetrics import CosineSimilarity
-from torchmetrics import MeanAbsolutePercentageError
 from torchmetrics import MeanSquaredError
 from torchmetrics import MetricCollection
 from transformers import PreTrainedModel
@@ -68,7 +67,6 @@ def metric_factory() -> MetricCollection:
     collection = MetricCollection(
         {
             "RMSE": MeanSquaredError(squared=False),
-            "MAPE": MeanAbsolutePercentageError(),
             "CosineSimilarity": CosineSimilarity(reduction="mean"),
         }
     )
@@ -281,7 +279,7 @@ class FineTuningModule(KostylLightningModule):
             target,
         )
 
-        loss = semantic_loss
+        loss = semantic_loss * self.train_cfg.semantic_loss_weight
         reconstruction_loss = None
         if dim_reduce_output is not None:
             if dim_reduce_output.reconstruction_loss is not None:
@@ -407,10 +405,12 @@ class FineTuningModule(KostylLightningModule):
     @override
     def on_validation_epoch_end(self) -> None:
         if self.trainer.is_global_zero and self.task is not None:
+            num_points2log = 200
+
             all_teacher_embeddings_list = []
             all_student_embeddings_list = []
             all_labels_list = []
-            for output in self.eval_outputs:
+            for output in self.eval_outputs[:num_points2log]:
                 all_teacher_embeddings_list.append(output.teacher_embeddings)
                 all_student_embeddings_list.append(output.student_embeddings)
                 all_labels_list.append(output.labels)
