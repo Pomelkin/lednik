@@ -25,14 +25,14 @@ class Autoencoder(nn.Module):
     def __init__(self, input_dim: int, latent_dim: int, dropout: float) -> None:
         """Initialize Autoencoder with input and latent dimensions."""
         super().__init__()
-        self.encoder_norm = nn.RMSNorm(input_dim)
         self.encoder = nn.Sequential(
+            nn.RMSNorm(input_dim),
             nn.Dropout(dropout),
             nn.GELU("tanh"),
             nn.Linear(input_dim, latent_dim, bias=False),
         )
-        self.decoder_norm = nn.RMSNorm(latent_dim)
         self.decoder = nn.Sequential(
+            nn.RMSNorm(latent_dim),
             nn.Dropout(dropout),
             nn.GELU("tanh"),
             nn.Linear(latent_dim, input_dim, bias=False),
@@ -60,9 +60,7 @@ class Autoencoder(nn.Module):
 
     def transform(self, X: torch.Tensor) -> DimReductionOutput:
         """Apply the dimensionality reduction on X."""
-        X = self.encoder_norm(X)
         latent = self.encoder(X)
-        latent = self.decoder_norm(latent)
         X_rec = self.decoder(latent)
         loss = F.mse_loss(X, X_rec)
         output = DimReductionOutput(reduced_data=latent, reconstruction_loss=loss)
