@@ -22,16 +22,18 @@ class Autoencoder(nn.Module):
     latent space and attempts to reconstruct the original input from this latent representation.
     """
 
-    def __init__(self, input_dim: int, latent_dim: int) -> None:
+    def __init__(self, input_dim: int, latent_dim: int, dropout: float) -> None:
         """Initialize Autoencoder with input and latent dimensions."""
         super().__init__()
         self.encoder_norm = nn.RMSNorm(input_dim)
         self.encoder = nn.Sequential(
+            nn.Dropout(dropout),
             nn.GELU("tanh"),
             nn.Linear(input_dim, latent_dim, bias=False),
         )
         self.decoder_norm = nn.RMSNorm(latent_dim)
         self.decoder = nn.Sequential(
+            nn.Dropout(dropout),
             nn.GELU("tanh"),
             nn.Linear(latent_dim, input_dim, bias=False),
         )

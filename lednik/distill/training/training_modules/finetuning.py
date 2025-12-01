@@ -108,6 +108,7 @@ class FineTuningModule(KostylLightningModule):
                 self.dim_reduction = Autoencoder(
                     input_dim=train_cfg.teacher_dim,
                     latent_dim=train_cfg.student_dim,
+                    dropout=train_cfg.reduction_dropout,
                 )
             case None:
                 self.dim_reduction = None
@@ -291,10 +292,8 @@ class FineTuningModule(KostylLightningModule):
                 else:
                     weight = self.train_cfg.reconstruction_loss_weight
                 weight = cast(float, weight)
-                reconstruction_loss = dim_reduce_output.reconstruction_loss * weight
-                loss = (
-                    loss + dim_reduce_output.reconstruction_loss * reconstruction_loss
-                )
+                reconstruction_loss = dim_reduce_output.reconstruction_loss
+                loss = loss + reconstruction_loss * weight
 
         output = _BaseStepOutput(
             loss=loss,
@@ -437,7 +436,7 @@ class FineTuningModule(KostylLightningModule):
                     mode="markers",
                     marker={
                         "color": labels_list,
-                        "colorscale": "Viridis",
+                        "colorscale": "Plasma",
                         "showscale": True,
                         "opacity": 0.7,
                     },
@@ -453,7 +452,7 @@ class FineTuningModule(KostylLightningModule):
                     mode="markers",
                     marker={
                         "color": labels_list,
-                        "colorscale": "Viridis",
+                        "colorscale": "Plasma",
                         "showscale": False,
                         "opacity": 0.7,
                     },

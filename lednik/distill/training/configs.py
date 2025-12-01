@@ -22,21 +22,32 @@ class TrainConfig(BaseModel):
     warmup_lr: float | None = Field(default=None, gt=0, validate_default=False)
     base_lr: float
     weight_decay: float = 0.0
+
     teacher_dim_reduction_type: Literal["pca", "autoencoder"] | None = None
+
     student_dim: int
     student_freeze_iters: int = Field(default=0, ge=0)
+    reduction_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
     reconstruction_loss_boost_while_frozen: float | None = Field(
         default=None, ge=0, validate_default=False
     )
     reconstruction_loss_weight: float | None = Field(
         default=None, ge=0, validate_default=False
     )
+
     teacher_dim: int
     teacher_pooling_method: Literal["cls", "mean", "last"]
 
     @model_validator(mode="after")
     def validate_reconstruction_params(self) -> "TrainConfig":
         """Validate that student freeze parameters are set correctly."""
+        if (self.teacher_dim_reduction_type != "autoencoder") and (
+            self.reduction_dropout > 0.0
+        ):
+            logger.warning(
+                "reduction_dropout is only applicable with 'autoencoder' dimension reduction. Setting reduction_dropout to 0.0."
+            )
+            self.reduction_dropout = 0.0
         if (self.reconstruction_loss_weight is not None) and (
             self.teacher_dim_reduction_type != "autoencoder"
         ):
