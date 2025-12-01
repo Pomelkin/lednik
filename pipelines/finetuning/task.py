@@ -108,7 +108,7 @@ def _setup_callbacks(
         output_model_tags=output_model_tags,
         ckpt_callback=checkpoint_callback,
         verbose=True,
-        uploading_frequency="on-train-end",
+        uploading_frequency="after-every-eval",
     )
     if training_settings.early_stopping is not None:
         early_stopping_callback = setup_early_stopping_callback(
