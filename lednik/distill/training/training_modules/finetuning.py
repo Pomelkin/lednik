@@ -233,6 +233,7 @@ class FineTuningModule(KostylLightningModule):
         student_output: StaticEmbeddingsOutput = self.static_model(
             batch["input_ids"],
             batch["attention_mask"],
+            apply_token_weights=False,
         )
         student_embeddings = student_output.embeddings
         student_sentence_embeddings = student_output.sentence_embeddings

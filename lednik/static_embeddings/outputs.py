@@ -8,8 +8,8 @@ class StaticEmbeddingsOutput:
     """Output class for static embeddings models."""
 
     embeddings: torch.Tensor
-    pos_weights: torch.Tensor
     sentence_embeddings: torch.Tensor
+    pos_weights: torch.Tensor | None = None
 
 
 @dataclass(slots=True)

@@ -1,9 +1,9 @@
 import os
 from collections.abc import Callable
 from typing import Any
+from typing import TypeVar
 from typing import cast
 from typing import override
-from typing import TypeVar
 
 import torch
 import torch.nn.functional as F
@@ -15,9 +15,10 @@ from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
 
+from lednik.static_embeddings.config import StaticEmbeddingsConfig
+
 from .outputs import StaticEmbeddingsOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
-from lednik.static_embeddings.config import StaticEmbeddingsConfig
 
 
 logger = setup_logger(fmt="only_message")
@@ -306,7 +307,10 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         return result
 
     def forward(
-        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        apply_token_weights: bool = True,
     ) -> StaticEmbeddingsOutput:
         """Forward pass."""
         if input_ids.dtype != torch.long:
@@ -315,10 +319,16 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         embeddings = self.dropout(embeddings)
         masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
 
-        token_weights = self.token_pos_weights[input_ids]  # type: ignore
-        sentence_embeddings = (masked_embeddings * token_weights).sum(
-            dim=1
-        ) / attention_mask.sum(dim=1, keepdim=True)
+        if apply_token_weights:
+            token_weights = self.token_pos_weights[input_ids]  # type: ignore
+            sentence_embeddings = (masked_embeddings * token_weights).sum(
+                dim=1
+            ) / attention_mask.sum(dim=1, keepdim=True)
+        else:
+            token_weights = None
+            sentence_embeddings = masked_embeddings.sum(dim=1) / attention_mask.sum(
+                dim=1, keepdim=True
+            )
         output = StaticEmbeddingsOutput(
             embeddings=embeddings,
             pos_weights=token_weights,
