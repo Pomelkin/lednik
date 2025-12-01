@@ -285,15 +285,21 @@ class FineTuningModule(KostylLightningModule):
         reconstruction_loss = None
         if dim_reduce_output is not None:
             if dim_reduce_output.reconstruction_loss is not None:
+                student_frozen = self.is_frozen("student")
                 if (
                     self.train_cfg.reconstruction_loss_boost_while_frozen is not None
-                ) and self.is_frozen("student"):
+                ) and student_frozen:
                     weight = self.train_cfg.reconstruction_loss_boost_while_frozen
                 else:
                     weight = self.train_cfg.reconstruction_loss_weight
+
                 weight = cast(float, weight)
                 reconstruction_loss = dim_reduce_output.reconstruction_loss
-                loss = loss + reconstruction_loss * weight
+
+                if student_frozen:
+                    loss = reconstruction_loss * weight
+                else:
+                    loss = loss + reconstruction_loss * weight
 
         output = _BaseStepOutput(
             loss=loss,
@@ -436,7 +442,7 @@ class FineTuningModule(KostylLightningModule):
                     mode="markers",
                     marker={
                         "color": labels_list,
-                        "colorscale": "Plasma",
+                        "colorscale": "Plotly3",
                         "showscale": True,
                         "opacity": 0.7,
                     },
@@ -452,7 +458,7 @@ class FineTuningModule(KostylLightningModule):
                     mode="markers",
                     marker={
                         "color": labels_list,
-                        "colorscale": "Plasma",
+                        "colorscale": "Plotly3",
                         "showscale": False,
                         "opacity": 0.7,
                     },
