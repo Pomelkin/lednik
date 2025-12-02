@@ -29,7 +29,7 @@ from transformers.modeling_outputs import BaseModelOutput
 from lednik.distill.dim_reduction import PCA
 from lednik.distill.dim_reduction import Autoencoder
 from lednik.distill.extraction_utils import get_sentence_embedding
-from lednik.distill.training.configs import TrainConfig
+from lednik.distill.training.configs import FinetuningConfig
 from lednik.static_embeddings.modeling import StaticEmbeddingsModel
 from lednik.static_embeddings.outputs import StaticEmbeddingsOutput
 
@@ -80,7 +80,7 @@ class FineTuningModule(KostylLightningModule):
         self,
         teacher: PreTrainedModel,
         static_model: StaticEmbeddingsModel,
-        train_cfg: TrainConfig,
+        train_cfg: FinetuningConfig,
         tokenizer: PreTrainedTokenizerBase,
         task: Task | None = None,
     ) -> None:

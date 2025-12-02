@@ -7,7 +7,7 @@ from kostyl.utils.logging import setup_logger
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
 
-from lednik.distill.training.configs import TrainConfig
+from lednik.distill.training.configs import FinetuningConfig
 from lednik.distill.training.training_modules import FineTuningModule
 from lednik.static_embeddings.config import StaticEmbeddingsConfig
 from lednik.static_embeddings.modeling import StaticEmbeddingsModel
@@ -26,7 +26,7 @@ def finetune(
     tokenizer: PreTrainedTokenizerBase,
     static_model: StaticEmbeddingsModel,
     trainer: L.Trainer,
-    train_cfg: TrainConfig,
+    train_cfg: FinetuningConfig,
     data: L.LightningDataModule | dict[str, torch.utils.data.DataLoader],
     task: Task | None = None,
 ) -> StaticEmbeddingsModel:

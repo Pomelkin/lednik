@@ -1,5 +1,6 @@
 from typing import Literal
 
+from kostyl.ml.configs import HyperparamsConfig
 from kostyl.utils.logging import setup_logger
 from pydantic import BaseModel
 from pydantic import Field
@@ -9,7 +10,7 @@ from pydantic import model_validator
 logger = setup_logger(fmt="only_message")
 
 
-class TrainConfig(BaseModel):
+class FinetuningConfig(BaseModel):
     """
     Configuration schema for the training process.
 
@@ -41,7 +42,7 @@ class TrainConfig(BaseModel):
     teacher_pooling_method: Literal["cls", "mean", "last"]
 
     @model_validator(mode="after")
-    def validate_reconstruction_params(self) -> "TrainConfig":
+    def validate_reconstruction_params(self) -> "FinetuningConfig":
         """Validate that student freeze parameters are set correctly."""
         if (self.teacher_dim_reduction_type != "autoencoder") and (
             self.reduction_dropout > 0.0
@@ -91,7 +92,7 @@ class TrainConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_warmup(self) -> "TrainConfig":
+    def validate_warmup(self) -> "FinetuningConfig":
         """Validate that warmup parameters are set correctly."""
         if (self.warmup_iters is None) != (self.warmup_lr is None):
             raise ValueError(
@@ -100,7 +101,7 @@ class TrainConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_dim_reduction(self) -> "TrainConfig":
+    def validate_dim_reduction(self) -> "FinetuningConfig":
         """Validate that dimension reduction parameters are set correctly."""
         if (self.student_dim != self.teacher_dim) and (
             self.teacher_dim_reduction_type is None
@@ -120,3 +121,20 @@ class TrainConfig(BaseModel):
                 "Weight decay is only applicable with 'autoencoder' dimension reduction. Setting weight_decay to 0.0."
             )
         return self
+
+
+class ClassifierTrainConfig(HyperparamsConfig):
+    """Configuration schema for classifier training hyperparameters."""
+
+    label2id: dict[str, int]
+    class_weights: list[float] | None = None
+
+    @property
+    def num_labels(self) -> int:
+        """Get the number of labels."""
+        return len(self.label2id)
+
+    @property
+    def id2label(self) -> dict[int, str]:
+        """Get the mapping from label IDs to label names."""
+        return {v: k for k, v in self.label2id.items()}

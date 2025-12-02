@@ -1,0 +1,311 @@
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any
+from typing import override
+
+import polars as pl
+import torch
+import torch.distributed as dist
+from clearml import Task
+from kostyl.ml.dist_utils import scale_lrs_by_world_size
+from kostyl.ml.lightning import KostylLightningModule
+from kostyl.ml.lightning.steps_estimation import estimate_total_steps
+from kostyl.ml.params_groups import create_params_groups
+from kostyl.ml.schedulers import CompositeScheduler
+from kostyl.ml.schedulers import CosineScheduler
+from torch import nn
+from torchmetrics import Accuracy
+from torchmetrics import F1Score
+from torchmetrics import MetricCollection
+from torchmetrics import Precision
+from torchmetrics import Recall
+from transformers import PreTrainedModel
+
+from lednik.distill.training.configs import ClassifierTrainConfig
+from lednik.static_embeddings import StaticEmbeddingsForSequenceClassification
+from lednik.static_embeddings import (
+    StaticEmbeddingsSequenceClassifierOutput as SEOutput,
+)
+
+
+def _metric_factory(num_classes: int) -> MetricCollection:
+    if num_classes < 2:
+        collection = MetricCollection(
+            [
+                Accuracy(task="binary"),
+                Precision(task="binary"),
+                Recall(task="binary"),
+                F1Score(task="binary"),
+            ]
+        )
+    else:
+        collection = MetricCollection(
+            [
+                Accuracy(task="multiclass", num_classes=num_classes),
+                Precision(task="multiclass", num_classes=num_classes),
+                Recall(task="multiclass", num_classes=num_classes),
+                F1Score(task="multiclass", num_classes=num_classes),
+            ]
+        )
+    return collection
+
+
+@dataclass(slots=True)
+class _BaseStepOutput:
+    loss: torch.Tensor
+    logits: torch.Tensor
+    labels: torch.Tensor
+
+
+@dataclass(slots=True)
+class _ValStepOutput:
+    text: str
+    gt_label: int
+    pred_label: int
+    confidence: float
+
+
+class ClassifierTrainingModule(KostylLightningModule):
+    """Lightning module that trains and validates a static-embedding classifier."""
+
+    def __init__(
+        self,
+        config: ClassifierTrainConfig,
+        model: StaticEmbeddingsForSequenceClassification,
+        task: Task | None = None,
+    ) -> None:
+        """
+        Initialize the classifier training module with metrics, loss, configuration, and model.
+
+        Args:
+            config (ClassifierTrainConfig): Training configuration containing loss parameters,
+                optional class weights, and other settings.
+            model (StaticEmbeddingsForSequenceClassification): Sequence classification model whose
+                label configuration drives metric initialization and loss choice.
+            task (Task | None, optional): Optional task metadata used for logging or organization.
+
+        """
+        super().__init__()
+
+        self.train_metrics = _metric_factory(num_classes=model.config.num_labels)
+        self.val_metrics = _metric_factory(num_classes=model.config.num_labels)
+
+        if config.class_weights is not None:
+            if len(config.class_weights) != model.config.num_labels:
+                raise ValueError("Length of class_weights must match number of labels.")
+            class_weights_tensor = torch.tensor(config.class_weights)
+        else:
+            class_weights_tensor = None
+
+        match model.config.num_labels:
+            case 1:
+                self.loss = nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
+            case _:
+                self.loss = nn.CrossEntropyLoss(weight=class_weights_tensor)
+
+        self.config = config
+        self.model = model
+        self.task = task
+        self.val_outputs: list[_ValStepOutput] = []
+        return None
+
+    @override
+    def configure_optimizers(self) -> dict[str, Any]:
+        if dist.is_initialized():
+            lrs = {
+                "warmup_lr": self.config.lr.warmup_value,
+                "base_lr": self.config.lr.base_value,
+                "final_lr": self.config.lr.final_value,
+            }
+            scaled_lrs = scale_lrs_by_world_size(
+                lrs, verbose="world", group=self.get_process_group()
+            )
+            for key, value in scaled_lrs.items():
+                attr_name = key.replace("_lr", "_value")
+                setattr(self.config.lr, attr_name, value)
+
+        total_steps = estimate_total_steps(
+            trainer=self.trainer, process_group=self.get_process_group()
+        )
+
+        pgs = create_params_groups(
+            model=self.model,
+            weight_decay=self.config.weight_decay.base_value,
+            lr=self.config.lr.base_value,
+        )
+
+        betas = (self.config.optimizer.adamw_beta1, self.config.optimizer.adamw_beta2)
+        optimizer = torch.optim.AdamW(
+            pgs,
+            betas=betas,
+        )
+
+        if not self.config.lr.use_scheduler:
+            raise NotImplementedError(
+                "Training without LR scheduler is not implemented yet."
+            )
+
+        schedulers: dict[str, CosineScheduler] = {}
+
+        lr_scheduler = CosineScheduler(
+            optimizer=optimizer,
+            param_group_field="lr",
+            total_iters=total_steps,
+            base_value=self.config.lr.base_value,
+            final_value=self.config.lr.final_value,  # type: ignore
+            warmup_iters_ratio=self.config.lr.warmup_iters_ratio,
+            warmup_value=self.config.lr.warmup_value,
+        )
+
+        if self.config.weight_decay.use_scheduler:
+            weight_decay_scheduler = CosineScheduler(
+                optimizer=optimizer,
+                param_group_field="weight_decay",
+                total_iters=total_steps,
+                base_value=self.config.weight_decay.base_value,
+                final_value=self.config.weight_decay.final_value,  # type: ignore
+            )
+            schedulers["weight_decay_scheduler"] = weight_decay_scheduler
+
+        if len(schedulers) > 1:
+            scheduler = CompositeScheduler(optimizer=optimizer, **schedulers)
+        else:
+            scheduler = lr_scheduler
+
+        optimization_config = {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
+        return optimization_config
+
+    @override
+    def lr_scheduler_step(
+        self, scheduler: CompositeScheduler | CosineScheduler, metric: Any | None
+    ) -> None:
+        scheduler.step(self.global_step)
+        return
+
+    @property
+    @override
+    def grad_clip_val(self) -> float | None:
+        return self.config.grad_clip_val
+
+    @property
+    @override
+    def model_instance(self) -> PreTrainedModel | nn.Module:
+        """Returns the underlying model."""
+        return self.model
+
+    def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
+        labels = batch["labels"]
+        output: SEOutput = self.model(
+            input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
+        )
+
+        loss = self.loss(output.logits, labels)
+
+        return _BaseStepOutput(loss=loss, logits=output.logits, labels=labels)
+
+    @override
+    def training_step(
+        self, batch: dict[str, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
+        output = self._base_step(batch)
+        metrics = self.train_metrics(output.logits, output.labels)
+        metrics["loss"] = output.loss.detach()
+        self.log_dict(
+            metrics,
+            prog_bar=False,
+            on_step=True,
+            on_epoch=False,
+            logger=True,
+            sync_dist=False,
+            stage="train",
+        )
+        self.log(
+            "train_loss",
+            metrics["loss"],
+            prog_bar=True,
+            on_step=True,
+            on_epoch=True,
+            logger=False,
+            sync_dist=True,
+        )
+        return output.loss
+
+    @override
+    def validation_step(
+        self, batch: dict[str, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
+        output = self._base_step(batch)
+        metrics = self.val_metrics(output.logits, output.labels)
+        metrics["loss"] = output.loss.detach()
+        self.log_dict(
+            metrics,
+            prog_bar=False,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+            sync_dist=False,
+            stage="val",
+        )
+        self.log(
+            "val_loss",
+            metrics["loss"],
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            logger=False,
+            sync_dist=True,
+        )
+        if self.trainer.is_global_zero:
+            pred_distr = output.logits.softmax(dim=-1)
+            pred_label = pred_distr.argmax(dim=-1).tolist()
+            confidence = pred_distr.amax(dim=-1).tolist()
+            labels = output.labels.tolist()
+            texts: list[str] = batch["text"]  # type: ignore
+            for label, plabel, conf, text in zip(
+                labels, pred_label, confidence, texts, strict=True
+            ):
+                self.val_outputs.append(
+                    _ValStepOutput(
+                        text=text, gt_label=label, pred_label=plabel, confidence=conf
+                    )
+                )
+        return output.loss
+
+    @override
+    def on_validation_epoch_end(self) -> None:
+        if self.trainer.is_global_zero and self.task is not None:
+            NUM_ROWS2LOG = 20
+            df_data = defaultdict(list)
+            id2label = self.model.config.id2label
+            for output in self.val_outputs[:NUM_ROWS2LOG]:
+                if id2label is not None:
+                    gt_label = id2label[output.gt_label]
+                    pred_label = id2label[output.pred_label]
+                else:
+                    gt_label = str(output.gt_label)
+                    pred_label = str(output.pred_label)
+                text = output.text
+                confidence = output.confidence
+                df_data["text"].append(text)
+                df_data["ground_truth_label"].append(gt_label)
+                df_data["predicted_label"].append(pred_label)
+                df_data["confidence"].append(confidence)
+            df = pl.DataFrame(df_data)
+            self.task.get_logger().report_table(
+                title="Validation Predictions",
+                series="Dataframe",
+                table_plot=df,
+                iteration=self.global_step,
+            )
+            self.val_outputs = []
+
+        if dist.is_initialized():
+            dist.barrier()
+        return None

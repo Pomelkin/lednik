@@ -7,6 +7,7 @@ from typing import override
 
 import torch
 import torch.nn.functional as F
+from kostyl.ml.lightning import LightningCheckpointLoaderMixin
 from kostyl.utils import setup_logger
 from torch import nn
 from tqdm.auto import tqdm
@@ -26,7 +27,7 @@ logger = setup_logger(fmt="only_message")
 TPreTrainedModel = TypeVar("TPreTrainedModel", bound="PreTrainedModel")
 
 
-class StaticEmbeddingsPreTrainedModel(PreTrainedModel):
+class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrainedModel):
     """
     An abstract base class for static embedding models, inheriting from `PreTrainedModel`.
 
@@ -349,12 +350,12 @@ class StaticEmbeddingsClassificationHead(nn.Module):
             else nn.Identity()
         )
         self.norm = nn.RMSNorm(config.embedding_dim)
-        self.head = nn.Linear(config.embedding_dim, config.num_classes)
+        self.head = nn.Linear(config.embedding_dim, config.num_labels)
         return
 
     def forward(self, sentence_embeddings: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        x = F.relu(self.dropout(self.norm(sentence_embeddings)))
+        x = F.gelu(self.dropout(self.norm(sentence_embeddings)), approximate="tanh")
         logits = self.head(x)
         return logits
 
