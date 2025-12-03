@@ -139,13 +139,13 @@ bleach==6.3.0 \
     --hash=sha256:6f3b91b1c0a02bb9a78b5a454c92506aa0fdf197e1d5e114d2e00c6f64306d22 \
     --hash=sha256:fe10ec77c93ddf3d13a73b035abaac7a9f5e436513864ccdad516693213c65d6
     # via nbconvert
-boto3==1.42.0 \
-    --hash=sha256:9c67729a6112b7dced521ea70b0369fba138e89852b029a7876041cd1460c084 \
-    --hash=sha256:af32b7f61dd6293cad728ec205bcb3611ab1bf7b7dbccfd0f2bd7b9c9af96039
+boto3==1.42.1 \
+    --hash=sha256:137fbea593a30afa1b75656ea1f1ff8796be608a8c77f1b606c4473289679898 \
+    --hash=sha256:9a8f9799afff600ff5cb43f57a619a5375ea71077ec958bda70e296378da7024
     # via clearml
-botocore==1.41.6 \
-    --hash=sha256:08fe47e9b306f4436f5eaf6a02cb6d55c7745d13d2d093ce5d917d3ef3d3df75 \
-    --hash=sha256:963cc946e885acb941c96e7d343cb6507b479812ca22566ceb3e9410d0588de0
+botocore==1.42.1 \
+    --hash=sha256:3337df815c69dd87c314ee29329b8ea411ad3562fb6563d139bbe085dac14ce0 \
+    --hash=sha256:9d49f5197487f9f71daa9c5397f81484ffcc0dc1cf89a63e94ae3e5a27faa98c
     # via
     #   boto3
     #   s3transfer
@@ -485,9 +485,9 @@ ipykernel==7.1.0 \
     #   jupyter
     #   jupyter-console
     #   jupyterlab
-ipython==9.7.0 \
-    --hash=sha256:5f6de88c905a566c6a9d6c400a8fed54a638e1f7543d17aae2551133216b1e4e \
-    --hash=sha256:bce8ac85eb9521adc94e1845b4c03d88365fd6ac2f4908ec4ed1eb1b0a065f9f
+ipython==9.8.0 \
+    --hash=sha256:8e4ce129a627eb9dd221c41b1d2cdaed4ef7c9da8c17c63f6f578fe231141f83 \
+    --hash=sha256:ebe6d1d58d7d988fbf23ff8ff6d8e1622cfdb194daf4b7b73b792c4ec3b85385
     # via
     #   ipykernel
     #   ipywidgets
@@ -799,9 +799,9 @@ multiprocess==0.70.18 \
     --hash=sha256:e78ca805a72b1b810c690b6b4cc32579eba34f403094bbbae962b7b5bf9dfcb8 \
     --hash=sha256:f9597128e6b3e67b23956da07cf3d2e5cba79e2f4e0fba8d7903636663ec6d0d
     # via datasets
-narwhals==2.12.0 \
-    --hash=sha256:075b6d56f3a222613793e025744b129439ecdff9292ea6615dd983af7ba6ea44 \
-    --hash=sha256:baeba5d448a30b04c299a696bd9ee5ff73e4742143e06c49ca316b46539a7cbb
+narwhals==2.13.0 \
+    --hash=sha256:9b795523c179ca78204e3be53726da374168f906e38de2ff174c2363baaaf481 \
+    --hash=sha256:ee94c97f4cf7cfeebbeca8d274784df8b3d7fd3f955ce418af998d405576fdd9
     # via plotly
 nbclient==0.10.2 \
     --hash=sha256:4ffee11e788b4a27fabeb7955547e4318a5298f34342a4bfd01f2e1faaeadc3d \
