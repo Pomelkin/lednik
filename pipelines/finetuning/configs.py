@@ -24,6 +24,11 @@ class DataConfig(BaseModel):
     train_tokens_column: str
     val_tokens_column: str
     val_label_column: str
+    val_num_labels: int | None = Field(
+        default=None,
+        gt=0,
+        validate_default=False,
+    )
 
 
 class TrainingSettings(KostylBaseModel):

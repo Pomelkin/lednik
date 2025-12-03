@@ -12,6 +12,7 @@ import torch.distributed as dist
 from clearml import Task
 from kostyl.ml.dist_utils import scale_lrs_by_world_size
 from kostyl.ml.lightning.extenstions import KostylLightningModule
+from kostyl.ml.metrics_formatting import apply_suffix
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
@@ -19,7 +20,9 @@ from plotly.subplots import make_subplots
 from torch import nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
+from torchmetrics import Accuracy
 from torchmetrics import CosineSimilarity
+from torchmetrics import F1Score
 from torchmetrics import MeanSquaredError
 from torchmetrics import MetricCollection
 from transformers import PreTrainedModel
@@ -30,6 +33,7 @@ from lednik.distill.dim_reduction import PCA
 from lednik.distill.dim_reduction import Autoencoder
 from lednik.distill.extraction_utils import get_sentence_embedding
 from lednik.distill.training.configs import FinetuningConfig
+from lednik.distill.training.knn import knn_predict
 from lednik.static_embeddings.modeling import StaticEmbeddingsModel
 from lednik.static_embeddings.outputs import StaticEmbeddingsOutput
 
@@ -73,6 +77,26 @@ def metric_factory() -> MetricCollection:
     return collection
 
 
+def _knn_metric_factory(num_labels: int) -> MetricCollection:
+    if num_labels == 1:
+        metric_collection = MetricCollection(
+            {
+                "F1-Score": F1Score("binary"),
+                "Accuracy": Accuracy("binary"),
+            }
+        )
+    else:
+        metric_collection = MetricCollection(
+            {
+                "F1-Score-Macro": F1Score(
+                    task="multiclass", num_classes=num_labels, average="macro"
+                ),
+                "Accuracy": Accuracy(task="multiclass", num_classes=num_labels),
+            }
+        )
+    return metric_collection
+
+
 class FineTuningModule(KostylLightningModule):
     """A PyTorch Lightning module for fine-tuning a static embeddings model via knowledge distillation."""
 
@@ -83,6 +107,7 @@ class FineTuningModule(KostylLightningModule):
         train_cfg: FinetuningConfig,
         tokenizer: PreTrainedTokenizerBase,
         task: Task | None = None,
+        num_labels: int | None = None,
     ) -> None:
         """
         Initialize Fine-Tuning Lightning Module.
@@ -93,6 +118,9 @@ class FineTuningModule(KostylLightningModule):
             train_cfg : Training configuration.
             tokenizer : The tokenizer corresponding to the teacher model.
             task : ClearML Task for logging (optional).
+            num_labels : Number of classification labels for KNN evaluation metrics.
+                If provided, enables KNN-based evaluation during validation.
+                If None, KNN metrics are disabled.
 
         """
         super().__init__()
@@ -121,6 +149,12 @@ class FineTuningModule(KostylLightningModule):
         self.tokenizer = tokenizer
         self.train_metrics = metric_factory()
         self.val_metrics = metric_factory()
+        if num_labels is not None:
+            self.knn_metrics = _knn_metric_factory(num_labels=num_labels)
+            self.num_labels = num_labels
+        else:
+            self.knn_metrics = None
+            self.num_labels = None
         self.task = task
 
         self.eval_outputs: list[_EvalResult] = []
@@ -373,6 +407,34 @@ class FineTuningModule(KostylLightningModule):
         if output.reconstruction_loss is not None:
             metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
             metrics["semantic_loss"] = output.semantic_loss.detach()
+
+        if (self.num_labels is not None) and (self.knn_metrics is not None):
+            teacher_knn_preds = knn_predict(
+                embeddings=output.teacher_sentence_embeddings,
+                labels=batch["labels"],
+                num_labels=self.num_labels,
+                k_neighbors=5,
+            )
+
+            student_knn_preds = knn_predict(
+                embeddings=output.student_sentence_embeddings,
+                labels=batch["labels"],
+                num_labels=self.num_labels,
+                k_neighbors=5,
+            )
+
+            teacher_metrics = self.knn_metrics(
+                teacher_knn_preds,
+                batch["labels"],
+            )
+            teacher_metrics = apply_suffix(teacher_metrics, suffix="teacher_knn")
+            metrics.update(teacher_metrics)
+            student_metrics = self.knn_metrics(
+                student_knn_preds,
+                batch["labels"],
+            )
+            student_metrics = apply_suffix(student_metrics, suffix="student_knn")
+            metrics.update(student_metrics)
 
         if self.trainer.is_global_zero:
             self.eval_outputs.append(

@@ -280,6 +280,7 @@ def _finetune_static_model(
         tokenizer=tokenizer,
         train_cfg=train_config,
         task=task,
+        num_labels=train_settings.data.val_num_labels,
     )
 
     callbacks = _setup_callbacks(
