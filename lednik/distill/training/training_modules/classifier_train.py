@@ -1,6 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
+from typing import cast
 from typing import override
 
 import polars as pl
@@ -13,6 +14,7 @@ from kostyl.ml.lightning.steps_estimation import estimate_total_steps
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.ml.schedulers import CompositeScheduler
 from kostyl.ml.schedulers import CosineScheduler
+from kostyl.utils.logging import setup_logger
 from torch import nn
 from torchmetrics import Accuracy
 from torchmetrics import F1Score
@@ -20,12 +22,16 @@ from torchmetrics import MetricCollection
 from torchmetrics import Precision
 from torchmetrics import Recall
 from transformers import PreTrainedModel
+from transformers import PreTrainedTokenizerBase
 
 from lednik.distill.training.configs import ClassifierTrainConfig
 from lednik.static_embeddings import StaticEmbeddingsForSequenceClassification
 from lednik.static_embeddings import (
     StaticEmbeddingsSequenceClassifierOutput as SEOutput,
 )
+
+
+logger = setup_logger()
 
 
 def _metric_factory(num_classes: int) -> MetricCollection:
@@ -59,10 +65,16 @@ class _BaseStepOutput:
 
 @dataclass(slots=True)
 class _ValStepOutput:
-    text: str
     gt_label: int
     pred_label: int
     confidence: float
+    input_ids: torch.Tensor
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu()
+        super().__setattr__(name, value)
+        return
 
 
 class ClassifierTrainingModule(KostylLightningModule):
@@ -267,13 +279,17 @@ class ClassifierTrainingModule(KostylLightningModule):
             pred_label = pred_distr.argmax(dim=-1).tolist()
             confidence = pred_distr.amax(dim=-1).tolist()
             labels = output.labels.tolist()
-            texts: list[str] = batch["text"]  # type: ignore
-            for label, plabel, conf, text in zip(
-                labels, pred_label, confidence, texts, strict=True
+            input_ids_b = batch["input_ids"]
+
+            for label, plabel, conf, input_ids in zip(
+                labels, pred_label, confidence, input_ids_b, strict=True
             ):
                 self.val_outputs.append(
                     _ValStepOutput(
-                        text=text, gt_label=label, pred_label=plabel, confidence=conf
+                        gt_label=label,
+                        pred_label=plabel,
+                        confidence=conf,
+                        input_ids=input_ids,
                     )
                 )
         return output.loss
@@ -282,6 +298,20 @@ class ClassifierTrainingModule(KostylLightningModule):
     def on_validation_epoch_end(self) -> None:
         if self.trainer.is_global_zero and self.task is not None:
             NUM_ROWS2LOG = 20
+
+            if not hasattr(self.trainer, "datamodule"):
+                logger.warning_once(
+                    "Trainer has no datamodule; cannot log validation predictions."
+                )
+                return
+            if not hasattr(self.trainer.datamodule, "tokenizer"):  # type: ignore
+                logger.warning_once(
+                    "Datamodule has no tokenizer; cannot log validation predictions."
+                )
+                return
+            tokenizer = self.trainer.datamodule.tokenizer  # type: ignore
+            tokenizer = cast(PreTrainedTokenizerBase, tokenizer)
+
             df_data = defaultdict(list)
             id2label = self.model.config.id2label
             for output in self.val_outputs[:NUM_ROWS2LOG]:
@@ -291,7 +321,11 @@ class ClassifierTrainingModule(KostylLightningModule):
                 else:
                     gt_label = str(output.gt_label)
                     pred_label = str(output.pred_label)
-                text = output.text
+                text = tokenizer.decode(
+                    output.input_ids,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=True,
+                )
                 confidence = output.confidence
                 df_data["text"].append(text)
                 df_data["ground_truth_label"].append(gt_label)
