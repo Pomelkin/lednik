@@ -9,6 +9,7 @@ data:
   train_tokens_column: USER-bge-m3
   val_tokens_column: USER-bge-m3
   val_label_column: label
+  val_num_labels: 3
 
 trainer:
   accelerator: "gpu"

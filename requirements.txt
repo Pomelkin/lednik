@@ -619,9 +619,9 @@ kernels==0.11.1 \
     --hash=sha256:08127dd2e1cad4fd5856ddc7f5bfbf7b23c198c39cb5f45184dcf55286cd5d3c \
     --hash=sha256:bbfc4d7cc643751684ab230f422d2a6f8244341ad47bfeb732079cfc9db29c59
     # via lednik
-kostyl-toolkit==0.1.20 \
-    --hash=sha256:210b8c5e3d55f77993554bff47d90202d075feb4177725add8fb36cf01fbdf81 \
-    --hash=sha256:bd9b10876870c36934a25b831efa01ad667f2c862db2197ea254cb8c6b69fda4
+kostyl-toolkit==0.1.21 \
+    --hash=sha256:2512d75a41a5d4a0ee4cc13a0387c5f9e3c97d1fd2e35d00ba9cdabe675293d0 \
+    --hash=sha256:821f480019cd3fac07fcf1095cdc574cc776d84d11f3dde3f687c352011e399b
     # via lednik
 lark==1.3.1 \
     --hash=sha256:b426a7a6d6d53189d318f2b6236ab5d6429eaf09259f1ca33eb716eed10d2905 \
