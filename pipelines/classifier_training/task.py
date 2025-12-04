@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from dataclasses import fields
 from pathlib import Path
 from typing import Literal
 
@@ -82,11 +81,14 @@ class _Callbacks:
 
     def to_list(self) -> list[Callback]:
         """Convert dataclass fields to a list of Callbacks. None values are omitted."""
-        return [
-            getattr(self, f.name)
-            for f in fields(self)
-            if getattr(self, f.name) is not None
+        callbacks = [
+            self.checkpoint,
+            self.lr_monitor,
+            self.model_uploader,
         ]
+        if self.early_stopping is not None:
+            callbacks.append(self.early_stopping)
+        return callbacks
 
 
 def _setup_callbacks(
