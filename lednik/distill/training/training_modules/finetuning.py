@@ -128,7 +128,7 @@ class FineTuningModule(KostylLightningModule):
         """
         super().__init__()
         self.teacher = teacher
-        self.static_model = static_model
+        self.static_model = static_model.train()
 
         match train_cfg.teacher_dim_reduction_type:
             case "pca":
