@@ -12,12 +12,12 @@ import torch.distributed as dist
 from clearml import Task
 from kostyl.ml.dist_utils import scale_lrs_by_world_size
 from kostyl.ml.lightning.extenstions import KostylLightningModule
-from kostyl.ml.metrics_formatting import apply_suffix
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from plotly.subplots import make_subplots
 from torch import nn
+from torch.distributed import Work
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torchmetrics import Accuracy
@@ -77,21 +77,25 @@ def metric_factory() -> MetricCollection:
     return collection
 
 
-def _knn_metric_factory(num_labels: int) -> MetricCollection:
+def _knn_metric_factory(
+    prefix_str: Literal["teacher", "student"], num_labels: int
+) -> MetricCollection:
     if num_labels == 1:
         metric_collection = MetricCollection(
             {
-                "F1-Score": F1Score("binary"),
-                "Accuracy": Accuracy("binary"),
+                f"{prefix_str}_F1": F1Score("binary"),
+                f"{prefix_str}_Accuracy": Accuracy("binary"),
             }
         )
     else:
         metric_collection = MetricCollection(
             {
-                "F1-Score-Macro": F1Score(
+                f"{prefix_str}_F1-Macro": F1Score(
                     task="multiclass", num_classes=num_labels, average="macro"
                 ),
-                "Accuracy": Accuracy(task="multiclass", num_classes=num_labels),
+                f"{prefix_str}_Accuracy": Accuracy(
+                    task="multiclass", num_classes=num_labels
+                ),
             }
         )
     return metric_collection
@@ -150,7 +154,12 @@ class FineTuningModule(KostylLightningModule):
         self.train_metrics = metric_factory()
         self.val_metrics = metric_factory()
         if num_labels is not None:
-            self.knn_metrics = _knn_metric_factory(num_labels=num_labels)
+            self.teacher_knn_metrics = _knn_metric_factory(
+                prefix_str="teacher", num_labels=num_labels
+            )
+            self.student_knn_metrics = _knn_metric_factory(
+                prefix_str="student", num_labels=num_labels
+            )
             self.num_labels = num_labels
         else:
             self.knn_metrics = None
@@ -409,31 +418,76 @@ class FineTuningModule(KostylLightningModule):
             metrics["semantic_loss"] = output.semantic_loss.detach()
 
         if (self.num_labels is not None) and (self.knn_metrics is not None):
+            if dist.is_initialized():
+                teacher_sentence_embeddings_global = [
+                    torch.zeros_like(output.teacher_sentence_embeddings)
+                    for _ in range(dist.get_world_size(self.get_process_group()))
+                ]
+                teacher_emb_handler: Work = dist.all_gather(  # type: ignore
+                    teacher_sentence_embeddings_global,
+                    output.teacher_sentence_embeddings,
+                    group=self.get_process_group(),
+                    async_op=True,
+                )
+                student_sentence_embeddings_global = [
+                    torch.zeros_like(output.student_sentence_embeddings)
+                    for _ in range(dist.get_world_size(self.get_process_group()))
+                ]
+                student_emb_handler: Work = dist.all_gather(  # type: ignore
+                    student_sentence_embeddings_global,
+                    output.student_sentence_embeddings,
+                    group=self.get_process_group(),
+                    async_op=True,
+                )
+                labels_global = [
+                    torch.zeros_like(batch["labels"])
+                    for _ in range(dist.get_world_size(self.get_process_group()))
+                ]
+                labels_handler: Work = dist.all_gather(  # type: ignore
+                    labels_global,
+                    batch["labels"],
+                    group=self.get_process_group(),
+                    async_op=True,
+                )
+
+                teacher_emb_handler.wait()
+                teacher_sentence_embeddings = torch.cat(
+                    teacher_sentence_embeddings_global, dim=0
+                )
+                student_emb_handler.wait()
+                student_sentence_embeddings = torch.cat(
+                    student_sentence_embeddings_global, dim=0
+                )
+                labels_handler.wait()
+                labels = torch.cat(labels_global, dim=0)
+            else:
+                teacher_sentence_embeddings = output.teacher_sentence_embeddings
+                student_sentence_embeddings = output.student_sentence_embeddings
+                labels = batch["labels"]
+
             teacher_knn_preds = knn_predict(
-                embeddings=output.teacher_sentence_embeddings,
-                labels=batch["labels"],
+                embeddings=teacher_sentence_embeddings,
+                labels=labels,
                 num_labels=self.num_labels,
                 k_neighbors=5,
             )
 
             student_knn_preds = knn_predict(
-                embeddings=output.student_sentence_embeddings,
-                labels=batch["labels"],
+                embeddings=student_sentence_embeddings,
+                labels=labels,
                 num_labels=self.num_labels,
                 k_neighbors=5,
             )
 
-            teacher_metrics = self.knn_metrics(
+            teacher_metrics = self.teacher_knn_metrics(
                 teacher_knn_preds,
-                batch["labels"],
+                labels=labels,
             )
-            teacher_metrics = apply_suffix(teacher_metrics, suffix="teacher_knn")
             metrics.update(teacher_metrics)
-            student_metrics = self.knn_metrics(
+            student_metrics = self.student_knn_metrics(
                 student_knn_preds,
-                batch["labels"],
+                labels=labels,
             )
-            student_metrics = apply_suffix(student_metrics, suffix="student_knn")
             metrics.update(student_metrics)
 
         if self.trainer.is_global_zero:
