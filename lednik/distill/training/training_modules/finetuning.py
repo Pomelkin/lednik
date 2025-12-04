@@ -46,7 +46,6 @@ class _BaseStepOutput:
     loss: torch.Tensor
     semantic_loss: torch.Tensor
     teacher_embeddings: torch.Tensor
-    teacher_embeddings_reduced: torch.Tensor
     student_embeddings: torch.Tensor
     student_sentence_embeddings: torch.Tensor
     teacher_sentence_embeddings: torch.Tensor
@@ -56,7 +55,6 @@ class _BaseStepOutput:
 @dataclass
 class _EvalResult:
     teacher_embeddings: torch.Tensor
-    teacher_embeddings_reduced: torch.Tensor
     student_embeddings: torch.Tensor
     labels: torch.Tensor
 
@@ -300,20 +298,19 @@ class FineTuningModule(KostylLightningModule):
 
         if self.dim_reduction is not None:
             dim_reduce_output = self.dim_reduction.transform(teacher_embeddings)
-            teacher_embeddings_reduced = dim_reduce_output.reduced_data
+            teacher_embeddings = dim_reduce_output.reduced_data
         else:
             dim_reduce_output = None
-            teacher_embeddings_reduced = teacher_embeddings
 
         target = torch.ones(
             student_embeddings.size(0),
             device=student_embeddings.device,
         )
         student_embeddings = student_embeddings.contiguous()
-        teacher_embeddings_reduced = teacher_embeddings_reduced.contiguous()
+        teacher_embeddings = teacher_embeddings.contiguous()
         semantic_loss = self.loss(
             student_embeddings,
-            teacher_embeddings_reduced,
+            teacher_embeddings,
             target,
         )
 
@@ -341,7 +338,6 @@ class FineTuningModule(KostylLightningModule):
             loss=loss,
             semantic_loss=semantic_loss,
             reconstruction_loss=reconstruction_loss,
-            teacher_embeddings_reduced=teacher_embeddings_reduced,
             teacher_embeddings=teacher_embeddings,
             student_embeddings=student_embeddings,
             student_sentence_embeddings=student_sentence_embeddings,
@@ -371,7 +367,7 @@ class FineTuningModule(KostylLightningModule):
         output = self._base_step(batch)
         metrics = self.train_metrics(
             output.student_embeddings,
-            output.teacher_embeddings_reduced,
+            output.teacher_embeddings,
         )
         metrics["loss"] = output.loss.detach()
         if output.reconstruction_loss is not None:
@@ -405,7 +401,7 @@ class FineTuningModule(KostylLightningModule):
         output = self._base_step(batch)
         metrics = self.val_metrics(
             output.student_embeddings,
-            output.teacher_embeddings_reduced,
+            output.teacher_embeddings,
         )
         metrics["loss"] = output.loss.detach()
         if output.reconstruction_loss is not None:
@@ -443,7 +439,6 @@ class FineTuningModule(KostylLightningModule):
         if self.trainer.is_global_zero:
             self.eval_outputs.append(
                 _EvalResult(
-                    teacher_embeddings_reduced=output.teacher_embeddings_reduced,
                     teacher_embeddings=output.teacher_sentence_embeddings,
                     student_embeddings=output.student_sentence_embeddings,
                     labels=batch["labels"],
@@ -477,30 +472,20 @@ class FineTuningModule(KostylLightningModule):
 
             all_teacher_embeddings_list = []
             all_student_embeddings_list = []
-            all_teacher_embeddings_reduced_list = []
             all_labels_list = []
             for output in self.eval_outputs[:num_points2log]:
                 all_teacher_embeddings_list.append(output.teacher_embeddings)
                 all_student_embeddings_list.append(output.student_embeddings)
-                all_teacher_embeddings_reduced_list.append(
-                    output.teacher_embeddings_reduced
-                )
                 all_labels_list.append(output.labels)
 
             all_teacher_embeddings = torch.cat(all_teacher_embeddings_list, dim=0)
             all_student_embeddings = torch.cat(all_student_embeddings_list, dim=0)
-            all_teacher_embeddings_reduced = torch.cat(
-                all_teacher_embeddings_reduced_list, dim=0
-            )
             all_labels = torch.cat(all_labels_list, dim=0)
 
             pca = PCA(n_components=2)
 
             teacher_embeddings_2d = pca.transform(
                 all_teacher_embeddings.to(self.device)
-            ).reduced_data.cpu()
-            teacher_embeddings_reduced_2d = pca.transform(
-                all_teacher_embeddings_reduced.to(self.device)
             ).reduced_data.cpu()
             student_embeddings_2d = pca.transform(
                 all_student_embeddings.to(self.device)
@@ -509,12 +494,8 @@ class FineTuningModule(KostylLightningModule):
             labels_list = all_labels.tolist()
             fig = make_subplots(
                 rows=1,
-                cols=3,
-                subplot_titles=(
-                    "Teacher Original embeddings",
-                    "Student embeddings",
-                    "Teacher Reduced embeddings",
-                ),
+                cols=2,
+                subplot_titles=("Teacher embeddings", "Student embeddings"),
                 horizontal_spacing=0.08,
             )
             fig.add_trace(
@@ -548,22 +529,6 @@ class FineTuningModule(KostylLightningModule):
                 ),
                 row=1,
                 col=2,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=teacher_embeddings_reduced_2d[:, 0].float().tolist(),
-                    y=teacher_embeddings_reduced_2d[:, 1].float().tolist(),
-                    mode="markers",
-                    marker={
-                        "color": labels_list,
-                        "colorscale": "Plotly3",
-                        "showscale": False,
-                        "opacity": 0.7,
-                    },
-                    name="Teacher Reduced",
-                ),
-                row=1,
-                col=3,
             )
 
             fig.update_xaxes(title_text="dim0", row=1, col=1)
