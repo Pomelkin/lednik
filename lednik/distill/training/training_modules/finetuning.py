@@ -428,7 +428,7 @@ class FineTuningModule(KostylLightningModule):
                 ]
                 teacher_emb_handler: Work = dist.all_gather(  # type: ignore
                     teacher_sentence_embeddings_global,
-                    output.teacher_sentence_embeddings,
+                    output.teacher_sentence_embeddings.contiguous(),
                     group=self.get_process_group(),
                     async_op=True,
                 )
@@ -438,7 +438,7 @@ class FineTuningModule(KostylLightningModule):
                 ]
                 student_emb_handler: Work = dist.all_gather(  # type: ignore
                     student_sentence_embeddings_global,
-                    output.student_sentence_embeddings,
+                    output.student_sentence_embeddings.contiguous(),
                     group=self.get_process_group(),
                     async_op=True,
                 )
@@ -448,7 +448,7 @@ class FineTuningModule(KostylLightningModule):
                 ]
                 labels_handler: Work = dist.all_gather(  # type: ignore
                     labels_global,
-                    batch["labels"],
+                    batch["labels"].contiguous(),
                     group=self.get_process_group(),
                     async_op=True,
                 )
