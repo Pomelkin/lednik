@@ -115,7 +115,7 @@ class ClassifierTrainingModule(KostylLightningModule):
             case _:
                 self.loss = nn.CrossEntropyLoss(weight=class_weights_tensor)
 
-        self.config = config
+        self.train_cfg = config
         self.model = model
         self.task = task
         self.val_outputs: list[_ValStepOutput] = []
@@ -125,16 +125,16 @@ class ClassifierTrainingModule(KostylLightningModule):
     def configure_optimizers(self) -> dict[str, Any]:
         if dist.is_initialized():
             lrs = {
-                "warmup_lr": self.config.lr.warmup_value,
-                "base_lr": self.config.lr.base_value,
-                "final_lr": self.config.lr.final_value,
+                "warmup_lr": self.train_cfg.lr.warmup_value,
+                "base_lr": self.train_cfg.lr.base_value,
+                "final_lr": self.train_cfg.lr.final_value,
             }
             scaled_lrs = scale_lrs_by_world_size(
                 lrs, verbose="world", group=self.get_process_group()
             )
             for key, value in scaled_lrs.items():
                 attr_name = key.replace("_lr", "_value")
-                setattr(self.config.lr, attr_name, value)
+                setattr(self.train_cfg.lr, attr_name, value)
 
         total_steps = estimate_total_steps(
             trainer=self.trainer, process_group=self.get_process_group()
@@ -142,17 +142,20 @@ class ClassifierTrainingModule(KostylLightningModule):
 
         pgs = create_params_groups(
             model=self.model,
-            weight_decay=self.config.weight_decay.base_value,
-            lr=self.config.lr.base_value,
+            weight_decay=self.train_cfg.weight_decay.base_value,
+            lr=self.train_cfg.lr.base_value,
         )
 
-        betas = (self.config.optimizer.adamw_beta1, self.config.optimizer.adamw_beta2)
+        betas = (
+            self.train_cfg.optimizer.adamw_beta1,
+            self.train_cfg.optimizer.adamw_beta2,
+        )
         optimizer = torch.optim.AdamW(
             pgs,
             betas=betas,
         )
 
-        if not self.config.lr.use_scheduler:
+        if not self.train_cfg.lr.use_scheduler:
             raise NotImplementedError(
                 "Training without LR scheduler is not implemented yet."
             )
@@ -163,19 +166,19 @@ class ClassifierTrainingModule(KostylLightningModule):
             optimizer=optimizer,
             param_group_field="lr",
             total_iters=total_steps,
-            base_value=self.config.lr.base_value,
-            final_value=self.config.lr.final_value,  # type: ignore
-            warmup_iters_ratio=self.config.lr.warmup_iters_ratio,
-            warmup_value=self.config.lr.warmup_value,
+            base_value=self.train_cfg.lr.base_value,
+            final_value=self.train_cfg.lr.final_value,  # type: ignore
+            warmup_iters_ratio=self.train_cfg.lr.warmup_iters_ratio,
+            warmup_value=self.train_cfg.lr.warmup_value,
         )
 
-        if self.config.weight_decay.use_scheduler:
+        if self.train_cfg.weight_decay.use_scheduler:
             weight_decay_scheduler = CosineScheduler(
                 optimizer=optimizer,
                 param_group_field="weight_decay",
                 total_iters=total_steps,
-                base_value=self.config.weight_decay.base_value,
-                final_value=self.config.weight_decay.final_value,  # type: ignore
+                base_value=self.train_cfg.weight_decay.base_value,
+                final_value=self.train_cfg.weight_decay.final_value,  # type: ignore
             )
             schedulers["weight_decay_scheduler"] = weight_decay_scheduler
 
@@ -204,7 +207,7 @@ class ClassifierTrainingModule(KostylLightningModule):
     @property
     @override
     def grad_clip_val(self) -> float | None:
-        return self.config.grad_clip_val
+        return self.train_cfg.grad_clip_val
 
     @property
     @override

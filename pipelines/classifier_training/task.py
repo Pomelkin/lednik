@@ -247,7 +247,9 @@ def _finetune_static_model(
         task, ROOT_PATH / "configs" / "finetuning" / "train_config.yaml"
     )
     train_settings = TrainingSettings.connect_as_file(
-        task, ROOT_PATH / "configs" / "finetuning" / "training_settings.yaml"
+        task,
+        ROOT_PATH / "configs" / "finetuning" / "training_settings.yaml",
+        alias="Settings",
     )
 
     if remote_execution_queue != "":
