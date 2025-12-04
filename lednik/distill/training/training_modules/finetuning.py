@@ -484,12 +484,12 @@ class FineTuningModule(KostylLightningModule):
 
             teacher_metrics = self.teacher_knn_metrics(  # type: ignore
                 teacher_knn_preds,
-                labels=labels,
+                labels,
             )
             metrics.update(teacher_metrics)
             student_metrics = self.student_knn_metrics(  # type: ignore
                 student_knn_preds,
-                labels=labels,
+                labels,
             )
             metrics.update(student_metrics)
 
