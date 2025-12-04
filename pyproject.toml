@@ -84,6 +84,7 @@ select = [
 ]
 ignore = [
     "ANN001",  # Missing type annotation for function argument
+    "ANN101", 
     "ANN002",  # Missing type annotation for *args
     "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
     "D100",    # Missing docstring in public module
