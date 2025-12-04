@@ -154,6 +154,7 @@ class FineTuningModule(KostylLightningModule):
         self.train_metrics = metric_factory()
         self.val_metrics = metric_factory()
         if num_labels is not None:
+            self.use_knn_in_val = True
             self.teacher_knn_metrics = _knn_metric_factory(
                 prefix_str="teacher", num_labels=num_labels
             )
@@ -162,7 +163,9 @@ class FineTuningModule(KostylLightningModule):
             )
             self.num_labels = num_labels
         else:
-            self.knn_metrics = None
+            self.use_knn_in_val = False
+            self.teacher_knn_metrics = None
+            self.student_knn_metrics = None
             self.num_labels = None
         self.task = task
 
@@ -417,7 +420,7 @@ class FineTuningModule(KostylLightningModule):
             metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
             metrics["semantic_loss"] = output.semantic_loss.detach()
 
-        if (self.num_labels is not None) and (self.knn_metrics is not None):
+        if (self.num_labels is not None) and self.use_knn_in_val:
             if dist.is_initialized():
                 teacher_sentence_embeddings_global = [
                     torch.zeros_like(output.teacher_sentence_embeddings)
@@ -479,12 +482,12 @@ class FineTuningModule(KostylLightningModule):
                 k_neighbors=5,
             )
 
-            teacher_metrics = self.teacher_knn_metrics(
+            teacher_metrics = self.teacher_knn_metrics(  # type: ignore
                 teacher_knn_preds,
                 labels=labels,
             )
             metrics.update(teacher_metrics)
-            student_metrics = self.student_knn_metrics(
+            student_metrics = self.student_knn_metrics(  # type: ignore
                 student_knn_preds,
                 labels=labels,
             )
