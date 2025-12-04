@@ -17,7 +17,6 @@ from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from plotly.subplots import make_subplots
 from torch import nn
-from torch.distributed import Work
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torchmetrics import Accuracy
@@ -420,79 +419,6 @@ class FineTuningModule(KostylLightningModule):
             metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
             metrics["semantic_loss"] = output.semantic_loss.detach()
 
-        if (self.num_labels is not None) and self.use_knn_in_val:
-            if dist.is_initialized():
-                teacher_sentence_embeddings_global = [
-                    torch.zeros_like(output.teacher_sentence_embeddings)
-                    for _ in range(dist.get_world_size(self.get_process_group()))
-                ]
-                teacher_emb_handler: Work = dist.all_gather(  # type: ignore
-                    teacher_sentence_embeddings_global,
-                    output.teacher_sentence_embeddings.contiguous(),
-                    group=self.get_process_group(),
-                    async_op=True,
-                )
-                student_sentence_embeddings_global = [
-                    torch.zeros_like(output.student_sentence_embeddings)
-                    for _ in range(dist.get_world_size(self.get_process_group()))
-                ]
-                student_emb_handler: Work = dist.all_gather(  # type: ignore
-                    student_sentence_embeddings_global,
-                    output.student_sentence_embeddings.contiguous(),
-                    group=self.get_process_group(),
-                    async_op=True,
-                )
-                labels_global = [
-                    torch.zeros_like(batch["labels"])
-                    for _ in range(dist.get_world_size(self.get_process_group()))
-                ]
-                labels_handler: Work = dist.all_gather(  # type: ignore
-                    labels_global,
-                    batch["labels"].contiguous(),
-                    group=self.get_process_group(),
-                    async_op=True,
-                )
-
-                teacher_emb_handler.wait()
-                teacher_sentence_embeddings = torch.cat(
-                    teacher_sentence_embeddings_global, dim=0
-                )
-                student_emb_handler.wait()
-                student_sentence_embeddings = torch.cat(
-                    student_sentence_embeddings_global, dim=0
-                )
-                labels_handler.wait()
-                labels = torch.cat(labels_global, dim=0)
-            else:
-                teacher_sentence_embeddings = output.teacher_sentence_embeddings
-                student_sentence_embeddings = output.student_sentence_embeddings
-                labels = batch["labels"]
-
-            teacher_knn_preds = knn_predict(
-                embeddings=teacher_sentence_embeddings,
-                labels=labels,
-                num_labels=self.num_labels,
-                k_neighbors=5,
-            )
-
-            student_knn_preds = knn_predict(
-                embeddings=student_sentence_embeddings,
-                labels=labels,
-                num_labels=self.num_labels,
-                k_neighbors=5,
-            )
-
-            teacher_metrics = self.teacher_knn_metrics(  # type: ignore
-                teacher_knn_preds,
-                labels,
-            )
-            metrics.update(teacher_metrics)
-            student_metrics = self.student_knn_metrics(  # type: ignore
-                student_knn_preds,
-                labels,
-            )
-            metrics.update(student_metrics)
-
         if self.trainer.is_global_zero:
             self.eval_outputs.append(
                 _EvalResult(
@@ -526,29 +452,68 @@ class FineTuningModule(KostylLightningModule):
     def on_validation_epoch_end(self) -> None:
         if self.trainer.is_global_zero and self.task is not None:
             num_points2log = 200
+            logger = self.task.get_logger()
 
-            all_teacher_embeddings_list = []
-            all_student_embeddings_list = []
-            all_labels_list = []
-            for output in self.eval_outputs[:num_points2log]:
-                all_teacher_embeddings_list.append(output.teacher_embeddings)
-                all_student_embeddings_list.append(output.student_embeddings)
-                all_labels_list.append(output.labels)
+            teacher_embeddings_list = []
+            student_embeddings_list = []
+            labels_list = []
+            for output in self.eval_outputs:
+                teacher_embeddings_list.append(output.teacher_embeddings)
+                student_embeddings_list.append(output.student_embeddings)
+                labels_list.append(output.labels)
 
-            all_teacher_embeddings = torch.cat(all_teacher_embeddings_list, dim=0)
-            all_student_embeddings = torch.cat(all_student_embeddings_list, dim=0)
-            all_labels = torch.cat(all_labels_list, dim=0)
+            teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0).to(
+                self.device
+            )
+            student_embeddings = torch.cat(student_embeddings_list, dim=0).to(
+                self.device
+            )
+            labels = torch.cat(labels_list, dim=0).to(self.device)
+
+            if self.use_knn_in_val and (self.num_labels is not None):
+                metrics: dict[str, torch.Tensor] = {}
+                teacher_knn_preds = knn_predict(
+                    embeddings=teacher_embeddings,
+                    labels=labels,
+                    num_labels=self.num_labels,
+                    k_neighbors=5,
+                )
+
+                student_knn_preds = knn_predict(
+                    embeddings=student_embeddings,
+                    labels=labels,
+                    num_labels=self.num_labels,
+                    k_neighbors=5,
+                )
+
+                teacher_metrics = self.teacher_knn_metrics(  # type: ignore
+                    teacher_knn_preds,
+                    labels,
+                )
+                metrics.update(teacher_metrics)
+                student_metrics = self.student_knn_metrics(  # type: ignore
+                    student_knn_preds,
+                    labels,
+                )
+                metrics.update(student_metrics)
+                for key, value in metrics.items():
+                    logger.report_scalar(
+                        title="KNN Evaluation Metrics",
+                        series=key,
+                        value=value.item(),
+                        iteration=self.global_step,
+                    )
+
+            teacher_embeddings = teacher_embeddings[:num_points2log, :]
+            student_embeddings = student_embeddings[:num_points2log, :]
+            labels = labels[:num_points2log]
 
             pca = PCA(n_components=2)
 
-            teacher_embeddings_2d = pca.transform(
-                all_teacher_embeddings.to(self.device)
-            ).reduced_data.cpu()
-            student_embeddings_2d = pca.transform(
-                all_student_embeddings.to(self.device)
-            ).reduced_data.cpu()
+            teacher_embeddings_2d = pca.transform(teacher_embeddings).reduced_data.cpu()
+            student_embeddings_2d = pca.transform(student_embeddings).reduced_data.cpu()
 
-            labels_list = all_labels.tolist()
+            labels_list = labels.tolist()
             fig = make_subplots(
                 rows=1,
                 cols=2,
