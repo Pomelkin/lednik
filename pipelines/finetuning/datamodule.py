@@ -31,6 +31,7 @@ def align_keys_and_collate_batch(
     collator: DataCollatorWithPadding | DataCollatorMixin,
     keys_mapping: dict[str, str] | None = None,
     keys_to_keep: set[str] | None = None,
+    max_length: int | None = None,
 ) -> dict[str, Any]:
     """
     Aligns keys in a batch of dictionaries according, then collates the batch using the provided collator.
@@ -43,6 +44,7 @@ def align_keys_and_collate_batch(
             Defaults to None.
         keys_to_keep (set[str] | None, optional): A set of keys to retain as-is from the original items.
             Defaults to None.
+        max_length (int | None, optional): If provided, truncates the "input_ids" and "attention_mask"
 
     Returns:
         dict[str, Any]: The collated batch returned by the `collator`.
@@ -67,7 +69,13 @@ def align_keys_and_collate_batch(
         for k in item.keys():
             new_key = keys_mapping.get(k, None)
             if new_key is not None:
-                new_item[new_key] = item[k]
+                value = item[k]
+                if max_length is not None and new_key in (
+                    "input_ids",
+                    "attention_mask",
+                ):
+                    value = value[:max_length]
+                new_item[new_key] = value
         aligned_batch.append(new_item)
 
     collated_batch = collator(aligned_batch)
@@ -251,6 +259,7 @@ class DataModule(L.LightningDataModule):
                 align_keys_and_collate_batch,
                 keys_mapping={self.train_tokens_column: "input_ids"},
                 collator=self.train_collator,
+                max_length=1024,  # TODO: make configurable
             ),
         )
 
@@ -272,5 +281,6 @@ class DataModule(L.LightningDataModule):
                     self.val_label_column: "labels",
                 },
                 collator=self.val_collator,
+                max_length=1024,  # TODO: make configurable
             ),
         )
