@@ -80,6 +80,7 @@ def _validate_input(
 class _Callbacks:
     checkpoint: ModelCheckpoint
     lr_monitor: LearningRateMonitor
+    model_uploader: ClearMLRegistryUploaderCallback
     early_stopping: EarlyStopping | None = None
 
     def to_list(self) -> list[Callback]:
@@ -128,6 +129,7 @@ def _setup_callbacks(
     callbacks = _Callbacks(
         checkpoint=checkpoint_callback,
         lr_monitor=lr_monitor,
+        model_uploader=model_uploader,
         early_stopping=early_stopping_callback,
     )
     return callbacks
