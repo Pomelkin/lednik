@@ -259,7 +259,7 @@ class DataModule(L.LightningDataModule):
                 align_keys_and_collate_batch,
                 keys_mapping={self.train_tokens_column: "input_ids"},
                 collator=self.train_collator,
-                max_length=1024,  # TODO: make configurable
+                max_length=768,  # TODO: make configurable
             ),
         )
 
@@ -281,6 +281,6 @@ class DataModule(L.LightningDataModule):
                     self.val_label_column: "labels",
                 },
                 collator=self.val_collator,
-                max_length=1024,  # TODO: make configurable
+                max_length=768,  # TODO: make configurable
             ),
         )

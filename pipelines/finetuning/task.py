@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from dataclasses import fields
 from pathlib import Path
 from typing import Literal
 from typing import cast
@@ -79,18 +80,15 @@ def _validate_input(
 class _Callbacks:
     checkpoint: ModelCheckpoint
     lr_monitor: LearningRateMonitor
-    model_uploader: ClearMLRegistryUploaderCallback
     early_stopping: EarlyStopping | None = None
 
     def to_list(self) -> list[Callback]:
         """Convert dataclass fields to a list of Callbacks. None values are omitted."""
         callbacks: list[Callback] = [
-            self.checkpoint,
-            self.lr_monitor,
-            self.model_uploader,
+            getattr(self, field.name)
+            for field in fields(self)
+            if getattr(self, field.name) is not None
         ]
-        if self.early_stopping is not None:
-            callbacks.append(self.early_stopping)
         return callbacks
 
 
@@ -100,21 +98,25 @@ def _setup_callbacks(
     training_settings: TrainingSettings,
     output_model_name: str,
     output_model_tags: list[str] | None = None,
+    label_enumeration: dict[str, int] | None = None,
+    config_dict: dict[str, str] | None = None,
 ) -> _Callbacks:
     lr_monitor = LearningRateMonitor(
         logging_interval="step", log_weight_decay=True, log_momentum=True
-    )
-    checkpoint_callback = setup_checkpoint_callback(
-        root_path / "checkpoints" / task.name / task.id,
-        training_settings.checkpoint,
     )
     model_uploader = ClearMLRegistryUploaderCallback(
         task=task,
         output_model_name=output_model_name,
         output_model_tags=output_model_tags,
-        ckpt_callback=checkpoint_callback,
         verbose=True,
         uploading_frequency="after-every-eval",
+        label_enumeration=label_enumeration,
+        config_dict=config_dict,
+    )
+    checkpoint_callback = setup_checkpoint_callback(
+        root_path / "checkpoints" / task.name / task.id,
+        training_settings.checkpoint,
+        registry_uploader_callback=model_uploader,
     )
     if training_settings.early_stopping is not None:
         early_stopping_callback = setup_early_stopping_callback(
@@ -126,7 +128,6 @@ def _setup_callbacks(
     callbacks = _Callbacks(
         checkpoint=checkpoint_callback,
         lr_monitor=lr_monitor,
-        model_uploader=model_uploader,
         early_stopping=early_stopping_callback,
     )
     return callbacks
