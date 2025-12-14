@@ -52,6 +52,15 @@ repos:
   - id: hadolint-docker
     types_or: [ dockerfile ]
 
+- repo: https://github.com/docker-compose-linter/pre-commit-dclint
+  rev: v3.0.0 # Matches the dclint version, use the sha or tag you want to point at
+  hooks:
+    - id: dclint
+      # Optional: regex override for compose files
+      files: ^(docker-)?compose\.ya?ml$
+      # Optional: enable autofix on commit
+      args: [ --fix ]
+
 # - repo: https://github.com/hoxbro/clean_notebook
 #   rev: v0.1.17
 #   hooks:
