@@ -1,0 +1,7 @@
+**
+!docker/**
+!lednik/**
+!.python-version
+!.pyproject.toml
+!uv.lock
+!requirements.txt
