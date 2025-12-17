@@ -46,9 +46,9 @@ class StaticEmbeddingsServer(ls.LitAPI):  # noqa: D101
 
     def setup(self, device: str) -> None:
         """Load the StaticEmbeddingsModel from the specified path."""
-        self.model = StaticEmbeddingsModel.from_pretrained(
-            self.model_path, device=device
-        )
+        self.model = StaticEmbeddingsModel.from_pretrained(self.model_path)
+        self.model.to(device)  # type: ignore
+        self.model.eval()
         return
 
     @torch.inference_mode()

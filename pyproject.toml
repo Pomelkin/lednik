@@ -5,98 +5,97 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "kernels>=0.11.1",
-    "kostyl-toolkit[ml-core]>=0.1.20",
-    "loguru>=0.7.3",
-    "orjson>=3.11.3",
-    "pydantic>=2.12.3",
-    "scikit-learn>=1.7.2",
-    "torch>=2.9.0",
-    "tqdm>=4.67.1",
-    "transformers>=4.57.1",
+  "clearml[s3]>=2.0.2",
+  "kostyl-toolkit[ml-core]>=0.1.20",
+  "loguru>=0.7.3",
+  "openai>=2.13.0",
+  "orjson>=3.11.3",
+  "pydantic>=2.12.3",
+  "scikit-learn>=1.7.2",
+  "torch>=2.9.0",
+  "tqdm>=4.67.1",
+  "transformers>=4.57.1",
 ]
 
 [dependency-groups]
 dev = [
-    "ipywidgets>=8.1.8",
-    "jupyter>=1.1.1",
-    "pandas>=2.3.3",
-    "polars>=1.35.2",
-    "pre-commit>=4.3.0",
-    "pyarrow>=22.0.0",
+  "ipywidgets>=8.1.8",
+  "jupyter>=1.1.1",
+  "pandas>=2.3.3",
+  "polars>=1.35.2",
+  "pre-commit>=4.3.0",
+  "pyarrow>=22.0.0",
 ]
 distill = [
+  "click>=8.3.1",
+  "datasets>=4.4.1",
+  "lightning>=2.5.6",
+  "plotly>=6.5.0",
+  "tensorboard>=2.20.0",
+  "torchmetrics>=1.8.2",
+]
+serving = [
     "click>=8.3.1",
-    "datasets>=4.4.1",
-    "lightning>=2.5.6",
-    "plotly>=6.5.0",
-    "tensorboard>=2.20.0",
-    "torchmetrics>=1.8.2",
+    "litserve>=0.2.16",
+    "rich>=14.2.0",
 ]
 
 [tool.uv]
-default-groups = ["dev", "distill"]
+default-groups = ["dev", "distill", "serving"]
 
 [tool.pyright]
-typeCheckingMode = "standard" # "off" | "basic" | "standard" | "strict"
+typeCheckingMode = "standard"                                                  # "off" | "basic" | "standard" | "strict"
 reportMissingTypeStubs = false
 reportIncompatibleMethodOverride = false
-exclude = [
-    ".venv",
-    "build",
-    "dist",
-    "__pycache__",
-    "migrations",
-    "notebooks",
-]
+exclude = [".venv", "build", "dist", "__pycache__", "migrations", "notebooks"]
 
 
 [tool.ruff]
 [tool.ruff.lint]
 exclude = [
-    ".venv",
-    "build",
-    "dist",
-    "__pycache__",
-    "migrations",
-    "notebooks",
-    "tests",
+  ".venv",
+  "build",
+  "dist",
+  "__pycache__",
+  "migrations",
+  "notebooks",
+  "tests",
 ]
 
 select = [
-    "ANN",  # Enforce type annotations
-    "C90",  # Enforce maximum cyclomatic complexity
-    "D",    # Enforce docstrings
-    "NPY",  # Enforce numpy style
-    "E",    # Pycodestyle formatting errors
-    "F",    # Pyflakes logic errors
-    "B",    # Flake8-bugbear suspicious code patterns
-    "UP",   # Pyupgrade modern Python syntax
-    "N",    # Pep8-naming correct class/function names
-    "S",    # Flake8-bandit security issues
-    "C4",   # Flake8-comprehensions better comprehensions
-    "T20",  # Flake8-print forbid debug print statements
-    "TID",  # Flake8-tidy-imports forbid relative imports
-    "A",    # Flake8-builtins avoid shadowing built-ins
-    "PTH",  # Flake8-use-pathlib prefer pathlib over os.path
-    "RUF",  # Ruff-specific rules
-    "Q",   # quotes checks
+  "ANN", # Enforce type annotations
+  "C90", # Enforce maximum cyclomatic complexity
+  "D",   # Enforce docstrings
+  "NPY", # Enforce numpy style
+  "E",   # Pycodestyle formatting errors
+  "F",   # Pyflakes logic errors
+  "B",   # Flake8-bugbear suspicious code patterns
+  "UP",  # Pyupgrade modern Python syntax
+  "N",   # Pep8-naming correct class/function names
+  "S",   # Flake8-bandit security issues
+  "C4",  # Flake8-comprehensions better comprehensions
+  "T20", # Flake8-print forbid debug print statements
+  "TID", # Flake8-tidy-imports forbid relative imports
+  "A",   # Flake8-builtins avoid shadowing built-ins
+  "PTH", # Flake8-use-pathlib prefer pathlib over os.path
+  "RUF", # Ruff-specific rules
+  "Q",   # quotes checks
 ]
 ignore = [
-    "ANN001",  # Missing type annotation for function argument
-    "ANN101", 
-    "ANN002",  # Missing type annotation for *args
-    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
-    "D100",    # Missing docstring in public module
-    "D104",    # Missing docstring in public package
-    "D203",    # 1 blank line required before class docstring
-    "D212",    # Multi-line docstring summary should start at the first line
-    "D401",    # First line of docstring should be in imperative mood
-    "E501",    # Line too long
-    "N806",   # Variable in function should be lowercase
-    "N803",   # Argument name should be lowercase
-    "N812",   # Import alias should be lowercase
-    "N817",
+  "ANN001", # Missing type annotation for function argument
+  "ANN101",
+  "ANN002", # Missing type annotation for *args
+  "ANN401", # Dynamically typed expressions (typing.Any) are disallowed
+  "D100",   # Missing docstring in public module
+  "D104",   # Missing docstring in public package
+  "D203",   # 1 blank line required before class docstring
+  "D212",   # Multi-line docstring summary should start at the first line
+  "D401",   # First line of docstring should be in imperative mood
+  "E501",   # Line too long
+  "N806",   # Variable in function should be lowercase
+  "N803",   # Argument name should be lowercase
+  "N812",   # Import alias should be lowercase
+  "N817",
 ]
 
 
@@ -105,4 +104,10 @@ known-first-party = ["src", "app", "core", "lednik"]
 combine-as-imports = true
 force-single-line = true
 lines-after-imports = 2
-section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+section-order = [
+  "future",
+  "standard-library",
+  "third-party",
+  "first-party",
+  "local-folder",
+]
