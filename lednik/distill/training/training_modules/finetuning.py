@@ -302,7 +302,7 @@ class FineTuningModule(KostylLightningModule):
         if dist.is_initialized():
             lrs = {
                 "warmup_lr": self.train_cfg.warmup_lr,
-                "base_lr": self.train_cfg.peak_lr,
+                "base_lr": self.train_cfg.base_lr,
             }
             if self.train_cfg.final_lr is not None:
                 lrs["final_lr"] = self.train_cfg.final_lr
@@ -320,26 +320,26 @@ class FineTuningModule(KostylLightningModule):
         params = [
             {
                 "params": list(self.static_model.parameters()),
-                "lr": self.train_cfg.peak_lr,
+                "lr": self.train_cfg.base_lr,
                 "weight_decay": 0.0,
             }
         ]
         if self.dim_reducer is not None:
             params += create_params_groups(
                 model=self.dim_reducer,
-                lr=self.train_cfg.peak_lr,
+                lr=self.train_cfg.base_lr,
                 weight_decay=self.train_cfg.weight_decay,
             )
         if self.student_to_teacher_proj is not None:
             params += create_params_groups(
                 model=self.student_to_teacher_proj,
-                lr=self.train_cfg.peak_lr,
+                lr=self.train_cfg.base_lr,
                 weight_decay=self.train_cfg.weight_decay,
             )
         if self.student_dino_head is not None:
             params += create_params_groups(
                 model=self.student_dino_head,
-                lr=self.train_cfg.peak_lr,
+                lr=self.train_cfg.base_lr,
                 weight_decay=self.train_cfg.weight_decay,
             )
 
@@ -354,7 +354,7 @@ class FineTuningModule(KostylLightningModule):
             param_group_field="lr",
             warmup_value=self.train_cfg.warmup_lr,
             warmup_ratio=self.train_cfg.warmup_iters_ratio,
-            base_value=self.train_cfg.peak_lr,
+            base_value=self.train_cfg.base_lr,
             final_value=self.train_cfg.final_lr,
         )
 

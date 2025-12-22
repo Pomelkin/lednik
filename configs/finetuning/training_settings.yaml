@@ -18,7 +18,7 @@ trainer:
     type: "ddp"
     find_unused_parameters: true
   val_check_interval: 0.01
-  devices: 4
+  devices: 2
   precision: bf16-true
   log_every_n_steps: 25
 

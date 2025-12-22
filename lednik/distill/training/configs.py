@@ -130,7 +130,7 @@ class FinetuningConfig(BaseModel):
     warmup_iters_ratio: float | None = Field(default=None, gt=0, validate_default=False)
     warmup_lr: float | None = Field(default=None, gt=0, validate_default=False)
     weight_decay: float = 0.0
-    peak_lr: float
+    base_lr: float
     final_lr: float | None = None
     teacher_pooling_method: Literal["cls", "mean", "last"]
 
@@ -141,10 +141,10 @@ class FinetuningConfig(BaseModel):
             raise ValueError(
                 "Both warmup_iters and warmup_lr must be set together or both be None."
             )
-        if self.final_lr is not None and self.final_lr > self.peak_lr:
+        if self.final_lr is not None and self.final_lr > self.base_lr:
             raise ValueError("final_lr must be less than or equal to peak_lr.")
         if self.final_lr is None:
-            self.final_lr = self.peak_lr
+            self.final_lr = self.base_lr
         return self
 
 
