@@ -801,8 +801,8 @@ class FineTuningModule(KostylLightningModule):
                         iteration=self.global_step,
                     )
             if self.use_logprob and (self.num_labels is not None):
-                student_embeddings_np = student_embeddings.cpu().numpy()
-                labels_np = labels.cpu().numpy()
+                student_embeddings_np = student_embeddings.float().cpu().numpy()
+                labels_np = labels.float().cpu().numpy()
 
                 X_train, X_test, y_train, y_test = train_test_split(
                     student_embeddings_np,
