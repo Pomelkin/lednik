@@ -8,6 +8,7 @@ dependencies = [
   "clearml[s3]>=2.0.2",
   "kostyl-toolkit[ml-core]>=0.1.20",
   "loguru>=0.7.3",
+  "matplotlib>=3.10.8",
   "openai>=2.13.0",
   "orjson>=3.11.3",
   "pydantic>=2.12.3",
@@ -41,7 +42,7 @@ serving = [
 ]
 
 [tool.uv]
-default-groups = ["dev", "distill", "serving"]
+default-groups = ["dev", "distill"]
 
 [tool.pyright]
 typeCheckingMode = "standard"                                                  # "off" | "basic" | "standard" | "strict"
