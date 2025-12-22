@@ -29,6 +29,7 @@ class DataConfig(BaseModel):
         gt=0,
         validate_default=False,
     )
+    max_length: int = Field(gt=0)
 
 
 class TrainingSettings(KostylBaseModel):

@@ -20,6 +20,8 @@ class DirectDistillationConfig(BaseModel):
     dimension, using either PCA or an autoencoder.
     """
 
+    type: Literal["direct"] = "direct"
+
     teacher_dim_reduction_type: Literal["pca", "autoencoder"] | None = None
     student_freeze_iters: int = Field(default=0, ge=0)
     reduction_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -96,6 +98,8 @@ class DinoDistillationConfig(BaseModel):
     Sinkhorn-Knopp iterations, and prototype head layout parameters.
     """
 
+    type: Literal["dino"] = "dino"
+
     student_dim: int
     teacher_dim: int
 
@@ -128,8 +132,6 @@ class FinetuningConfig(BaseModel):
     weight_decay: float = 0.0
     peak_lr: float
     final_lr: float | None = None
-    student_dim: int
-    teacher_dim: int
     teacher_pooling_method: Literal["cls", "mean", "last"]
 
     @model_validator(mode="after")

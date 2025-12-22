@@ -171,15 +171,17 @@ class FineTuningModule(KostylLightningModule):
 
         distillation_cfg = train_cfg.distillation_method
         if isinstance(distillation_cfg, DinoDistillationConfig):
-            if train_cfg.student_dim != train_cfg.teacher_dim:
+            if distillation_cfg.student_dim != distillation_cfg.teacher_dim:
                 self.student_to_teacher_proj = nn.Linear(
-                    train_cfg.student_dim, train_cfg.teacher_dim, bias=True
+                    distillation_cfg.student_dim,
+                    distillation_cfg.teacher_dim,
+                    bias=True,
                 )
                 nn.init.trunc_normal_(self.student_to_teacher_proj.weight, std=0.02)
                 nn.init.zeros_(self.student_to_teacher_proj.bias)
             else:
                 self.student_to_teacher_proj = nn.Identity()
-            dino_head_in_dim = train_cfg.teacher_dim
+            dino_head_in_dim = distillation_cfg.teacher_dim
             head = partial(
                 DINOHead,
                 in_dim=dino_head_in_dim,
@@ -195,11 +197,11 @@ class FineTuningModule(KostylLightningModule):
         elif isinstance(distillation_cfg, DirectDistillationConfig):
             match distillation_cfg.teacher_dim_reduction_type:
                 case "pca":
-                    self.dim_reducer = PCA(n_components=train_cfg.student_dim)
+                    self.dim_reducer = PCA(n_components=distillation_cfg.student_dim)
                 case "autoencoder":
                     self.dim_reducer = Autoencoder(
-                        input_dim=train_cfg.teacher_dim,
-                        latent_dim=train_cfg.student_dim,
+                        input_dim=distillation_cfg.teacher_dim,
+                        latent_dim=distillation_cfg.student_dim,
                         dropout=distillation_cfg.reduction_dropout,
                     )
                 case None:

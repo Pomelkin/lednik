@@ -80,7 +80,6 @@ def _validate_input(
 class _Callbacks:
     checkpoint: ModelCheckpoint
     lr_monitor: LearningRateMonitor
-    model_uploader: ClearMLRegistryUploaderCallback
     early_stopping: EarlyStopping | None = None
 
     def to_list(self) -> list[Callback]:
@@ -110,7 +109,6 @@ def _setup_callbacks(
         output_model_name=output_model_name,
         output_model_tags=output_model_tags,
         verbose=True,
-        uploading_frequency="after-every-eval",
         label_enumeration=label_enumeration,
         config_dict=config_dict,
     )
@@ -118,6 +116,7 @@ def _setup_callbacks(
         root_path / "checkpoints" / task.name / task.id,
         training_settings.checkpoint,
         registry_uploader_callback=model_uploader,
+        uploading_mode="only-best",
     )
     if training_settings.early_stopping is not None:
         early_stopping_callback = setup_early_stopping_callback(
@@ -129,7 +128,6 @@ def _setup_callbacks(
     callbacks = _Callbacks(
         checkpoint=checkpoint_callback,
         lr_monitor=lr_monitor,
-        model_uploader=model_uploader,
         early_stopping=early_stopping_callback,
     )
     return callbacks
@@ -292,6 +290,7 @@ def _finetune_static_model(
         training_settings=train_settings,
         output_model_name=clearml_static_model.name,
         output_model_tags=[*clearml_static_model.tags, "finetuned"],
+        config_dict=student.config.to_diff_dict(),
     )
     loggers = _setup_loggers(task, ROOT_PATH)
     strategy = _setup_strategy(training_settings=train_settings)

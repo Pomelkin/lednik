@@ -1,15 +1,23 @@
 grad_clip_val: 2.0
-warmup_iters: 2500
+warmup_iters_ratio: 0.1
 warmup_lr: 5e-5
-base_lr: 9e-5
+peak_lr: 9e-5
+final_lr: 6e-5
 weight_decay: 0.001
-teacher_dim_reduction_type: autoencoder
-student_dim: 300
-teacher_dim: 1024
 embedding_dropout: 0.2
 teacher_pooling_method: cls
-student_freeze_iters: 1200
-reconstruction_loss_boost_while_frozen: 1.0
-reconstruction_loss_weight: 0.3
-semantic_loss_weight: 0.7
-reduction_dropout: 0.2
+distillation_method:
+  type: dino
+  student_dim: 300
+  teacher_dim: 1024
+  start_teacher_temp: 0.04
+  peak_teacher_temp: 0.07
+  warmup_teacher_temp_steps_ratio: 0.3
+  student_temp: 0.01
+  start_teacher_momentum: 0.9
+  final_teacher_momentum: 1.0
+  sinkhorn_knopp_n_iters: 3
+  head_nlayers: 2
+  head_bottleneck_dim: 256
+  head_hidden_dim: 1024
+  head_n_prototypes: 4096
