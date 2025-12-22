@@ -71,6 +71,8 @@ class _BaseStepOutput:
 class _DirectDistillationOutput:
     loss: torch.Tensor
     semantic_loss: torch.Tensor
+    teacher_embeddings: torch.Tensor
+    student_embeddings: torch.Tensor
     reconstruction_loss: torch.Tensor | None = None
 
 
@@ -78,6 +80,8 @@ class _DirectDistillationOutput:
 class _DinoDistillationOutput:
     loss: torch.Tensor
     semantic_loss: torch.Tensor
+    teacher_embeddings: torch.Tensor
+    student_embeddings: torch.Tensor
 
 
 @dataclass
@@ -520,6 +524,8 @@ class FineTuningModule(KostylLightningModule):
             loss=loss,
             semantic_loss=semantic_loss,
             reconstruction_loss=reconstruction_loss,
+            teacher_embeddings=flattened_teacher_embeddings,
+            student_embeddings=flattened_student_embeddings,
         )
 
     def _dino_distillation_step(
@@ -543,7 +549,9 @@ class FineTuningModule(KostylLightningModule):
             raise ValueError(
                 "DINO distillation step called but teacher temperature scheduler is not initialized"
             )
-        student_embeddings = self.student_to_teacher_proj(flattened_student_embeddings)
+        flattened_student_embeddings = self.student_to_teacher_proj(
+            flattened_student_embeddings
+        )
         with torch.no_grad():
             teacher_temp = self.teacher_temp_scheduler.step(self.global_step)
             teacher_logits = self.teacher_dino_head(flattened_teacher_embeddings)
@@ -553,13 +561,18 @@ class FineTuningModule(KostylLightningModule):
                 n_iterations=self.distillation_cfg.sinkhorn_knopp_n_iters,
                 process_group=self.get_process_group(),
             )
-        student_logits = self.student_dino_head(student_embeddings)
+        student_logits = self.student_dino_head(flattened_student_embeddings)
         loss = dino_ce_loss(
             teacher_probs=teacher_probs,
             student_logits=student_logits,
             student_temp=self.distillation_cfg.student_temp,
         )
-        return _DinoDistillationOutput(loss=loss, semantic_loss=loss)
+        return _DinoDistillationOutput(
+            loss=loss,
+            semantic_loss=loss,
+            teacher_embeddings=flattened_teacher_embeddings,
+            student_embeddings=flattened_student_embeddings,
+        )
 
     def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
         """Performs a single training step for knowledge distillation."""
@@ -591,6 +604,8 @@ class FineTuningModule(KostylLightningModule):
                 flattened_student_embeddings=student_embeddings,
                 flattened_teacher_embeddings=teacher_embeddings,
             )
+            teacher_embeddings = direct_distillation_output.teacher_embeddings
+            student_embeddings = direct_distillation_output.student_embeddings
             loss = direct_distillation_output.loss
             semantic_loss = direct_distillation_output.semantic_loss
             reconstruction_loss = direct_distillation_output.reconstruction_loss
@@ -599,6 +614,8 @@ class FineTuningModule(KostylLightningModule):
                 flattened_student_embeddings=student_embeddings,
                 flattened_teacher_embeddings=teacher_embeddings,
             )
+            teacher_embeddings = dino_distillation_output.teacher_embeddings
+            student_embeddings = dino_distillation_output.student_embeddings
             loss = dino_distillation_output.loss
             semantic_loss = dino_distillation_output.semantic_loss
             reconstruction_loss = None
