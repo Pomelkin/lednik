@@ -31,10 +31,12 @@ from torch import nn
 from torch.optim import AdamW
 from torch.optim.optimizer import Optimizer
 from torchmetrics import Accuracy
-from torchmetrics import CosineSimilarity
 from torchmetrics import F1Score
-from torchmetrics import MeanSquaredError
 from torchmetrics import MetricCollection
+from torchmetrics.functional import accuracy as torchmetrics_accuracy
+from torchmetrics.functional import cosine_similarity
+from torchmetrics.functional import f1_score as torchmetrics_f1_score
+from torchmetrics.functional import mean_squared_error
 from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
 from transformers.modeling_outputs import BaseModelOutput
@@ -96,17 +98,6 @@ class _EvalResult:
         value = value.detach().cpu()
         super().__setattr__(name, value)
         return
-
-
-def metric_factory() -> MetricCollection:
-    """Create a collection of metrics for evaluation."""
-    collection = MetricCollection(
-        {
-            "RMSE": MeanSquaredError(squared=False),
-            "CosineSimilarity": CosineSimilarity(reduction="mean"),
-        }
-    )
-    return collection
 
 
 def _classification_metric_factory(
@@ -223,8 +214,6 @@ class FineTuningModule(KostylLightningModule):
         self.distillation_cfg = distillation_cfg
 
         self.tokenizer = tokenizer
-        self.train_metrics = metric_factory()
-        self.val_metrics = metric_factory()
         if num_labels is not None:
             self.use_knn_in_val = True
             self.use_logprob = True
@@ -656,10 +645,21 @@ class FineTuningModule(KostylLightningModule):
                         f"Unfreezing student model at global step {self.global_step}"
                     )
         output = self._base_step(batch)
-        metrics = self.train_metrics(
-            output.student_embeddings,
-            output.teacher_embeddings,
+
+        cosine_similarity_value = cosine_similarity(
+            output.student_embeddings.detach(),
+            output.teacher_embeddings.detach(),
+            reduction="mean",
         )
+        rmse_value = mean_squared_error(
+            output.student_embeddings.detach(),
+            output.teacher_embeddings.detach(),
+            squared=False,
+        )
+        metrics = {
+            "CosineSimilarity": cosine_similarity_value,
+            "RMSE": rmse_value,
+        }
         metrics["loss"] = output.loss.detach()
         if output.reconstruction_loss is not None:
             metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
@@ -711,10 +711,21 @@ class FineTuningModule(KostylLightningModule):
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
-        metrics = self.val_metrics(
-            output.student_embeddings,
-            output.teacher_embeddings,
+
+        cosine_similarity_value = cosine_similarity(
+            output.student_embeddings.detach(),
+            output.teacher_embeddings.detach(),
+            reduction="mean",
         )
+        rmse_value = mean_squared_error(
+            output.student_embeddings.detach(),
+            output.teacher_embeddings.detach(),
+            squared=False,
+        )
+        metrics = {
+            "CosineSimilarity": cosine_similarity_value,
+            "RMSE": rmse_value,
+        }
         metrics["loss"] = output.loss.detach()
         if output.reconstruction_loss is not None:
             metrics["reconstruction_loss"] = output.reconstruction_loss.detach()
@@ -783,16 +794,39 @@ class FineTuningModule(KostylLightningModule):
                     num_labels=self.num_labels,
                     k_neighbors=5,
                 )
-                teacher_metrics = self.teacher_knn_metrics(  # type: ignore
-                    teacher_knn_preds.to(device=self.device),
-                    labels.to(device=self.device),
+
+                teacher_f1 = torchmetrics_f1_score(
+                    teacher_knn_preds,
+                    labels,
+                    task="multiclass" if self.num_labels > 2 else "binary",
+                    num_classes=self.num_labels,
+                    average="macro",
                 )
-                metrics.update(teacher_metrics)
-                student_metrics = self.student_knn_metrics(  # type: ignore
-                    student_knn_preds.to(device=self.device),
-                    labels.to(device=self.device),
+                teacher_accuracy = torchmetrics_accuracy(
+                    teacher_knn_preds,
+                    labels,
+                    task="multiclass" if self.num_labels > 2 else "binary",
+                    num_classes=self.num_labels,
                 )
-                metrics.update(student_metrics)
+                student_f1 = torchmetrics_f1_score(
+                    student_knn_preds,
+                    labels,
+                    task="multiclass" if self.num_labels > 2 else "binary",
+                    num_classes=self.num_labels,
+                    average="macro",
+                )
+                student_accuracy = torchmetrics_accuracy(
+                    student_knn_preds,
+                    labels,
+                    task="multiclass" if self.num_labels > 2 else "binary",
+                    num_classes=self.num_labels,
+                )
+                metrics = {
+                    "Teacher_F1": teacher_f1,
+                    "Teacher_Accuracy": teacher_accuracy,
+                    "Student_F1": student_f1,
+                    "Student_Accuracy": student_accuracy,
+                }
                 for key, value in metrics.items():
                     clearml_logger.report_scalar(
                         title="KNN Evaluation Metrics",
@@ -819,7 +853,11 @@ class FineTuningModule(KostylLightningModule):
                     average = "binary" if self.num_labels == 2 else "macro"
 
                     logreg_accuracy = logreg.score(X_test, y_test)
-                    logreg_f1 = f1_score(y_test, y_pred, average=average)
+                    logreg_f1 = f1_score(
+                        y_test,
+                        y_pred,
+                        average=average,
+                    )
                     logreg_precision = precision_score(y_test, y_pred, average=average)
                     logreg_recall = recall_score(y_test, y_pred, average=average)
 
