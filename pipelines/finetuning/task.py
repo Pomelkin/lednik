@@ -189,6 +189,13 @@ def _setup_strategy(
     return strategy
 
 
+def _parse_tags(ctx: click.Context, param: click.Parameter, value: str) -> list[str]:
+    """Parse comma-separated tags into a list."""
+    if not value:
+        return []
+    return [tag.strip() for tag in value.split(",") if tag.strip()]
+
+
 @click.command()
 @click.option(
     "--remote-execution-queue",
@@ -208,10 +215,18 @@ def _setup_strategy(
     help="Enable profiling for the training run.",
     default=False,
 )
+@click.option(
+    "--tags",
+    type=click.STRING,
+    default="",
+    callback=_parse_tags,
+    help="Additional tags for the task, separated by commas (e.g., 'tag1,tag2,tag3').",
+)
 def _finetune_static_model(
     remote_execution_queue: str,
     fast_dev_run: str,
     profile: bool,
+    tags: list[str],
 ) -> None:
     fast_dev_run_ = _parse_fast_dev_run(fast_dev_run)
     _validate_input(remote_execution_queue, fast_dev_run_, profile)
@@ -220,7 +235,7 @@ def _finetune_static_model(
 
     task: Task = Task.init(
         project_name="Lednik",
-        task_name="Static Model Finetuning",
+        task_name="Static Model Distillation",
         task_type=Task.TaskTypes.training,
         reuse_last_task_id=True,
         auto_connect_frameworks={
@@ -229,7 +244,7 @@ def _finetune_static_model(
             "matplotlib": True,
             "detect_repository": True,
         },
-        tags=["distillation"],
+        tags=["distillation", *tags],
     )
 
     ROOT_PATH = Path(__file__).parent.parent.parent
