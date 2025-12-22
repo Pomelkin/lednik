@@ -14,7 +14,10 @@ def _build_mlp(
     if nlayers == 1:
         return nn.Linear(in_dim, bottleneck_dim, bias=bias)
     else:
-        layers: list[nn.Module] = [nn.Linear(in_dim, hidden_dim, bias=bias)]
+        layers: list[nn.Module] = [
+            nn.RMSNorm(in_dim),
+            nn.Linear(in_dim, hidden_dim, bias=bias),
+        ]
         if use_bn:
             layers.append(nn.BatchNorm1d(hidden_dim))
         layers.append(nn.GELU())
