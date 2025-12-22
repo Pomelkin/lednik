@@ -754,7 +754,7 @@ class FineTuningModule(KostylLightningModule):
     def on_validation_epoch_end(self) -> None:
         if self.trainer.is_global_zero and self.task is not None:
             NUM_POINTS2LOG = 200
-            logger = self.task.get_logger()
+            clearml_logger = self.task.get_logger()
 
             teacher_embeddings_list = []
             student_embeddings_list = []
@@ -794,56 +794,61 @@ class FineTuningModule(KostylLightningModule):
                 )
                 metrics.update(student_metrics)
                 for key, value in metrics.items():
-                    logger.report_scalar(
+                    clearml_logger.report_scalar(
                         title="KNN Evaluation Metrics",
                         series=key,
                         value=value.item(),
                         iteration=self.global_step,
                     )
             if self.use_logprob and (self.num_labels is not None):
-                student_embeddings_np = student_embeddings.float().cpu().numpy()
-                labels_np = labels.float().cpu().numpy()
+                try:
+                    student_embeddings_np = student_embeddings.float().cpu().numpy()
+                    labels_np = labels.float().cpu().numpy()
 
-                X_train, X_test, y_train, y_test = train_test_split(
-                    student_embeddings_np,
-                    labels_np,
-                    test_size=0.2,
-                    random_state=42,
-                    stratify=labels_np,
-                )
-                logreg = LogisticRegression(max_iter=1000, class_weight="balanced")
-                logreg.fit(X_train, y_train)
-                y_pred = logreg.predict(X_test)
-
-                average = "binary" if self.num_labels == 2 else "macro"
-
-                logreg_accuracy = logreg.score(X_test, y_test)
-                logreg_f1 = f1_score(y_test, y_pred, average=average)
-                logreg_precision = precision_score(y_test, y_pred, average=average)
-                logreg_recall = recall_score(y_test, y_pred, average=average)
-
-                for name, value in [
-                    ("Accuracy", logreg_accuracy),
-                    ("F1", logreg_f1),
-                    ("Precision", logreg_precision),
-                    ("Recall", logreg_recall),
-                ]:
-                    logger.report_scalar(
-                        title="Logistic Regression Metrics",
-                        series=name,
-                        value=value,
-                        iteration=self.global_step,
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        student_embeddings_np,
+                        labels_np,
+                        test_size=0.2,
+                        random_state=42,
+                        stratify=labels_np,
                     )
-                del (
-                    student_embeddings_np,
-                    labels_np,
-                    X_train,
-                    X_test,
-                    y_train,
-                    y_test,
-                    logreg,
-                    y_pred,
-                )
+                    logreg = LogisticRegression(max_iter=1000, class_weight="balanced")
+                    logreg.fit(X_train, y_train)
+                    y_pred = logreg.predict(X_test)
+
+                    average = "binary" if self.num_labels == 2 else "macro"
+
+                    logreg_accuracy = logreg.score(X_test, y_test)
+                    logreg_f1 = f1_score(y_test, y_pred, average=average)
+                    logreg_precision = precision_score(y_test, y_pred, average=average)
+                    logreg_recall = recall_score(y_test, y_pred, average=average)
+
+                    for name, value in [
+                        ("Accuracy", logreg_accuracy),
+                        ("F1", logreg_f1),
+                        ("Precision", logreg_precision),
+                        ("Recall", logreg_recall),
+                    ]:
+                        clearml_logger.report_scalar(
+                            title="Logistic Regression Metrics",
+                            series=name,
+                            value=value,
+                            iteration=self.global_step,
+                        )
+                    del (
+                        student_embeddings_np,
+                        labels_np,
+                        X_train,
+                        X_test,
+                        y_train,
+                        y_test,
+                        logreg,
+                        y_pred,
+                    )
+                except ValueError as e:
+                    logger.warning(
+                        f"Logistic regression evaluation failed at step {self.global_step} with error: {e}"
+                    )
 
             teacher_embeddings = teacher_embeddings[:NUM_POINTS2LOG, :]
             student_embeddings = student_embeddings[:NUM_POINTS2LOG, :]
@@ -902,7 +907,7 @@ class FineTuningModule(KostylLightningModule):
             fig.update_xaxes(title_text="dim0", row=1, col=2)
             fig.update_yaxes(title_text="dim1", row=1, col=2)
 
-            self.task.get_logger().report_plotly(
+            clearml_logger.report_plotly(
                 title="Embeddings Plots",
                 series="Embeddings Teacher vs Student Scatter",
                 figure=fig,
