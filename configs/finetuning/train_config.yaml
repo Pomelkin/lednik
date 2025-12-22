@@ -1,7 +1,7 @@
 grad_clip_val: 2.0
 warmup_iters_ratio: 0.1
 warmup_lr: 5e-5
-peak_lr: 9e-5
+base_lr: 9e-5
 final_lr: 6e-5
 weight_decay: 0.001
 embedding_dropout: 0.2

@@ -390,6 +390,15 @@ class FineTuningModule(KostylLightningModule):
         }  # pyright: ignore[reportReturnType]
 
     @override
+    def lr_scheduler_step(
+        self,
+        scheduler: CosineScheduler | LinearParamScheduler,
+        metric: Any | None,
+    ) -> None:
+        scheduler.step(self.global_step)
+        return
+
+    @override
     def optimizer_zero_grad(
         self, epoch: int, batch_idx: int, optimizer: Optimizer
     ) -> None:
@@ -657,6 +666,27 @@ class FineTuningModule(KostylLightningModule):
             logger=False,
             sync_dist=True,
         )
+
+        if self.teacher_momentum_scheduler is not None:
+            val = self.teacher_momentum_scheduler.current_value()
+            self.log_dict(
+                val,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=False,
+                logger=True,
+                sync_dist=False,
+            )
+        if self.teacher_temp_scheduler is not None:
+            val = self.teacher_temp_scheduler.current_value()
+            self.log_dict(
+                val,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=False,
+                logger=True,
+                sync_dist=False,
+            )
         return output.loss
 
     @override
