@@ -73,6 +73,15 @@ class DirectDistillationConfig(BaseModel):
         if self.dim_alignment_type != "student2teacher":
             return self
 
+        if (self.reconstruction_loss_weight is not None) or (
+            self.semantic_loss_weight is not None
+        ):
+            logger.warning(
+                "reconstruction_loss_weight and semantic_loss_weight are only applicable with 'teacher2student' dimension alignment. Setting both to None."
+            )
+            self.reconstruction_loss_weight = None
+            self.semantic_loss_weight = None
+
         if (self.student_dim != self.teacher_dim) and (
             self.intermediate_proj_dim is None
         ):

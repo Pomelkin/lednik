@@ -530,7 +530,7 @@ class FineTuningModule(KostylLightningModule):
             "student_sentence_embeddings": student_sentence_embeddings,
         }
 
-    def _direct_distillation_step(
+    def _direct_distillation_step(  # noqa: C901
         self,
         flattened_student_embeddings: torch.Tensor,
         flattened_teacher_embeddings: torch.Tensor,
@@ -572,6 +572,10 @@ class FineTuningModule(KostylLightningModule):
             flattened_student_embeddings = self.student_to_teacher_proj(
                 flattened_student_embeddings
             )
+        else:
+            raise ValueError(
+                f"Unsupported dimension alignment type: {self.distillation_cfg.dim_alignment_type}"
+            )
 
         flattened_teacher_embeddings = flattened_teacher_embeddings.contiguous()
         flattened_student_embeddings = flattened_student_embeddings.contiguous()
@@ -581,15 +585,18 @@ class FineTuningModule(KostylLightningModule):
         semantic_loss = F.cosine_embedding_loss(
             flattened_student_embeddings, flattened_teacher_embeddings, targets
         )
-        if self.distillation_cfg.semantic_loss_weight is not None:
-            weighted_semantic_loss = (
-                semantic_loss * self.distillation_cfg.semantic_loss_weight
-            )
+        if self.distillation_cfg.dim_alignment_type == "teacher2student":
+            if self.distillation_cfg.semantic_loss_weight is not None:
+                weighted_semantic_loss = (
+                    semantic_loss * self.distillation_cfg.semantic_loss_weight
+                )
+            else:
+                weighted_semantic_loss = semantic_loss
+            loss = weighted_semantic_loss
+            if weighted_reconstruction_loss is not None:
+                loss = loss + weighted_reconstruction_loss
         else:
-            weighted_semantic_loss = semantic_loss
-        loss = weighted_semantic_loss
-        if weighted_reconstruction_loss is not None:
-            loss = loss + weighted_reconstruction_loss
+            loss = semantic_loss
         return _DirectDistillationOutput(
             loss=loss,
             semantic_loss=semantic_loss,
