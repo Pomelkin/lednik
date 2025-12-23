@@ -140,13 +140,13 @@ bleach==6.3.0 \
     --hash=sha256:6f3b91b1c0a02bb9a78b5a454c92506aa0fdf197e1d5e114d2e00c6f64306d22 \
     --hash=sha256:fe10ec77c93ddf3d13a73b035abaac7a9f5e436513864ccdad516693213c65d6
     # via nbconvert
-boto3==1.42.14 \
-    --hash=sha256:a5d005667b480c844ed3f814a59f199ce249d0f5669532a17d06200c0a93119c \
-    --hash=sha256:bfcc665227bb4432a235cb4adb47719438d6472e5ccbf7f09512046c3f749670
+boto3==1.42.15 \
+    --hash=sha256:94aabb83e3be3e2ea5ffa530cd5e221e8f4eb65f8d126d097e03d1ab80e5c5ce \
+    --hash=sha256:d673c9b6bb9e293e028e354de6701351f1881e3fbeb25d739dd33c4940a30929
     # via clearml
-botocore==1.42.14 \
-    --hash=sha256:cf5bebb580803c6cfd9886902ca24834b42ecaa808da14fb8cd35ad523c9f621 \
-    --hash=sha256:efe89adfafa00101390ec2c371d453b3359d5f9690261bc3bd70131e0d453e8e
+botocore==1.42.15 \
+    --hash=sha256:504c548aa333728c99a692908d3e6acb718983585ad7a836d2fab9604518a636 \
+    --hash=sha256:888ec4a817cbc56a93d5945b458621d8a6f580694373f8e93f68984f27523913
     # via
     #   boto3
     #   s3transfer
@@ -801,9 +801,9 @@ kiwisolver==1.4.9 \
     --hash=sha256:efb3a45b35622bb6c16dbfab491a8f5a391fe0e9d45ef32f4df85658232ca0e2 \
     --hash=sha256:f68e4f3eeca8fb22cc3d731f9715a13b652795ef657a13df1ad0c7dc0e9731df
     # via matplotlib
-kostyl-toolkit==0.1.28 \
-    --hash=sha256:b9ab16b760c6ee2aeaba339b716c35c0e0616b9ba13813a8f49c21abe15e2b17 \
-    --hash=sha256:e01833f771cc55c899187b59660a6c990c8caeec7ca28586ef6fa34a64649aa4
+kostyl-toolkit==0.1.31 \
+    --hash=sha256:40260730fdf39f9a73a2ece9c3bac4f4a14b38c4e8b4a5b62f6bbedb8da8cf29 \
+    --hash=sha256:f4d4c9a63295d5a45b2e58df1a1ea75e9199c78533f64dcf7e0983d36b534de5
     # via lednik
 lark==1.3.1 \
     --hash=sha256:b426a7a6d6d53189d318f2b6236ab5d6429eaf09259f1ca33eb716eed10d2905 \
@@ -917,9 +917,9 @@ matplotlib-inline==0.2.1 \
     # via
     #   ipykernel
     #   ipython
-mistune==3.1.4 \
-    --hash=sha256:93691da911e5d9d2e23bc54472892aff676df27a75274962ff9edc210364266d \
-    --hash=sha256:b5a7f801d389f724ec702840c11d8fc48f2b33519102fc7ee739e8177b672164
+mistune==3.2.0 \
+    --hash=sha256:708487c8a8cdd99c9d90eb3ed4c3ed961246ff78ac82f03418f5183ab70e398a \
+    --hash=sha256:febdc629a3c78616b94393c6580551e0e34cc289987ec6c35ed3f4be42d0eee1
     # via nbconvert
 mpmath==1.3.0 \
     --hash=sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f \
@@ -1016,9 +1016,9 @@ narwhals==2.14.0 \
     --hash=sha256:98be155c3599db4d5c211e565c3190c398c87e7bf5b3cdb157dece67641946e0 \
     --hash=sha256:b56796c9a00179bd757d15282c540024e1d5c910b19b8c9944d836566c030acf
     # via plotly
-nbclient==0.10.3 \
-    --hash=sha256:0baf171ee246e3bb2391da0635e719f27dc77d99aef59e0b04dcb935ee04c575 \
-    --hash=sha256:39e9bd403504dd2484dd0fd25235bb6a683ce8cd9873356e40d880696adc9e35
+nbclient==0.10.4 \
+    --hash=sha256:1e54091b16e6da39e297b0ece3e10f6f29f4ac4e8ee515d29f8a7099bd6553c9 \
+    --hash=sha256:9162df5a7373d70d606527300a95a975a47c137776cd942e52d9c7e29ff83440
     # via nbconvert
 nbconvert==7.16.6 \
     --hash=sha256:1375a7b67e0c2883678c48e506dc320febb57685e5ee67faa51b18a90f3a712b \
@@ -1568,9 +1568,9 @@ pyjwt==2.10.1 \
     --hash=sha256:3cc5772eb20009233caf06e9d8a0577824723b44e6648ee0a2aedb6cf9381953 \
     --hash=sha256:dcdd193e30abefd5debf142f9adfcdd2b58004e644f25406ffaebd50bd98dacb
     # via clearml
-pyparsing==3.2.5 \
-    --hash=sha256:2df8d5b7b2802ef88e8d016a2eb9c7aeaa923529cd251ed0fe4608275d4105b6 \
-    --hash=sha256:e38a4f02064cf41fe6593d328d0512495ad1f3d8a91c4f73fc401b3079a59a5e
+pyparsing==3.3.1 \
+    --hash=sha256:023b5e7e5520ad96642e2c6db4cb683d3970bd640cdf7115049a6e9c3682df82 \
+    --hash=sha256:47fad0f17ac1e2cad3de3b458570fbc9b03560aa029ed5e16ee5554da9a2251c
     # via
     #   clearml
     #   matplotlib
