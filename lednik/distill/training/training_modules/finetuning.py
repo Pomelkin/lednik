@@ -13,7 +13,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from clearml import Task
 from kostyl.ml.dist_utils import scale_lrs_by_world_size
-from kostyl.ml.lightning.extenstions import KostylLightningModule
+from kostyl.ml.lightning.extensions import KostylLightningModule
 from kostyl.ml.lightning.steps_estimation import estimate_total_steps
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.ml.schedulers.cosine import CosineParamScheduler
@@ -562,8 +562,8 @@ class FineTuningModule(KostylLightningModule):
                     )
                 else:
                     loss_weight = self.distillation_cfg.reconstruction_loss_weight
-                weight = cast(float, loss_weight)
-                weighted_reconstruction_loss = reconstruction_loss * weight
+                loss_weight = cast(float, loss_weight)
+                weighted_reconstruction_loss = reconstruction_loss * loss_weight
         elif self.distillation_cfg.dim_alignment_type == "student2teacher":
             if self.student_to_teacher_proj is None:
                 raise ValueError(
@@ -586,15 +586,18 @@ class FineTuningModule(KostylLightningModule):
             flattened_student_embeddings, flattened_teacher_embeddings, targets
         )
         if self.distillation_cfg.dim_alignment_type == "teacher2student":
-            if self.distillation_cfg.semantic_loss_weight is not None:
-                weighted_semantic_loss = (
-                    semantic_loss * self.distillation_cfg.semantic_loss_weight
-                )
+            if self.is_frozen("student") and weighted_reconstruction_loss is not None:
+                loss = weighted_reconstruction_loss
             else:
-                weighted_semantic_loss = semantic_loss
-            loss = weighted_semantic_loss
-            if weighted_reconstruction_loss is not None:
-                loss = loss + weighted_reconstruction_loss
+                if self.distillation_cfg.semantic_loss_weight is not None:
+                    weighted_semantic_loss = (
+                        semantic_loss * self.distillation_cfg.semantic_loss_weight
+                    )
+                else:
+                    weighted_semantic_loss = semantic_loss
+                loss = weighted_semantic_loss
+                if weighted_reconstruction_loss is not None:
+                    loss = loss + weighted_reconstruction_loss
         else:
             loss = semantic_loss
         return _DirectDistillationOutput(
