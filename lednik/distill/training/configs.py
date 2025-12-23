@@ -21,7 +21,19 @@ class DirectDistillationConfig(BaseModel):
     """
 
     type: Literal["direct"] = "direct"
+    student_dim: int
+    teacher_dim: int
+    dim_alignment_type: Literal["teacher2student", "student2teacher"] | None = None
 
+    # student2teacher
+    intermediate_proj_dim: int | None = Field(
+        default=None,
+        ge=1,
+        validate_default=False,
+    )
+    proj_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    # teacher2student
     teacher_dim_reduction_type: Literal["pca", "autoencoder"] | None = None
     student_freeze_iters: int = Field(default=0, ge=0)
     reduction_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -35,22 +47,56 @@ class DirectDistillationConfig(BaseModel):
         ge=0,
         validate_default=False,
     )
-    semantic_loss_weight: float
-    student_dim: int
-    teacher_dim: int
+    semantic_loss_weight: float | None = Field(
+        default=None, ge=0.0, validate_default=False
+    )
 
     @model_validator(mode="after")
-    def validate_reconstruction_params(self) -> "DirectDistillationConfig":  # noqa: C901
+    def validate_dim_alignment_type(self) -> "DirectDistillationConfig":
+        """Validate that dim_alignment_type is set correctly."""
+        if self.student_dim != self.teacher_dim:
+            if self.dim_alignment_type is None:
+                raise ValueError(
+                    "dim_alignment_type must be set when student_dim and teacher_dim differ."
+                )
+        else:
+            if self.dim_alignment_type is not None:
+                logger.warning(
+                    "dim_alignment_type is set but student_dim and teacher_dim are equal. Setting dim_alignment_type to None."
+                )
+                self.dim_alignment_type = None
+        return self
+
+    @model_validator(mode="after")
+    def validate_student2teacher_params(self) -> "DirectDistillationConfig":
+        """Validate that student2teacher parameters are set correctly."""
+        if self.dim_alignment_type != "student2teacher":
+            return self
+
+        if (self.student_dim != self.teacher_dim) and (
+            self.intermediate_proj_dim is None
+        ):
+            logger.warning(
+                "intermediate_proj_dim is not set while student_dim and teacher_dim differ. This will cause an simple linear layer to be used for projection."
+                " Only a basic linear projection will be applied in that case, which may limit expressiveness."
+                "For MLP projection, set intermediate_proj_dim to a value."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_teacher2student_params(self) -> "DirectDistillationConfig":  # noqa: C901
         """Validate that student freeze parameters are set correctly."""
+        if self.dim_alignment_type != "teacher2student":
+            return self
+
+        if (self.reconstruction_loss_weight is None) or (self.semantic_loss_weight is None):  # fmt: skip
+            raise ValueError(
+                "Both reconstruction_loss_weight and semantic_loss_weight must be set when using 'teacher2student' dimension alignment."
+            )
+
         if self.student_dim > self.teacher_dim:
             raise ValueError("student_dim must be less than or equal to teacher_dim.")
-        if (
-            self.student_dim != self.teacher_dim
-            and self.teacher_dim_reduction_type is None
-        ):
-            raise ValueError(
-                "teacher_dim_reduction_type must be set when student_dim and teacher_dim differ."
-            )
+
         if self.teacher_dim_reduction_type != "autoencoder":
             if self.reduction_dropout > 0.0:
                 logger.warning(
@@ -103,6 +149,13 @@ class DinoDistillationConfig(BaseModel):
     student_dim: int
     teacher_dim: int
 
+    intermediate_proj_dim: int | None = Field(
+        default=None,
+        ge=1,
+        validate_default=False,
+    )
+    proj_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
+
     start_teacher_temp: float
     peak_teacher_temp: float
     warmup_teacher_temp_steps_ratio: float
@@ -115,6 +168,18 @@ class DinoDistillationConfig(BaseModel):
     head_bottleneck_dim: int
     head_hidden_dim: int
     head_n_prototypes: int
+
+
+@model_validator(mode="after")
+def validate_projection_params(self) -> "DinoDistillationConfig":
+    """Validate that projection parameters are set correctly."""
+    if (self.student_dim != self.teacher_dim) and (self.intermediate_proj_dim is None):
+        logger.warning(
+            "intermediate_proj_dim is not set while student_dim and teacher_dim differ. "
+            "Only a basic linear projection will be applied for projection from student_dim to teacher_dim in that case, which may limit expressiveness."
+            "For MLP projection, set intermediate_proj_dim to a value."
+        )
+    return self
 
 
 class FinetuningConfig(BaseModel):

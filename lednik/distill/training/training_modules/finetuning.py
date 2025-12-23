@@ -125,6 +125,34 @@ def _classification_metric_factory(
     return metric_collection
 
 
+def _build_dim_proj(
+    input_dim: int,
+    output_dim: int,
+    dropout: float,
+    intermediate_dim: int | None = None,
+) -> nn.Sequential:
+    if intermediate_dim is not None:
+        layers = [
+            nn.Linear(input_dim, intermediate_dim),
+            nn.GELU(),
+            nn.Dropout(dropout) if dropout > 0.0 else nn.Identity(),
+            nn.Linear(intermediate_dim, output_dim),
+        ]
+        nn.init.trunc_normal_(layers[0].weight, std=0.02)
+        nn.init.zeros_(layers[0].bias)
+        nn.init.trunc_normal_(layers[3].weight, std=0.02)
+        nn.init.zeros_(layers[3].bias)
+    else:
+        layers = [
+            nn.Dropout(dropout) if dropout > 0.0 else nn.Identity(),
+            nn.Linear(input_dim, output_dim),
+        ]
+        nn.init.trunc_normal_(layers[1].weight, std=0.02)
+        nn.init.zeros_(layers[1].bias)
+
+    return nn.Sequential(*layers)
+
+
 class FineTuningModule(KostylLightningModule):
     """A PyTorch Lightning module for fine-tuning a static embeddings model via knowledge distillation."""
 
@@ -157,7 +185,7 @@ class FineTuningModule(KostylLightningModule):
 
         self.student_dino_head: DINOHead | None = None
         self.teacher_dino_head: DINOHead | None = None
-        self.student_to_teacher_proj: nn.Linear | nn.Identity | None = None
+        self.student_to_teacher_proj: nn.Sequential | nn.Identity | None = None
         self.dim_reducer: PCA | Autoencoder | None = None
         self.teacher_temp_scheduler: LinearParamScheduler | None = None
         self.teacher_momentum_scheduler: CosineParamScheduler | None = None
@@ -166,45 +194,18 @@ class FineTuningModule(KostylLightningModule):
 
         distillation_cfg = train_cfg.distillation_method
         if isinstance(distillation_cfg, DinoDistillationConfig):
-            if distillation_cfg.student_dim != distillation_cfg.teacher_dim:
-                self.student_to_teacher_proj = nn.Linear(
-                    distillation_cfg.student_dim,
-                    distillation_cfg.teacher_dim,
-                    bias=True,
-                )
-                nn.init.trunc_normal_(self.student_to_teacher_proj.weight, std=0.02)
-                nn.init.zeros_(self.student_to_teacher_proj.bias)
-            else:
-                self.student_to_teacher_proj = nn.Identity()
-            dino_head_in_dim = distillation_cfg.teacher_dim
-            head = partial(
-                DINOHead,
-                in_dim=dino_head_in_dim,
-                out_dim=distillation_cfg.head_n_prototypes,
-                nlayers=distillation_cfg.head_nlayers,
-                bottleneck_dim=distillation_cfg.head_bottleneck_dim,
-                hidden_dim=distillation_cfg.head_hidden_dim,
+            (
+                self.student_to_teacher_proj,
+                self.student_dino_head,
+                self.teacher_dino_head,
+            ) = self._init_dino(  # type: ignore
+                distillation_cfg
             )
-            self.student_dino_head = head()
-            self.teacher_dino_head = head().eval()
-            for param in self.teacher_dino_head.parameters():
-                param.requires_grad = False
         elif isinstance(distillation_cfg, DirectDistillationConfig):
-            match distillation_cfg.teacher_dim_reduction_type:
-                case "pca":
-                    self.dim_reducer = PCA(n_components=distillation_cfg.student_dim)
-                case "autoencoder":
-                    self.dim_reducer = Autoencoder(
-                        input_dim=distillation_cfg.teacher_dim,
-                        latent_dim=distillation_cfg.student_dim,
-                        dropout=distillation_cfg.reduction_dropout,
-                    )
-                case None:
-                    self.dim_reducer = None
-                case _:
-                    raise ValueError(
-                        f"Unsupported dimension reduction type: {train_cfg.teacher_dim_reduction_type}"
-                    )
+            if distillation_cfg.dim_alignment_type == "teacher2student":
+                self.dim_reducer = self._init_direct_t2s(distillation_cfg)
+            elif distillation_cfg.dim_alignment_type == "student2teacher":
+                self.student_to_teacher_proj = self._init_direct_s2t(distillation_cfg)
         else:
             raise ValueError(
                 f"Unsupported distillation method config type: {type(distillation_cfg)}"
@@ -236,6 +237,73 @@ class FineTuningModule(KostylLightningModule):
 
         self.eval_outputs: list[_EvalResult] = []
         return
+
+    def _init_dino(
+        self, config: DinoDistillationConfig
+    ) -> tuple[nn.Sequential | nn.Identity, DINOHead, DINOHead]:
+        if config.student_dim != config.teacher_dim:
+            student_to_teacher_proj = _build_dim_proj(
+                input_dim=config.student_dim,
+                intermediate_dim=config.intermediate_proj_dim,
+                output_dim=config.teacher_dim,
+                dropout=config.proj_dropout,
+            )
+        else:
+            student_to_teacher_proj = nn.Identity()
+
+        head = partial(
+            DINOHead,
+            in_dim=config.teacher_dim,
+            out_dim=config.head_n_prototypes,
+            nlayers=config.head_nlayers,
+            bottleneck_dim=config.head_bottleneck_dim,
+            hidden_dim=config.head_hidden_dim,
+        )
+        student_dino_head = head()
+        teacher_dino_head = head().eval()
+        for param in teacher_dino_head.parameters():
+            param.requires_grad = False
+
+        output = (
+            student_to_teacher_proj,
+            student_dino_head,
+            teacher_dino_head,
+        )
+        return output
+
+    def _init_direct_t2s(
+        self, config: DirectDistillationConfig
+    ) -> PCA | Autoencoder | None:
+        match config.teacher_dim_reduction_type:
+            case "pca":
+                dim_reducer = PCA(n_components=config.student_dim)
+            case "autoencoder":
+                dim_reducer = Autoencoder(
+                    input_dim=config.teacher_dim,
+                    latent_dim=config.student_dim,
+                    dropout=config.reduction_dropout,
+                )
+            case None:
+                dim_reducer = None
+            case _:
+                raise ValueError(
+                    f"Unsupported dimension reduction type: {config.teacher_dim_reduction_type}"
+                )
+        return dim_reducer
+
+    def _init_direct_s2t(
+        self, config: DirectDistillationConfig
+    ) -> nn.Sequential | nn.Identity:
+        if config.student_dim != config.teacher_dim:
+            student_to_teacher_proj = _build_dim_proj(
+                input_dim=config.student_dim,
+                intermediate_dim=config.intermediate_proj_dim,
+                output_dim=config.teacher_dim,
+                dropout=config.proj_dropout,
+            )
+        else:
+            student_to_teacher_proj = nn.Identity()
+        return student_to_teacher_proj
 
     @property
     @override
@@ -471,14 +539,39 @@ class FineTuningModule(KostylLightningModule):
             raise ValueError(
                 "Direct distillation step called but distillation config is not DirectDistillationConfig"
             )
-
-        if self.dim_reducer is not None:
+        reconstruction_loss: torch.Tensor | None = None
+        weighted_reconstruction_loss: torch.Tensor | None = None
+        if self.distillation_cfg.dim_alignment_type == "teacher2student":
+            if self.dim_reducer is None:
+                raise ValueError(
+                    "Dimension reducer is not initialized for teacher2student dimension alignment"
+                )
             dim_reduction_output = self.dim_reducer.transform(
                 flattened_teacher_embeddings
             )
             flattened_teacher_embeddings = dim_reduction_output.reduced_data
-        else:
-            dim_reduction_output = None
+            reconstruction_loss = dim_reduction_output.reconstruction_loss
+            if reconstruction_loss is not None:
+                if (
+                    self.is_frozen("student")
+                    and self.distillation_cfg.reconstruction_loss_boost_while_frozen
+                    is not None
+                ):
+                    loss_weight = (
+                        self.distillation_cfg.reconstruction_loss_boost_while_frozen
+                    )
+                else:
+                    loss_weight = self.distillation_cfg.reconstruction_loss_weight
+                weight = cast(float, loss_weight)
+                weighted_reconstruction_loss = reconstruction_loss * weight
+        elif self.distillation_cfg.dim_alignment_type == "student2teacher":
+            if self.student_to_teacher_proj is None:
+                raise ValueError(
+                    "Student to teacher projection is not initialized for student2teacher dimension alignment"
+                )
+            flattened_student_embeddings = self.student_to_teacher_proj(
+                flattened_student_embeddings
+            )
 
         flattened_teacher_embeddings = flattened_teacher_embeddings.contiguous()
         flattened_student_embeddings = flattened_student_embeddings.contiguous()
@@ -488,27 +581,15 @@ class FineTuningModule(KostylLightningModule):
         semantic_loss = F.cosine_embedding_loss(
             flattened_student_embeddings, flattened_teacher_embeddings, targets
         )
-        loss = semantic_loss * self.distillation_cfg.semantic_loss_weight
-        reconstruction_loss = None
-        if dim_reduction_output is not None:
-            if dim_reduction_output.reconstruction_loss is not None:
-                reconstruction_loss = dim_reduction_output.reconstruction_loss
-                if self.is_frozen("student"):
-                    if (
-                        self.distillation_cfg.reconstruction_loss_boost_while_frozen
-                        is not None
-                    ):
-                        weight = (
-                            self.distillation_cfg.reconstruction_loss_boost_while_frozen
-                        )
-                    else:
-                        weight = self.distillation_cfg.reconstruction_loss_weight
-                        weight = cast(float, weight)
-                    loss = reconstruction_loss * weight
-                else:
-                    weight = self.distillation_cfg.reconstruction_loss_weight
-                    weight = cast(float, weight)
-                    loss = loss + reconstruction_loss * weight
+        if self.distillation_cfg.semantic_loss_weight is not None:
+            weighted_semantic_loss = (
+                semantic_loss * self.distillation_cfg.semantic_loss_weight
+            )
+        else:
+            weighted_semantic_loss = semantic_loss
+        loss = weighted_semantic_loss
+        if weighted_reconstruction_loss is not None:
+            loss = loss + weighted_reconstruction_loss
         return _DirectDistillationOutput(
             loss=loss,
             semantic_loss=semantic_loss,
