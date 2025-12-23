@@ -102,7 +102,7 @@ def _setup_callbacks(
     config_dict: dict[str, str] | None = None,
 ) -> _Callbacks:
     lr_monitor = LearningRateMonitor(
-        logging_interval="step", log_weight_decay=True, log_momentum=True
+        logging_interval="step", log_weight_decay=True, log_momentum=False
     )
     model_uploader = ClearMLRegistryUploaderCallback(
         task=task,
@@ -111,6 +111,7 @@ def _setup_callbacks(
         verbose=True,
         label_enumeration=label_enumeration,
         config_dict=config_dict,
+        enable_tag_versioning=False,
     )
     checkpoint_callback = setup_checkpoint_callback(
         root_path / "checkpoints" / task.name / task.id,
@@ -304,7 +305,7 @@ def _finetune_static_model(
         ROOT_PATH,
         training_settings=train_settings,
         output_model_name=clearml_static_model.name,
-        output_model_tags=[*clearml_static_model.tags, "finetuned"],
+        output_model_tags=[*clearml_static_model.tags],
         config_dict=student.config.to_diff_dict(),
     )
     loggers = _setup_loggers(task, ROOT_PATH)

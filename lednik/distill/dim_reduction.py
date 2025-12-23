@@ -27,17 +27,17 @@ class Autoencoder(nn.Module):
         super().__init__()
         self.encoder_norm = nn.RMSNorm(input_dim)
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, latent_dim, bias=True),
+            nn.Linear(input_dim, input_dim, bias=True),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(latent_dim, latent_dim, bias=True),
+            nn.Linear(input_dim, latent_dim, bias=True),
         )
         self.decoder_norm = nn.RMSNorm(latent_dim)
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim, bias=True),
+            nn.Linear(latent_dim, input_dim, bias=True),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(latent_dim, input_dim, bias=True),
+            nn.Linear(input_dim, input_dim, bias=True),
         )
         self.apply(self._init_weights)
         return
