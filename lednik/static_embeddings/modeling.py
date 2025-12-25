@@ -104,7 +104,7 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrained
                     token=token,
                 )
                 model.add_tokenizer(tokenizer)
-            except (TypeError, FileNotFoundError) as e:
+            except (TypeError, FileNotFoundError, OSError) as e:
                 logger.warning(
                     "Tokenizer could not be loaded. Make sure the tokenizer files are present."
                 )
@@ -350,12 +350,13 @@ class StaticEmbeddingsClassificationHead(nn.Module):
             else nn.Identity()
         )
         self.norm = nn.RMSNorm(config.embedding_dim)
+        self.project = nn.Linear(config.embedding_dim, config.embedding_dim)
         self.head = nn.Linear(config.embedding_dim, config.num_labels)
         return
 
     def forward(self, sentence_embeddings: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        x = F.gelu(self.dropout(self.norm(sentence_embeddings)), approximate="tanh")
+        x = self.dropout(F.relu(self.project(self.norm(sentence_embeddings))))
         logits = self.head(x)
         return logits
 

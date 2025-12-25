@@ -119,11 +119,11 @@ def _finetune_static_model(
     ROOT_PATH = Path(__file__).parent.parent.parent
 
     train_config = TrainConfig.connect_as_dict(
-        task, ROOT_PATH / "configs" / "finetuning" / "train_config.yaml"
+        task, ROOT_PATH / "configs" / "classification" / "train_config.yaml"
     )
     train_settings = TrainingSettings.connect_as_file(
         task,
-        ROOT_PATH / "configs" / "finetuning" / "training_settings.yaml",
+        ROOT_PATH / "configs" / "classification" / "training_settings.yaml",
         alias="Settings",
     )
 
@@ -144,6 +144,8 @@ def _finetune_static_model(
         model=StaticEmbeddingsForSequenceClassification,
         name="Static Embeddings (Initial model)",
         task=task,
+        weights_prefix=train_settings.weights_prefix,
+        strict_prefix=True,
         embedding_dropout=train_config.embedding_dropout,
         classifier_dropout=train_config.classifier_dropout,
         id2label=train_config.id2label,
@@ -174,6 +176,7 @@ def _finetune_static_model(
         name=clearml_model.name + " For Seq Classification",
         tags=[*clearml_model.tags, "Seq Classification"],
         framework="PyTorch",
+        label_enumeration=train_config.label2id,
         config_dict=None,
     )
     callbacks = setup_callbacks(

@@ -33,6 +33,7 @@ class TrainingSettings(KostylBaseModel):
 
     model_id: str
     tokenizer_id: str | None = None
+    weights_prefix: str | None = None
     trainer: LightningTrainerParameters
     early_stopping: EarlyStoppingConfig | None = None
     checkpoint: CheckpointConfig = CheckpointConfig()
