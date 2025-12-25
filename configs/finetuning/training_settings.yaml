@@ -1,9 +1,10 @@
 data:
   train_datasets:
-    Kinopoisk-Reviews: 4154370acaa644df8ed9e076c75778ae
+    Cultura-Ru(train): f3f9ac08e9054d39928853d797a4ab8d
+    Lenta-RU(train): c0db0a47494649e8a56c35ab237bd414
   val_datasets:
-    Kinopoisk-Reviews: 4154370acaa644df8ed9e076c75778ae
-  batch_size: 2
+    Telegram-Financial-Sentiment(val): 15a6b40eb988463a9654e5109f784619
+  batch_size: 128
   num_workers: 5
   train_tokens_column: USER-bge-m3
   val_tokens_column: USER-bge-m3
@@ -13,13 +14,13 @@ data:
 
 trainer:
   accelerator: "gpu"
-  max_epochs: 1
+  max_epochs: 2
   strategy:
     type: "ddp"
     find_unused_parameters: true
-  val_check_interval: 0.01
+  val_check_interval: 0.1
   devices: 2
-  precision: bf16-true
+  precision: bf16-mixed
   log_every_n_steps: 25
 
 early_stopping:
