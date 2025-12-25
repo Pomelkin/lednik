@@ -90,14 +90,14 @@ def _metric_factory(
     return collection
 
 
-@dataclass(slots=True)
+@dataclass
 class _BaseStepOutput:
     loss: torch.Tensor
     logits: torch.Tensor
     labels: torch.Tensor
 
 
-@dataclass(slots=True)
+@dataclass
 class _ValStepOutput:
     gt_label: int
     pred_label: int
