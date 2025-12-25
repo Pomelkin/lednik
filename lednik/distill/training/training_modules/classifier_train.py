@@ -35,10 +35,8 @@ logger = setup_logger()
 
 
 def _metric_factory(
-    prefix: str, num_classes: int, process_group: dist.ProcessGroup | None = None
+    num_classes: int, process_group: dist.ProcessGroup | None = None
 ) -> MetricCollection:
-    if prefix[-1] != "/":
-        prefix += "/"
     if num_classes < 2:
         collection = MetricCollection(
             [
@@ -59,7 +57,7 @@ def _metric_factory(
                     process_group=process_group,
                 ),
             ],
-            prefix=prefix,
+            compute_groups=False,
         )
     else:
         collection = MetricCollection(
@@ -85,7 +83,7 @@ def _metric_factory(
                     process_group=process_group,
                 ),
             ],
-            prefix=prefix,
+            compute_groups=False,
         )
     return collection
 
@@ -157,12 +155,10 @@ class ClassifierTrainingModule(KostylLightningModule):
     @override
     def on_train_start(self) -> None:
         self.train_metrics = _metric_factory(
-            prefix="train/",
             num_classes=self.model.config.num_labels,
             process_group=self.get_process_group(),
         ).to(self.device)
         self.val_metrics = _metric_factory(
-            prefix="val/",
             num_classes=self.model.config.num_labels,
             process_group=self.get_process_group(),
         ).to(self.device)
@@ -279,28 +275,22 @@ class ClassifierTrainingModule(KostylLightningModule):
     ) -> torch.Tensor:
         output = self._base_step(batch)
         if self.train_metrics is not None:
-            self.train_metrics.update(output.logits, output.labels)
-            self.log_dict(
-                self.train_metrics,
-                prog_bar=False,
-                on_step=True,
-                on_epoch=False,
-                logger=True,
-                sync_dist=False,
-            )
-        detached_loss = output.loss.detach()
-        self.log(
-            "train/loss",
-            detached_loss,
+            metrics = self.train_metrics(output.logits, output.labels)
+        else:
+            metrics = {}
+        metrics.update({"loss": output.loss.detach()})
+        self.log_dict(
+            metrics,
             prog_bar=False,
             on_step=True,
             on_epoch=False,
             logger=True,
-            sync_dist=False,
+            sync_dist=True,
+            stage="train",
         )
         self.log(
             "train_loss",
-            detached_loss,
+            metrics["loss"],
             prog_bar=True,
             on_step=True,
             on_epoch=True,
@@ -310,33 +300,33 @@ class ClassifierTrainingModule(KostylLightningModule):
         return output.loss
 
     @override
+    def on_train_epoch_end(self) -> None:
+        if self.train_metrics is not None:
+            self.train_metrics.reset()
+        return
+
+    @override
     def validation_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
         if self.val_metrics is not None:
             metrics = self.val_metrics(output.logits, output.labels)
-            self.log_dict(
-                metrics,
-                prog_bar=False,
-                on_step=False,
-                on_epoch=True,
-                logger=True,
-                sync_dist=False,
-            )
-        detached_loss = output.loss.detach()
-        self.log(
-            "val/loss",
-            detached_loss,
+        else:
+            metrics = {}
+        metrics.update({"loss": output.loss.detach()})
+        self.log_dict(
+            metrics,
             prog_bar=False,
-            on_step=True,
-            on_epoch=False,
+            on_step=False,
+            on_epoch=True,
             logger=True,
             sync_dist=True,
+            stage="val",
         )
         self.log(
             "val_loss",
-            detached_loss,
+            metrics["loss"],
             prog_bar=True,
             on_step=False,
             on_epoch=True,
@@ -365,6 +355,8 @@ class ClassifierTrainingModule(KostylLightningModule):
 
     @override
     def on_validation_epoch_end(self) -> None:
+        if self.val_metrics is not None:
+            self.val_metrics.reset()
         if self.trainer.is_global_zero and self.task is not None:
             NUM_ROWS2LOG = 20
 
@@ -408,7 +400,7 @@ class ClassifierTrainingModule(KostylLightningModule):
             self.task.get_logger().report_table(
                 title="Validation Predictions",
                 series="Dataframe",
-                table_plot=df,
+                table_plot=df.to_pandas(use_pyarrow_extension_array=True),
                 iteration=self.global_step,
             )
             self.val_outputs = []
