@@ -1,30 +1,16 @@
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import click
 import lightning as L
 import torch
+from clearml import OutputModel
 from clearml import Task
 from kostyl.ml.clearml.pulling_utils import get_model_from_clearml
 from kostyl.ml.clearml.pulling_utils import get_tokenizer_from_clearml
-from kostyl.ml.configs import DDPStrategyConfig
-from kostyl.ml.configs import FSDP1StrategyConfig
-from kostyl.ml.configs import SingleDeviceStrategyConfig
-from kostyl.ml.lightning.callbacks import ClearMLRegistryUploaderCallback
-from kostyl.ml.lightning.callbacks import setup_checkpoint_callback
-from kostyl.ml.lightning.callbacks import setup_early_stopping_callback
-from kostyl.ml.lightning.loggers.tb_logger import setup_tb_logger
+from kostyl.ml.lightning.training_utils import setup_callbacks
+from kostyl.ml.lightning.training_utils import setup_loggers
+from kostyl.ml.lightning.training_utils import setup_strategy
 from kostyl.utils.logging import setup_logger
-from lightning.pytorch.callbacks import Callback
-from lightning.pytorch.callbacks import EarlyStopping
-from lightning.pytorch.callbacks import LearningRateMonitor
-from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.loggers import TensorBoardLogger
-from lightning.pytorch.strategies import DDPStrategy
-from lightning.pytorch.strategies import FSDPStrategy
-from torch.distributed.fsdp import MixedPrecision
-from torch.nn import Module
 
 from lednik.distill.training.training_modules import ClassifierTrainingModule
 from lednik.static_embeddings import StaticEmbeddingsForSequenceClassification
@@ -70,119 +56,6 @@ def _validate_input(
             "Cannot use profiling without `fast-dev-run`. Please set `fast-dev-run` to a positive value."
         )
     return
-
-
-@dataclass
-class _Callbacks:
-    checkpoint: ModelCheckpoint
-    lr_monitor: LearningRateMonitor
-    model_uploader: ClearMLRegistryUploaderCallback
-    early_stopping: EarlyStopping | None = None
-
-    def to_list(self) -> list[Callback]:
-        """Convert dataclass fields to a list of Callbacks. None values are omitted."""
-        callbacks = [
-            self.checkpoint,
-            self.lr_monitor,
-            self.model_uploader,
-        ]
-        if self.early_stopping is not None:
-            callbacks.append(self.early_stopping)
-        return callbacks
-
-
-def _setup_callbacks(
-    task: Task,
-    root_path: Path,
-    training_settings: TrainingSettings,
-    output_model_name: str,
-    output_model_tags: list[str] | None = None,
-) -> _Callbacks:
-    lr_monitor = LearningRateMonitor(
-        logging_interval="step", log_weight_decay=True, log_momentum=True
-    )
-    checkpoint_callback = setup_checkpoint_callback(
-        root_path / "checkpoints" / task.name / task.id,
-        training_settings.checkpoint,
-    )
-    model_uploader = ClearMLRegistryUploaderCallback(
-        task=task,
-        output_model_name=output_model_name,
-        output_model_tags=output_model_tags,
-        ckpt_callback=checkpoint_callback,
-        verbose=True,
-        uploading_frequency="after-every-eval",
-    )
-    if training_settings.early_stopping is not None:
-        early_stopping_callback = setup_early_stopping_callback(
-            training_settings.early_stopping
-        )
-    else:
-        early_stopping_callback = None
-
-    callbacks = _Callbacks(
-        checkpoint=checkpoint_callback,
-        lr_monitor=lr_monitor,
-        model_uploader=model_uploader,
-        early_stopping=early_stopping_callback,
-    )
-    return callbacks
-
-
-def _setup_loggers(task: Task, root_path: Path) -> list[TensorBoardLogger]:
-    loggers = [
-        setup_tb_logger(root_path / "runs" / task.name / task.id),
-    ]
-    return loggers
-
-
-def _setup_strategy(
-    training_settings: TrainingSettings,
-    auto_wrap_policy: set[type[Module]] | None = None,
-) -> Literal["auto"] | FSDPStrategy | DDPStrategy:
-    if isinstance(training_settings.trainer.devices, list):
-        num_devices = len(training_settings.trainer.devices)
-    else:
-        num_devices = training_settings.trainer.devices
-
-    match training_settings.trainer.strategy:
-        case FSDP1StrategyConfig():
-            if num_devices < 2:
-                raise ValueError("FSDP strategy requires multiple devices.")
-
-            if auto_wrap_policy is None:
-                raise ValueError("auto_wrap_policy must be provided for FSDP strategy.")
-
-            mixed_precision_config = MixedPrecision(
-                param_dtype=getattr(
-                    torch, training_settings.trainer.strategy.param_dtype
-                ),
-                reduce_dtype=getattr(
-                    torch, training_settings.trainer.strategy.reduce_dtype
-                ),
-                buffer_dtype=getattr(
-                    torch, training_settings.trainer.strategy.buffer_dtype
-                ),
-            )
-            strategy = FSDPStrategy(
-                auto_wrap_policy=auto_wrap_policy,
-                mixed_precision=mixed_precision_config,
-            )
-        case DDPStrategyConfig():
-            if num_devices < 2:
-                raise ValueError("DDP strategy requires at least two devices.")
-            strategy = DDPStrategy(
-                find_unused_parameters=training_settings.trainer.strategy.find_unused_parameters
-            )
-        case SingleDeviceStrategyConfig():
-            if num_devices != 1:
-                raise ValueError("SingleDevice strategy requires exactly one device.")
-            strategy = "auto"
-        case _:
-            raise ValueError(
-                f"Unsupported strategy type: {type(training_settings.trainer.strategy)}"
-            )
-    return strategy
 
 
 def _parse_tags(ctx: click.Context, param: click.Parameter, value: str) -> list[str]:
@@ -240,7 +113,7 @@ def _finetune_static_model(
             "matplotlib": True,
             "detect_repository": True,
         },
-        tags=["classification", *tags],
+        tags=tags,
     )
 
     ROOT_PATH = Path(__file__).parent.parent.parent
@@ -296,16 +169,27 @@ def _finetune_static_model(
         config=train_config,
         task=task,
     )
-
-    callbacks = _setup_callbacks(
+    output_model = OutputModel(
+        task=task,
+        name=clearml_model.name + " For Seq Classification",
+        tags=[*clearml_model.tags, "Seq Classification"],
+        framework="PyTorch",
+        config_dict=None,
+    )
+    callbacks = setup_callbacks(
         task,
         ROOT_PATH,
-        training_settings=train_settings,
-        output_model_name=clearml_model.name + " For Seq Classification",
-        output_model_tags=["Classifier", "Static Embeddings"],
+        checkpoint_cfg=train_settings.checkpoint,
+        early_stopping_cfg=train_settings.early_stopping,
+        checkpoint_upload_strategy="only-best",
+        output_model=output_model,
+        config_dict=classifier.config.to_diff_dict(),
     )
-    loggers = _setup_loggers(task, ROOT_PATH)
-    strategy = _setup_strategy(training_settings=train_settings)
+    loggers = setup_loggers(task, ROOT_PATH)
+    strategy = setup_strategy(
+        strategy_settings=train_settings.trainer.strategy,
+        devices=train_settings.trainer.devices,
+    )
 
     trainer = L.Trainer(
         max_epochs=train_settings.trainer.max_epochs,

@@ -10,7 +10,7 @@ import torch.distributed as dist
 from clearml import Task
 from kostyl.ml.dist_utils import scale_lrs_by_world_size
 from kostyl.ml.lightning import KostylLightningModule
-from kostyl.ml.lightning.steps_estimation import estimate_total_steps
+from kostyl.ml.lightning.training_utils import estimate_total_steps
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.ml.schedulers import CompositeScheduler
 from kostyl.ml.schedulers import CosineScheduler
@@ -34,24 +34,58 @@ from lednik.static_embeddings import (
 logger = setup_logger()
 
 
-def _metric_factory(num_classes: int) -> MetricCollection:
+def _metric_factory(
+    prefix: str, num_classes: int, process_group: dist.ProcessGroup | None = None
+) -> MetricCollection:
+    if prefix[-1] != "/":
+        prefix += "/"
     if num_classes < 2:
         collection = MetricCollection(
             [
-                Accuracy(task="binary"),
-                Precision(task="binary"),
-                Recall(task="binary"),
-                F1Score(task="binary"),
-            ]
+                Accuracy(
+                    task="binary",
+                    process_group=process_group,
+                ),
+                Precision(
+                    task="binary",
+                    process_group=process_group,
+                ),
+                Recall(
+                    task="binary",
+                    process_group=process_group,
+                ),
+                F1Score(
+                    task="binary",
+                    process_group=process_group,
+                ),
+            ],
+            prefix=prefix,
         )
     else:
         collection = MetricCollection(
             [
-                Accuracy(task="multiclass", num_classes=num_classes),
-                Precision(task="multiclass", num_classes=num_classes),
-                Recall(task="multiclass", num_classes=num_classes),
-                F1Score(task="multiclass", num_classes=num_classes),
-            ]
+                Accuracy(
+                    task="multiclass",
+                    num_classes=num_classes,
+                    process_group=process_group,
+                ),
+                Precision(
+                    task="multiclass",
+                    num_classes=num_classes,
+                    process_group=process_group,
+                ),
+                Recall(
+                    task="multiclass",
+                    num_classes=num_classes,
+                    process_group=process_group,
+                ),
+                F1Score(
+                    task="multiclass",
+                    num_classes=num_classes,
+                    process_group=process_group,
+                ),
+            ],
+            prefix=prefix,
         )
     return collection
 
@@ -98,10 +132,6 @@ class ClassifierTrainingModule(KostylLightningModule):
 
         """
         super().__init__()
-
-        self.train_metrics = _metric_factory(num_classes=model.config.num_labels)
-        self.val_metrics = _metric_factory(num_classes=model.config.num_labels)
-
         if config.class_weights is not None:
             if len(config.class_weights) != model.config.num_labels:
                 raise ValueError("Length of class_weights must match number of labels.")
@@ -118,7 +148,24 @@ class ClassifierTrainingModule(KostylLightningModule):
         self.train_cfg = config
         self.model = model
         self.task = task
+
         self.val_outputs: list[_ValStepOutput] = []
+        self.train_metrics: MetricCollection | None = None
+        self.val_metrics: MetricCollection | None = None
+        return None
+
+    @override
+    def on_train_start(self) -> None:
+        self.train_metrics = _metric_factory(
+            prefix="train/",
+            num_classes=self.model.config.num_labels,
+            process_group=self.get_process_group(),
+        ).to(self.device)
+        self.val_metrics = _metric_factory(
+            prefix="val/",
+            num_classes=self.model.config.num_labels,
+            process_group=self.get_process_group(),
+        ).to(self.device)
         return None
 
     @override
@@ -165,22 +212,23 @@ class ClassifierTrainingModule(KostylLightningModule):
         lr_scheduler = CosineScheduler(
             optimizer=optimizer,
             param_group_field="lr",
-            total_iters=total_steps,
+            num_iters=total_steps,
             base_value=self.train_cfg.lr.base_value,
             final_value=self.train_cfg.lr.final_value,  # type: ignore
-            warmup_iters_ratio=self.train_cfg.lr.warmup_iters_ratio,
+            warmup_ratio=self.train_cfg.lr.warmup_iters_ratio,
             warmup_value=self.train_cfg.lr.warmup_value,
         )
+        schedulers["lr_scheduler"] = lr_scheduler
 
         if self.train_cfg.weight_decay.use_scheduler:
             weight_decay_scheduler = CosineScheduler(
                 optimizer=optimizer,
                 param_group_field="weight_decay",
-                total_iters=total_steps,
+                num_iters=total_steps,
                 base_value=self.train_cfg.weight_decay.base_value,
                 final_value=self.train_cfg.weight_decay.final_value,  # type: ignore
             )
-            schedulers["weight_decay_scheduler"] = weight_decay_scheduler
+            schedulers["wd_scheduler"] = weight_decay_scheduler
 
         if len(schedulers) > 1:
             scheduler = CompositeScheduler(optimizer=optimizer, **schedulers)
@@ -230,20 +278,29 @@ class ClassifierTrainingModule(KostylLightningModule):
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
-        metrics = self.train_metrics(output.logits, output.labels)
-        metrics["loss"] = output.loss.detach()
-        self.log_dict(
-            metrics,
+        if self.train_metrics is not None:
+            self.train_metrics.update(output.logits, output.labels)
+            self.log_dict(
+                self.train_metrics,
+                prog_bar=False,
+                on_step=True,
+                on_epoch=False,
+                logger=True,
+                sync_dist=False,
+            )
+        detached_loss = output.loss.detach()
+        self.log(
+            "train/loss",
+            detached_loss,
             prog_bar=False,
             on_step=True,
             on_epoch=False,
             logger=True,
             sync_dist=False,
-            stage="train",
         )
         self.log(
             "train_loss",
-            metrics["loss"],
+            detached_loss,
             prog_bar=True,
             on_step=True,
             on_epoch=True,
@@ -257,20 +314,29 @@ class ClassifierTrainingModule(KostylLightningModule):
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
-        metrics = self.val_metrics(output.logits, output.labels)
-        metrics["loss"] = output.loss.detach()
-        self.log_dict(
-            metrics,
+        if self.val_metrics is not None:
+            metrics = self.val_metrics(output.logits, output.labels)
+            self.log_dict(
+                metrics,
+                prog_bar=False,
+                on_step=False,
+                on_epoch=True,
+                logger=True,
+                sync_dist=False,
+            )
+        detached_loss = output.loss.detach()
+        self.log(
+            "val/loss",
+            detached_loss,
             prog_bar=False,
-            on_step=False,
-            on_epoch=True,
+            on_step=True,
+            on_epoch=False,
             logger=True,
-            sync_dist=False,
-            stage="val",
+            sync_dist=True,
         )
         self.log(
             "val_loss",
-            metrics["loss"],
+            detached_loss,
             prog_bar=True,
             on_step=False,
             on_epoch=True,
@@ -306,11 +372,15 @@ class ClassifierTrainingModule(KostylLightningModule):
                 logger.warning_once(
                     "Trainer has no datamodule; cannot log validation predictions."
                 )
+                if dist.is_initialized():
+                    dist.barrier()
                 return
             if not hasattr(self.trainer.datamodule, "tokenizer"):  # type: ignore
                 logger.warning_once(
                     "Datamodule has no tokenizer; cannot log validation predictions."
                 )
+                if dist.is_initialized():
+                    dist.barrier()
                 return
             tokenizer = self.trainer.datamodule.tokenizer  # type: ignore
             tokenizer = cast(PreTrainedTokenizerBase, tokenizer)

@@ -1,7 +1,4 @@
-from copy import deepcopy
-from functools import partial
 from pathlib import Path
-from typing import Any
 from typing import Literal
 from typing import override
 
@@ -9,13 +6,13 @@ import lightning as L
 from kostyl.ml.clearml.dataset_utils import collect_clearml_datasets
 from kostyl.ml.clearml.dataset_utils import download_clearml_datasets
 from kostyl.ml.clearml.dataset_utils import get_datasets_paths
+from kostyl.ml.data_processing_utils import BatchCollatorWithKeyAlignment
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
 from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding
 from transformers import PreTrainedTokenizerBase
-from transformers.data.data_collator import DataCollatorMixin
 
 from datasets import Dataset as HFDataset
 from datasets import concatenate_datasets
@@ -24,62 +21,6 @@ from .configs import DataConfig
 
 
 logger = setup_logger(fmt="only_message")
-
-
-def align_keys_and_collate_batch(
-    batch: list[dict[str, Any]],
-    collator: DataCollatorWithPadding | DataCollatorMixin,
-    keys_mapping: dict[str, str] | None = None,
-    keys_to_keep: set[str] | None = None,
-    max_length: int | None = None,
-) -> dict[str, Any]:
-    """
-    Aligns keys in a batch of dictionaries according, then collates the batch using the provided collator.
-
-    Args:
-        batch (list[dict[str, Any]]): A list of dictionaries representing the data batch.
-        collator (DataCollatorWithPadding | DataCollatorMixin): A callable (usually a Hugging Face
-            DataCollator) that takes a list of dictionaries and returns a collated batch (e.g., padded tensors).
-        keys_mapping (dict[str, str] | None, optional): A dictionary mapping original keys to new keys.
-            Defaults to None.
-        keys_to_keep (set[str] | None, optional): A set of keys to retain as-is from the original items.
-            Defaults to None.
-        max_length (int | None, optional): If provided, truncates the "input_ids" and "attention_mask"
-
-    Returns:
-        dict[str, Any]: The collated batch returned by the `collator`.
-
-    """
-    if (keys_mapping is None) and (keys_to_keep is None):
-        raise ValueError("Either keys_mapping or keys_to_keep must be provided.")
-
-    if keys_mapping is None:
-        keys_mapping = {}
-    if keys_to_keep is None:
-        keys_to_keep = set()
-
-    keys_mapping = deepcopy(keys_mapping)  # To avoid modifying the original dict
-
-    keys_to_keep_mapping = {v: v for v in keys_to_keep}
-    keys_mapping.update(keys_to_keep_mapping)
-
-    aligned_batch = []
-    for item in batch:
-        new_item = {}
-        for k in item.keys():
-            new_key = keys_mapping.get(k, None)
-            if new_key is not None:
-                value = item[k]
-                if max_length is not None and new_key in (
-                    "input_ids",
-                    "attention_mask",
-                ):
-                    value = value[:max_length]
-                new_item[new_key] = value
-        aligned_batch.append(new_item)
-
-    collated_batch = collator(aligned_batch)
-    return collated_batch
 
 
 class DataModule(L.LightningDataModule):
@@ -255,8 +196,7 @@ class DataModule(L.LightningDataModule):
             pin_memory=True,
             drop_last=True,
             num_workers=self.num_workers,
-            collate_fn=partial(
-                align_keys_and_collate_batch,
+            collate_fn=BatchCollatorWithKeyAlignment(
                 keys_mapping={self.train_tokens_column: "input_ids"},
                 collator=self.train_collator,
                 max_length=self.data_cfg.max_length,
@@ -274,8 +214,7 @@ class DataModule(L.LightningDataModule):
             pin_memory=True,
             drop_last=True,
             num_workers=self.num_workers,
-            collate_fn=partial(
-                align_keys_and_collate_batch,
+            collate_fn=BatchCollatorWithKeyAlignment(
                 keys_mapping={
                     self.val_tokens_column: "input_ids",
                     self.val_label_column: "labels",

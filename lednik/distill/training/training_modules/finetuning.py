@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from clearml import Task
 from kostyl.ml.dist_utils import scale_lrs_by_world_size
 from kostyl.ml.lightning.extensions import KostylLightningModule
-from kostyl.ml.lightning.steps_estimation import estimate_total_steps
+from kostyl.ml.lightning.training_utils import estimate_total_steps
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.ml.schedulers.cosine import CosineParamScheduler
 from kostyl.ml.schedulers.cosine import CosineScheduler

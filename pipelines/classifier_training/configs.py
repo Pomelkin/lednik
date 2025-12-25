@@ -25,6 +25,7 @@ class DataConfig(BaseModel):
     num_workers: int = Field(ge=1)
     tokens_column: str
     label_column: str
+    max_length: int | None = None
 
 
 class TrainingSettings(KostylBaseModel):
