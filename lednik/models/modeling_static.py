@@ -7,17 +7,17 @@ from typing import override
 
 import torch
 import torch.nn.functional as F
-from kostyl.ml.lightning import LightningCheckpointLoaderMixin
+from kostyl.ml.integrations.lightning import LightningCheckpointLoaderMixin
 from kostyl.utils import setup_logger
 from torch import nn
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
-from transformers import PreTrainedTokenizerBase
+from transformers import SentencePieceBackend
+from transformers import TokenizersBackend
 
-from lednik.static_embeddings.config import StaticEmbeddingsConfig
-
+from .configuration_static import StaticEmbeddingsConfig
 from .outputs import StaticEmbeddingsOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
 
@@ -35,8 +35,8 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrained
     overridden methods for loading and saving pretrained models that include tokenizer handling.
     """
 
-    tokenizer: PreTrainedTokenizerBase | None
-    config: StaticEmbeddingsConfig
+    tokenizer: TokenizersBackend | SentencePieceBackend | None
+    config: StaticEmbeddingsConfig  # type: ignore
     base_model_prefix = "model"
 
     @override
@@ -57,14 +57,20 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrained
                 pass
         return
 
-    def add_tokenizer(self, tokenizer: PreTrainedTokenizerBase) -> None:
+    def add_tokenizer(
+        self, tokenizer: TokenizersBackend | SentencePieceBackend
+    ) -> None:
         """Add tokenizer to the model."""
+        raise NotImplementedError("This method should be implemented in subclasses.")
+
+    def get_tokenizer(self) -> TokenizersBackend | SentencePieceBackend:
+        """Get tokenizer from the model."""
         raise NotImplementedError("This method should be implemented in subclasses.")
 
     @override
     @classmethod
-    def from_pretrained(
-        cls: type[TPreTrainedModel],
+    def from_pretrained(  # type: ignore
+        cls: type["StaticEmbeddingsPreTrainedModel"],
         pretrained_model_name_or_path: str | os.PathLike | None,
         *model_args,
         config: PretrainedConfig | str | os.PathLike | None = None,
@@ -78,7 +84,7 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrained
         weights_only: bool = True,
         load_tokenizer: bool = True,
         **kwargs: Any,
-    ) -> TPreTrainedModel:
+    ) -> "StaticEmbeddingsPreTrainedModel":
         model = super().from_pretrained(
             pretrained_model_name_or_path,
             *model_args,
@@ -103,7 +109,7 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrained
                     local_files_only=local_files_only,
                     token=token,
                 )
-                model.add_tokenizer(tokenizer)
+                model.add_tokenizer(tokenizer)  # type: ignore
             except (TypeError, FileNotFoundError, OSError) as e:
                 logger.warning(
                     "Tokenizer could not be loaded. Make sure the tokenizer files are present."
@@ -181,58 +187,85 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         super().__init__(config)
         self.embeddings = nn.Embedding(
             config.vocab_size,
-            config.embedding_dim,
+            config.hidden_size,
             padding_idx=config.pad_token_id,
         )
-        self.token_pos_weights = nn.Parameter(torch.ones(config.vocab_size, 1))
-        if config.embedding_dropout > 0.0:
-            self.dropout = nn.Dropout(config.embedding_dropout)
-        else:
-            self.dropout = nn.Identity()
+        self.token_pos_weights = nn.Embedding(
+            config.vocab_size,
+            1,
+        )
+        self.dropout = (
+            nn.Dropout(config.embeddings_dropout)
+            if config.embeddings_dropout > 0.0
+            else nn.Identity()
+        )
 
         self.config = config
-        self.tokenizer: PreTrainedTokenizerBase | None = None
+        self.tokenizer: TokenizersBackend | SentencePieceBackend | None = None
 
         # Initialize weights and apply final processing
         self.post_init()
         return
 
-    def add_tokenizer(self, tokenizer: PreTrainedTokenizerBase) -> None:
-        """Add tokenizer to the model."""
+    @override
+    def add_tokenizer(
+        self, tokenizer: TokenizersBackend | SentencePieceBackend
+    ) -> None:
         self.tokenizer = tokenizer
         return
 
-    def get_tokenizer(self) -> PreTrainedTokenizerBase:
-        """Get tokenizer from the model."""
+    @override
+    def get_tokenizer(self) -> TokenizersBackend | SentencePieceBackend:
         if self.tokenizer is None:
             raise ValueError("Tokenizer is not set for the model.")
         return self.tokenizer
 
-    def update_embeddings(self, new_embeddings: torch.Tensor) -> None:
+    def update_embeddings(self, new_embeddings: torch.Tensor | nn.Parameter) -> None:
         """Replace the current model embeddings weights with given one."""
-        if new_embeddings.size() != self.embeddings.weight.data.size():
+        if new_embeddings.numel() != self.embeddings.weight.numel():
             raise ValueError(
-                f"new_embeddings should have size {self.embeddings.weight.data.size()}, "
+                f"new_embeddings should have numel {self.embeddings.weight.numel()}, "
+                f"but got {new_embeddings.numel()}."
+            )
+        if new_embeddings.size() != self.embeddings.weight.size():
+            raise ValueError(
+                f"new_embeddings should have size {self.embeddings.weight.size()}, "
                 f"but got {new_embeddings.size()}."
             )
-        self.embeddings.weight.data = new_embeddings.clone()
+
+        if isinstance(new_embeddings, torch.Tensor):
+            new_embeddings = nn.Parameter(
+                new_embeddings.clone()
+            )  # avoiding weight ties
+
+        self.embeddings.weight = new_embeddings
         return
 
-    def update_pos_weights(self, new_pos_weights: torch.Tensor) -> None:
+    def update_pos_weights(self, new_pos_weights: torch.Tensor | nn.Parameter) -> None:
         """Replace the current model position weights with given one."""
-        if new_pos_weights.dim() != self.token_pos_weights.dim():
+        if new_pos_weights.numel() != self.token_pos_weights.weight.numel():
             raise ValueError(
-                f"new_pos_weights should have {self.token_pos_weights.dim()} dimensions, "
-                f"but got {new_pos_weights.dim()}."
+                f"new_pos_weights should have numel {self.token_pos_weights.weight.numel()}, "
+                f"but got {new_pos_weights.numel()}."
             )
-        self.token_pos_weights.data = new_pos_weights.clone()
+        if new_pos_weights.size() != self.token_pos_weights.weight.size():
+            raise ValueError(
+                f"new_pos_weights should have size {self.token_pos_weights.weight.size()}, "
+                f"but got {new_pos_weights.size()}."
+            )
+        if isinstance(new_pos_weights, torch.Tensor):
+            new_pos_weights = nn.Parameter(
+                new_pos_weights.clone()
+            )  # avoiding weight ties
+
+        self.token_pos_weights.weight = new_pos_weights
         return
 
     @classmethod
     def initialize(
         cls: type["StaticEmbeddingsModel"],
         config: StaticEmbeddingsConfig,
-        embeddings: torch.Tensor,
+        embeddings: torch.Tensor | nn.Parameter,
     ) -> "StaticEmbeddingsModel":
         """Initialize model with given embeddings."""
         model = cls(config)
@@ -299,8 +332,9 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         result = outputs[0]
         for output in outputs[1:]:
             result.embeddings = torch.cat((result.embeddings, output.embeddings), dim=0)
-            result.pos_weights = torch.cat(
-                (result.pos_weights, output.pos_weights), dim=0
+            result.pos_weights = torch.cat(  # type: ignore
+                (result.pos_weights, output.pos_weights),
+                dim=0,
             )
             result.sentence_embeddings = torch.cat(
                 (result.sentence_embeddings, output.sentence_embeddings), dim=0
@@ -321,15 +355,14 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
 
         if apply_token_weights:
-            token_weights = self.token_pos_weights[input_ids]  # type: ignore
-            sentence_embeddings = (masked_embeddings * token_weights).sum(
-                dim=1
-            ) / attention_mask.sum(dim=1, keepdim=True)
+            token_weights = self.token_pos_weights(input_ids)
+            masked_embeddings = masked_embeddings * token_weights
         else:
             token_weights = None
-            sentence_embeddings = masked_embeddings.sum(dim=1) / attention_mask.sum(
-                dim=1, keepdim=True
-            )
+
+        sentence_embeddings = masked_embeddings.sum(dim=1) / attention_mask.sum(
+            dim=1, keepdim=True
+        )
         output = StaticEmbeddingsOutput(
             embeddings=embeddings,
             pos_weights=token_weights,
@@ -349,14 +382,16 @@ class StaticEmbeddingsClassificationHead(nn.Module):
             if config.classifier_dropout > 0.0
             else nn.Identity()
         )
-        self.norm = nn.RMSNorm(config.embedding_dim)
-        self.project = nn.Linear(config.embedding_dim, config.embedding_dim)
-        self.head = nn.Linear(config.embedding_dim, config.num_labels)
+        self.norm = nn.RMSNorm(config.hidden_size)
+        self.hidden_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.head = nn.Linear(config.hidden_size, config.num_labels)
+
+        self.config = config
         return
 
     def forward(self, sentence_embeddings: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        x = self.dropout(F.relu(self.project(self.norm(sentence_embeddings))))
+        x = self.dropout(F.relu(self.hidden_proj(self.norm(sentence_embeddings))))
         logits = self.head(x)
         return logits
 
@@ -367,17 +402,31 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
     def __init__(self, config: StaticEmbeddingsConfig) -> None:
         """Initialize model."""
         super().__init__(config)
+        if not self.config.is_tokenizer_customized:
+            raise ValueError(
+                "The tokenizer is not customized. Please use "
+                "`lednik.distill.initialization.tokenizer_utils.customize_tokenizer` "
+                "to customize the tokenizer before initializing the model."
+            )
+
         self.model = StaticEmbeddingsModel(config)
         self.classifier = StaticEmbeddingsClassificationHead(config)
+        self.config = config
 
         # Initialize weights and apply final processing
         self.post_init()
         return
 
-    def add_tokenizer(self, tokenizer: PreTrainedTokenizerBase) -> None:
-        """Add tokenizer to the model."""
+    @override
+    def add_tokenizer(
+        self, tokenizer: TokenizersBackend | SentencePieceBackend
+    ) -> None:
         self.model.add_tokenizer(tokenizer)
         return
+
+    @override
+    def get_tokenizer(self) -> TokenizersBackend | SentencePieceBackend:
+        return self.model.get_tokenizer()
 
     def forward(
         self,
