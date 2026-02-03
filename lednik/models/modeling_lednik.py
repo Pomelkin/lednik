@@ -710,6 +710,32 @@ class LednikModel(LednikPreTrainedModel):
         self.post_init()
         return
 
+    def replace_embeddings(self, new_embeddings: torch.Tensor | nn.Parameter) -> None:
+        """Replace the current model embeddings weights with given one."""
+        if new_embeddings.numel() != self.embeddings.emb.weight.numel():
+            raise ValueError(
+                f"new_embeddings should have numel {self.embeddings.emb.weight.numel()}, "
+                f"but got {new_embeddings.numel()}."
+            )
+        if new_embeddings.size() != self.embeddings.emb.weight.size():
+            raise ValueError(
+                f"new_embeddings should have size {self.embeddings.emb.weight.size()}, "
+                f"but got {new_embeddings.size()}."
+            )
+
+        new_embeddings = new_embeddings.clone()  # use clone() to avoid weight tying
+        if isinstance(new_embeddings, torch.Tensor):
+            new_embeddings = nn.Parameter(new_embeddings)
+
+        new_embeddings = new_embeddings.to(
+            device=self.embeddings.emb.weight.device,
+            dtype=self.embeddings.emb.weight.dtype,
+        )
+        new_embeddings.requires_grad_(self.embeddings.emb.weight.requires_grad)
+
+        self.embeddings.emb.weight = new_embeddings
+        return
+
     @check_model_inputs
     def forward(  # noqa: C901
         self,

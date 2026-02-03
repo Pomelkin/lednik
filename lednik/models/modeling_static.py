@@ -220,7 +220,7 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
             raise ValueError("Tokenizer is not set for the model.")
         return self.tokenizer
 
-    def update_embeddings(self, new_embeddings: torch.Tensor | nn.Parameter) -> None:
+    def replace_embeddings(self, new_embeddings: torch.Tensor | nn.Parameter) -> None:
         """Replace the current model embeddings weights with given one."""
         if new_embeddings.numel() != self.embeddings.weight.numel():
             raise ValueError(
@@ -232,16 +232,20 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
                 f"new_embeddings should have size {self.embeddings.weight.size()}, "
                 f"but got {new_embeddings.size()}."
             )
-
+        new_embeddings = new_embeddings.clone()  # use clone() to avoid weight tying
         if isinstance(new_embeddings, torch.Tensor):
-            new_embeddings = nn.Parameter(
-                new_embeddings.clone()
-            )  # avoiding weight ties
+            new_embeddings = nn.Parameter(new_embeddings)  # avoiding weight ties
+
+        new_embeddings = new_embeddings.to(
+            device=self.embeddings.weight.device,
+            dtype=self.embeddings.weight.dtype,
+        )
+        new_embeddings.requires_grad_(self.embeddings.weight.requires_grad)
 
         self.embeddings.weight = new_embeddings
         return
 
-    def update_pos_weights(self, new_pos_weights: torch.Tensor | nn.Parameter) -> None:
+    def replace_pos_weights(self, new_pos_weights: torch.Tensor | nn.Parameter) -> None:
         """Replace the current model position weights with given one."""
         if new_pos_weights.numel() != self.token_pos_weights.weight.numel():
             raise ValueError(
@@ -253,10 +257,16 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
                 f"new_pos_weights should have size {self.token_pos_weights.weight.size()}, "
                 f"but got {new_pos_weights.size()}."
             )
+
+        new_pos_weights = new_pos_weights.clone()  # use clone() to avoid weight tying
         if isinstance(new_pos_weights, torch.Tensor):
-            new_pos_weights = nn.Parameter(
-                new_pos_weights.clone()
-            )  # avoiding weight ties
+            new_pos_weights = nn.Parameter(new_pos_weights)  # avoiding weight ties
+
+        new_pos_weights = new_pos_weights.to(
+            device=self.token_pos_weights.weight.device,
+            dtype=self.token_pos_weights.weight.dtype,
+        )
+        new_pos_weights.requires_grad_(self.token_pos_weights.weight.requires_grad)
 
         self.token_pos_weights.weight = new_pos_weights
         return
@@ -269,7 +279,7 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
     ) -> "StaticEmbeddingsModel":
         """Initialize model with given embeddings."""
         model = cls(config)
-        model.update_embeddings(embeddings)
+        model.replace_embeddings(embeddings)
         return model
 
     def encode(
