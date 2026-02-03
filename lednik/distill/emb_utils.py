@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Literal
 
 import torch
@@ -14,7 +12,6 @@ def extract_embeddings(
     pad_token: int,
     pooling: Literal["mean", "last", "cls"],
     batch_size: int,
-    device: str | torch.device,
 ) -> torch.Tensor:
     """
     Extract embeddings from a pre-trained model for given vocabulary tokens using specified pooling.
@@ -26,10 +23,9 @@ def extract_embeddings(
         pooling: The pooling strategy to use. "mean" computes the average
             of the hidden states weighted by the attention mask, while "last" uses the last non-padded token's embedding.
         batch_size: The number of sequences to process in each batch.
-        device: The device to run the model on (e.g., "cpu" or "cuda").
 
     Returns:
-        A CPU tensor containing the extracted embeddings
+        A tensor containing the extracted embeddings
             for each input sequence.
 
     """
@@ -51,8 +47,8 @@ def extract_embeddings(
             batch_inputs,
             batch_first=True,
             padding_value=pad_token,
-        ).to(device)
-        attention_mask = (inputs_t != pad_token).to(device, dtype=torch.long)
+        ).to(model.device)
+        attention_mask = (inputs_t != pad_token).to(model.device, dtype=torch.long)
 
         outputs = model(input_ids=inputs_t, attention_mask=attention_mask)
         last_hidden_state: torch.Tensor = outputs[0]

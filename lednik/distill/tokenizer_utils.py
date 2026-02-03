@@ -1,14 +1,21 @@
 from string import punctuation
-from typing import cast
+from typing import Any
 
 import torch
-from tokenizers import Regex
-from tokenizers import Tokenizer
+from kostyl.utils.logging import setup_logger
 from tokenizers.normalizers import Replace
 from tokenizers.normalizers import Sequence
 from tokenizers.normalizers import Strip
 from tokenizers.processors import TemplateProcessing
-from transformers import PreTrainedTokenizerBase
+from transformers import SentencePieceBackend
+from transformers import TokenizersBackend
+
+from lednik.models.configuration_static import StaticEmbeddingsConfig
+from tokenizers import Regex
+from tokenizers import Tokenizer
+
+
+logger = setup_logger(fmt="only_message")
 
 
 def _get_default_post_processor_template() -> TemplateProcessing:
@@ -45,7 +52,7 @@ def _replace_normalizer(
         add_space = first_comma == second_comma == ","
 
     normalizer = tokenizer.normalizer
-    new_normalizers = []
+    new_normalizers: list[Any] = []
     for char in punctuation:
         replacement = f" {char} " if add_space else f"{char} "
         new_normalizers.append(Replace(char, replacement))
@@ -68,22 +75,33 @@ def _replace_post_processor(
     return tokenizer
 
 
-def customize_tokenizer(tokenizer: PreTrainedTokenizerBase) -> PreTrainedTokenizerBase:
+def customize_tokenizer(
+    config: StaticEmbeddingsConfig,
+    tokenizer: TokenizersBackend,
+) -> tuple[StaticEmbeddingsConfig, TokenizersBackend]:
     """
     Modify the tokenizer by replacing its normalizer and post-processor.
 
     Args:
+        config: The configuration of the static embeddings model.
         tokenizer: The tokenizer to modify.
 
     Returns:
         The modified tokenizer.
 
     """
+    if isinstance(tokenizer, SentencePieceBackend):
+        raise ValueError(
+            "SentencePieceBackend tokenizers are not supported for customization."
+        )
+    if config.is_tokenizer_customized:
+        logger.warning("Tokenizer is already customized. Skipping modification.")
+        return config, tokenizer
     backend_tokenizer = tokenizer.backend_tokenizer
-    backend_tokenizer = cast(Tokenizer, backend_tokenizer)
     _replace_normalizer(backend_tokenizer)
     _replace_post_processor(backend_tokenizer)
-    return tokenizer
+    config.is_tokenizer_customized = True
+    return config, tokenizer
 
 
 def calculate_token_weights(
