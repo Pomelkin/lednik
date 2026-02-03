@@ -1,5 +1,5 @@
 from .classifier_train import ClassifierTrainingModule
-from .finetuning import FineTuningModule
+from .distillation import DistillationModule
 
 
-__all__ = ["ClassifierTrainingModule", "FineTuningModule"]
+__all__ = ["ClassifierTrainingModule", "DistillationModule"]
