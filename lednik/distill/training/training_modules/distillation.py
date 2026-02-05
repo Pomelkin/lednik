@@ -48,6 +48,7 @@ from torchmetrics.functional import f1_score as torchmetrics_f1_score
 from torchmetrics.functional import mean_squared_error
 from transformers import PreTrainedConfig
 from transformers import PreTrainedModel
+from transformers import PreTrainedTokenizerBase
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 from transformers.modeling_outputs import BaseModelOutput
@@ -139,7 +140,7 @@ class DistillationModule(KostylLightningModule):
         student: StaticEmbeddingsModel | LednikModel,
         train_cfg: DistillationConfig,
         strategy_config: SUPPORTED_STRATEGIES,
-        tokenizer: SentencePieceBackend | TokenizersBackend,
+        tokenizer: SentencePieceBackend | TokenizersBackend | PreTrainedTokenizerBase,
         task: Task | None = None,
         num_labels: int | None = None,
     ) -> None:

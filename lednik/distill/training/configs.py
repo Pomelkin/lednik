@@ -76,7 +76,7 @@ class DistillationConfig(HyperparamsConfig):
     weight_decay: WeightDecay
 
 
-class ClassifierTrainConfig(HyperparamsConfig):
+class ClassifierHyperparamsConfig(HyperparamsConfig):
     """Configuration schema for classifier training hyperparameters."""
 
     label2id: dict[str, int]

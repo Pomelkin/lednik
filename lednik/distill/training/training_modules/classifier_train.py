@@ -43,7 +43,7 @@ from transformers import PreTrainedModel
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 
-from lednik.distill.training.configs import ClassifierTrainConfig
+from lednik.distill.training.configs import ClassifierHyperparamsConfig
 from lednik.distill.training.dist_utils import get_fsdp1_policies
 from lednik.distill.training.dist_utils import get_fsdp2_policies
 from lednik.distill.training.dist_utils import get_shard_transformer_modules
@@ -144,7 +144,7 @@ class ClassifierTrainingModule(KostylLightningModule):
 
     def __init__(
         self,
-        config: ClassifierTrainConfig,
+        config: ClassifierHyperparamsConfig,
         model: StaticEmbeddingsForSequenceClassification,
         strategy_config: SUPPORTED_STRATEGIES,
         task: Task | None = None,
