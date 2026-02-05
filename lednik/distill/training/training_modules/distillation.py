@@ -11,6 +11,9 @@ import plotly.graph_objects as go
 import torch
 import torch.distributed as dist
 from clearml import Task
+from kostyl.ml.configs.training_settings import SUPPORTED_STRATEGIES
+from kostyl.ml.configs.training_settings import FSDP1StrategyConfig
+from kostyl.ml.configs.training_settings import FSDP2StrategyConfig
 from kostyl.ml.dist_utils import scale_lrs_by_world_size
 from kostyl.ml.integrations.lightning import KostylLightningModule
 from kostyl.ml.integrations.lightning.utils import estimate_total_steps
@@ -22,6 +25,8 @@ from kostyl.ml.optim.schedulers import CosineParamScheduler
 from kostyl.ml.optim.schedulers import LinearParamScheduler
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
+from lightning.pytorch.strategies import FSDPStrategy
+from lightning.pytorch.strategies import ModelParallelStrategy
 from lightning.pytorch.strategies import ParallelStrategy
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from plotly.subplots import make_subplots
@@ -32,6 +37,9 @@ from sklearn.metrics import recall_score
 from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import ShardingStrategy
+from torch.distributed.fsdp import fully_shard
 from torch.nn.modules.loss import _Loss
 from torch.optim.optimizer import Optimizer
 from torchmetrics.functional import accuracy as torchmetrics_accuracy
@@ -49,6 +57,10 @@ from lednik.distill.emb_utils import get_sentence_embedding
 from lednik.distill.training.configs import DinoDistillationConfig
 from lednik.distill.training.configs import DirectDistillationConfig
 from lednik.distill.training.configs import DistillationConfig
+from lednik.distill.training.dist_utils import get_fsdp1_policies
+from lednik.distill.training.dist_utils import get_fsdp2_policies
+from lednik.distill.training.dist_utils import get_shard_transformer_modules
+from lednik.distill.training.dist_utils import select_wrap_policy
 from lednik.distill.training.knn import knn_predict
 from lednik.distill.training.layers import DINOHead
 from lednik.distill.training.losses import dino_ce_loss
@@ -126,6 +138,7 @@ class DistillationModule(KostylLightningModule):
         teacher: PreTrainedModel,
         student: StaticEmbeddingsModel | LednikModel,
         train_cfg: DistillationConfig,
+        strategy_config: SUPPORTED_STRATEGIES,
         tokenizer: SentencePieceBackend | TokenizersBackend,
         task: Task | None = None,
         num_labels: int | None = None,
@@ -137,6 +150,7 @@ class DistillationModule(KostylLightningModule):
             teacher : The pre-trained teacher hf model.
             student : The static embeddings model to be trained.
             train_cfg : Training configuration.
+            strategy_config : Configuration for the training strategy.
             tokenizer : The tokenizer corresponding to the teacher model.
             task : ClearML Task for logging (optional).
             num_labels : Number of classification labels for KNN evaluation metrics.
@@ -149,6 +163,7 @@ class DistillationModule(KostylLightningModule):
         self.student = student.train()
 
         self.train_cfg = train_cfg
+        self.strategy_config = strategy_config
         self.distill_method_cfg = train_cfg.distillation_method
 
         self.tokenizer = tokenizer
@@ -201,6 +216,94 @@ class DistillationModule(KostylLightningModule):
 
         self._set_model_freeze_state("teacher", freeze=True)
         self.eval_outputs: list[_EvalResult] = []
+        self.configured_flag = False
+        return
+
+    @override
+    def configure_model(self) -> None:  # noqa: C901
+        if self.configured_flag:
+            return
+
+        modules_shard = {"teacher": self.teacher, "student": self.student}
+        module_no_shard = {
+            "student_to_teacher_proj": self.student_to_teacher_proj,
+            "student_dino_head": self.student_dino_head,
+            "teacher_dino_head": self.teacher_dino_head,
+        }
+        strategy = self.trainer.strategy
+        strategy_config = self.strategy_config
+        if isinstance(strategy, FSDPStrategy):
+            if not isinstance(strategy_config, FSDP1StrategyConfig):
+                raise ValueError(
+                    f"Expected FSDPStrategy but got {strategy_config.__class__.__name__} "
+                    f"for {strategy.__class__.__name__} strategy"
+                )
+            policies = get_fsdp1_policies(strategy_config)
+            for name, module in modules_shard.items():
+                wrap_policy = select_wrap_policy(module)
+                fsdp_model = FSDP(
+                    module=module,
+                    use_orig_params=True,
+                    device_id=strategy.root_device.index,
+                    sharding_strategy=strategy.sharding_strategy,
+                    auto_wrap_policy=wrap_policy,
+                    **policies,
+                )
+                setattr(self, name, fsdp_model)
+
+            for name, module in module_no_shard.items():
+                if (module is None) or isinstance(module, nn.Identity):
+                    continue
+                fsdp_module = FSDP(
+                    module=module,
+                    use_orig_params=True,
+                    device_id=strategy.root_device.index,
+                    sharding_strategy=ShardingStrategy.NO_SHARD,
+                    **policies,
+                )
+                setattr(self, name, fsdp_module)
+
+            self_fsdp_wrapped = FSDP(
+                module=self,
+                device_id=strategy.root_device.index,
+                sharding_strategy=strategy.sharding_strategy,
+                **policies,
+            )
+            strategy.model = self_fsdp_wrapped
+        elif isinstance(strategy, ModelParallelStrategy):
+            if not isinstance(strategy_config, FSDP2StrategyConfig):
+                raise ValueError(
+                    f"Expected ModelParallelStrategy but got {strategy_config.__class__.__name__} "
+                    f"for {strategy.__class__.__name__} strategy"
+                )
+            mesh = self.device_mesh
+            if mesh is None:
+                raise ValueError(
+                    "Device mesh is not initialized for ModelParallelStrategy"
+                )
+            dp_mesh = mesh["data_parallel"]
+            tp_mesh = mesh["tensor_parallel"]
+            if tp_mesh.size() > 1:
+                raise ValueError(
+                    "Tensor parallelism is not supported in this distillation module"
+                )
+            policies = get_fsdp2_policies(strategy_config)
+            for name, module in modules_shard.items():
+                modules_to_shard = get_shard_transformer_modules(model=module)
+                if modules_to_shard is None:
+                    logger.warning(
+                        f"Failed to get modules to shard for {name} module in ModelParallelStrategy. "
+                        "Module will be wrapped with root FSDP instance."
+                    )
+                else:
+                    modules_to_shard = tuple(modules_to_shard)
+
+                    for child_module in module.modules():
+                        if isinstance(child_module, modules_to_shard):
+                            fully_shard(child_module, mesh=dp_mesh, **policies)
+                    fully_shard(module=module, mesh=dp_mesh, **policies)
+            fully_shard(self, mesh=dp_mesh, **policies)
+        self.configured_flag = True
         return
 
     def _init_dino(

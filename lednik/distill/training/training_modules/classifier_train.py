@@ -9,6 +9,9 @@ import polars as pl
 import torch
 import torch.distributed as dist
 from clearml import Task
+from kostyl.ml.configs.training_settings import SUPPORTED_STRATEGIES
+from kostyl.ml.configs.training_settings import FSDP1StrategyConfig
+from kostyl.ml.configs.training_settings import FSDP2StrategyConfig
 from kostyl.ml.dist_utils import scale_lrs_by_world_size
 from kostyl.ml.integrations.lightning import KostylLightningModule
 from kostyl.ml.integrations.lightning.utils import estimate_total_steps
@@ -18,10 +21,14 @@ from kostyl.ml.optim.schedulers import BaseScheduler
 from kostyl.ml.optim.schedulers import CompositeScheduler
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
+from lightning.pytorch.strategies import FSDPStrategy
+from lightning.pytorch.strategies import ModelParallelStrategy
 from lightning.pytorch.strategies import ParallelStrategy
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import fully_shard
 from torchmetrics import Accuracy
 from torchmetrics import F1Score
 from torchmetrics import MetricCollection
@@ -37,6 +44,10 @@ from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 
 from lednik.distill.training.configs import ClassifierTrainConfig
+from lednik.distill.training.dist_utils import get_fsdp1_policies
+from lednik.distill.training.dist_utils import get_fsdp2_policies
+from lednik.distill.training.dist_utils import get_shard_transformer_modules
+from lednik.distill.training.dist_utils import select_wrap_policy
 from lednik.models import StaticEmbeddingsForSequenceClassification
 from lednik.models import StaticEmbeddingsSequenceClassifierOutput as SEOutput
 
@@ -135,6 +146,7 @@ class ClassifierTrainingModule(KostylLightningModule):
         self,
         config: ClassifierTrainConfig,
         model: StaticEmbeddingsForSequenceClassification,
+        strategy_config: SUPPORTED_STRATEGIES,
         task: Task | None = None,
     ) -> None:
         """
@@ -145,6 +157,7 @@ class ClassifierTrainingModule(KostylLightningModule):
                 optional class weights, and other settings.
             model (StaticEmbeddingsForSequenceClassification): Sequence classification model whose
                 label configuration drives metric initialization and loss choice.
+            strategy_config (SUPPORTED_STRATEGIES): Configuration for the training strategy.
             task (Task | None, optional): Optional task metadata used for logging or organization.
 
         """
@@ -165,13 +178,80 @@ class ClassifierTrainingModule(KostylLightningModule):
             if self.classification_type == "binary"
             else nn.CrossEntropyLoss(weight=class_weights_tensor)
         )
-
+        self.strategy_config = strategy_config
         self.train_cfg = config
         self.model = model
         self.task = task
         self.val_outputs: list[_ValStepOutput] = []
         self.val_metrics: MetricCollection | None = None
+        self.configured_flag = False
         return None
+
+    @override
+    def configure_model(self) -> None:  # noqa: C901
+        if self.configured_flag:
+            return
+
+        strategy = self.trainer.strategy
+        strategy_config = self.strategy_config
+        if isinstance(strategy, FSDPStrategy):
+            if not isinstance(strategy_config, FSDP1StrategyConfig):
+                raise ValueError(
+                    f"Expected FSDPStrategy but got {strategy_config.__class__.__name__} "
+                    f"for {strategy.__class__.__name__} strategy"
+                )
+            policies = get_fsdp1_policies(strategy_config)
+            wrap_policy = select_wrap_policy(self.model)
+            fsdp_model = FSDP(
+                module=self.model,
+                use_orig_params=True,
+                device_id=strategy.root_device.index,
+                sharding_strategy=strategy.sharding_strategy,
+                auto_wrap_policy=wrap_policy,
+                **policies,
+            )
+            self.model = fsdp_model  # type: ignore
+
+            self_fsdp_wrapped = FSDP(
+                module=self,
+                device_id=strategy.root_device.index,
+                sharding_strategy=strategy.sharding_strategy,
+                **policies,
+            )
+            strategy.model = self_fsdp_wrapped
+        elif isinstance(strategy, ModelParallelStrategy):
+            if not isinstance(strategy_config, FSDP2StrategyConfig):
+                raise ValueError(
+                    f"Expected ModelParallelStrategy but got {strategy_config.__class__.__name__} "
+                    f"for {strategy.__class__.__name__} strategy"
+                )
+            mesh = self.device_mesh
+            if mesh is None:
+                raise ValueError(
+                    "Device mesh is not initialized for ModelParallelStrategy"
+                )
+            dp_mesh = mesh["data_parallel"]
+            tp_mesh = mesh["tensor_parallel"]
+            if tp_mesh.size() > 1:
+                raise ValueError(
+                    "Tensor parallelism is not supported in this distillation module"
+                )
+            policies = get_fsdp2_policies(strategy_config)
+            modules_to_shard = get_shard_transformer_modules(model=self.model)
+            if modules_to_shard is None:  # TODO: add size based wrapping
+                logger.warning(
+                    "Failed to get modules to shard in ModelParallelStrategy. "
+                    "Model will be wrapped into ONE FSDP instance."
+                )
+            else:
+                modules_to_shard = tuple(modules_to_shard)
+
+                for child_module in self.model.modules():
+                    if isinstance(child_module, modules_to_shard):
+                        fully_shard(child_module, mesh=dp_mesh, **policies)
+            fully_shard(module=self.model, mesh=dp_mesh, **policies)
+        self.configured_flag = True
+        return
 
     @property
     @override
