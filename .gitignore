@@ -215,7 +215,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 notebooks/
-models/
+saved_models/
 datasets/
 runs/
 checkpoints/
