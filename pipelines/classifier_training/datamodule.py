@@ -3,16 +3,18 @@ from typing import Literal
 from typing import override
 
 import lightning as L
-from kostyl.ml.clearml.dataset_utils import collect_clearml_datasets
-from kostyl.ml.clearml.dataset_utils import download_clearml_datasets
-from kostyl.ml.clearml.dataset_utils import get_datasets_paths
-from kostyl.ml.data_processing_utils import BatchCollatorWithKeyAlignment
+from kostyl.ml.data_collator import BatchCollatorWithKeyAlignment
+from kostyl.ml.integrations.clearml import collect_clearml_datasets
+from kostyl.ml.integrations.clearml import download_clearml_datasets
+from kostyl.ml.integrations.clearml import get_datasets_paths
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
 from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding
 from transformers import PreTrainedTokenizerBase
+from transformers import SentencePieceBackend
+from transformers import TokenizersBackend
 
 from datasets import Dataset as HFDataset
 from datasets import concatenate_datasets
@@ -29,7 +31,7 @@ class DataModule(L.LightningDataModule):
     def __init__(
         self,
         data_cfg: DataConfig | dict,
-        tokenizer: PreTrainedTokenizerBase,
+        tokenizer: SentencePieceBackend | TokenizersBackend | PreTrainedTokenizerBase,
     ) -> None:
         """
         Initializes the DataModule for fine-tuning.
@@ -42,7 +44,7 @@ class DataModule(L.LightningDataModule):
             data_cfg (DataConfig | dict): The configuration object or dictionary containing
                 dataset parameters, batch sizes, and column mappings. If a dictionary is provided,
                 it is validated and converted to a `DataConfig` object.
-            tokenizer (PreTrainedTokenizerBase): The tokenizer instance used for processing
+            tokenizer (SentencePieceBackend | TokenizersBackend): The tokenizer instance used for processing
                 text data.
 
         """
@@ -57,8 +59,8 @@ class DataModule(L.LightningDataModule):
         self.num_workers = data_cfg.num_workers
 
         self.tokenizer = tokenizer
-        self.pad_token_id = int(tokenizer.pad_token_id)  # pyright: ignore[reportArgumentType]
-        self.max_length = int(tokenizer.model_max_length)  # pyright: ignore[reportArgumentType]
+        self.pad_token_id = int(tokenizer.pad_token_id)  # type: ignore
+        self.max_length = int(tokenizer.model_max_length)
         self.data_cfg = data_cfg
 
         hf_collator = DataCollatorWithPadding(
@@ -66,11 +68,11 @@ class DataModule(L.LightningDataModule):
             pad_to_multiple_of=8,
         )
         self.collator = BatchCollatorWithKeyAlignment(
+            collator=hf_collator,
             keys_mapping={
                 self.data_cfg.tokens_column: "input_ids",
                 self.data_cfg.label_column: "labels",
             },
-            collator=hf_collator,
             max_length=self.data_cfg.max_length,
         )
 
@@ -89,37 +91,29 @@ class DataModule(L.LightningDataModule):
     @staticmethod
     def _collect_split_paths(
         datasets_paths: dict[str, Path],
-        split_name: str | None = None,
+        split_name: str,
     ) -> dict[str, Path]:
-        if split_name is not None:
-            split_paths: dict[str, Path] = {}
-            for dataset_name, dataset_path in datasets_paths.items():
-                found_paths = list(dataset_path.glob(f"**/{split_name}/"))
+        split_paths: dict[str, Path] = {}
+        for dataset_name, dataset_path in datasets_paths.items():
+            found_paths = list(dataset_path.glob(f"**/{split_name}/"))
 
-                if len(found_paths) == 0:
-                    logger.warning(
-                        f"No {split_name} data found in dataset {dataset_name} at path {dataset_path}."
-                    )
-                    continue
+            if len(found_paths) == 0:
+                logger.warning(
+                    f"No {split_name} data found in dataset {dataset_name} at path {dataset_path}."
+                )
+                continue
 
-                for p in found_paths:
-                    split_paths[f"{dataset_name}/{p.parent.name}"] = p
-        else:
-            split_paths: dict[str, Path] = {}
-            for dataset_name, dataset_path in datasets_paths.items():
-                for path in dataset_path.iterdir():
-                    if path.is_dir():
-                        split_paths[f"{dataset_name}/{path.name}"] = path
+            for p in found_paths:
+                split_paths[f"{dataset_name}/{p.parent.name}"] = p
         return split_paths
 
     @staticmethod
     def _concat_splits(
         split_paths: dict[str, Path], data_columns: set[str] | None = None
     ) -> HFDataset:
-        datasets = []
+        datasets: list[HFDataset] = []
         for name, split_path in split_paths.items():
             ds = HFDataset.load_from_disk(split_path)
-
             if data_columns is not None:
                 col2remove = []
                 for col in ds.column_names:
@@ -127,12 +121,13 @@ class DataModule(L.LightningDataModule):
                         col2remove.append(col)
 
                 if len(col2remove) == len(ds.column_names):
-                    raise ValueError(
+                    logger.warning(
                         f"None of the specified data_columns {data_columns} found in {name}."
                     )
-                ds = ds.remove_columns(col2remove)
-
-            datasets.append(ds)
+                    continue
+                else:
+                    ds = ds.remove_columns(col2remove)
+            datasets.append(ds)  # type: ignore
         return concatenate_datasets(datasets)
 
     def _create_hf_dataset(
@@ -142,7 +137,6 @@ class DataModule(L.LightningDataModule):
             self.datasets_paths = get_datasets_paths(self.clearml_datasets)
 
         split_paths = self._collect_split_paths(self.datasets_paths, split_name)
-
         if len(split_paths) == 0:
             raise ValueError(
                 f"No {split_name} data found in any of the provided datasets: {list(self.datasets_paths.keys())}"

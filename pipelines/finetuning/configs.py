@@ -1,16 +1,36 @@
+from typing import Literal
+
 from kostyl.ml.configs import CheckpointConfig
 from kostyl.ml.configs import EarlyStoppingConfig
-from kostyl.ml.configs import KostylBaseModel
-from kostyl.ml.configs.training_settings import LightningTrainerParameters
+from kostyl.ml.configs import LightningTrainerParameters
+from kostyl.ml.configs.mixins import ConfigLoadingMixin
+from kostyl.ml.integrations.clearml import ConfigSyncingClearmlMixin
 from pydantic import BaseModel
 from pydantic import Field
 
-from lednik.distill.training.configs import FinetuningConfig as LednikTrainConfig
+from lednik.distill.training.configs import DistillationConfig as BaseDistillationConfig
 
 
-class TrainConfig(LednikTrainConfig, KostylBaseModel):
+class DistillationConfig(
+    BaseDistillationConfig, ConfigSyncingClearmlMixin, ConfigLoadingMixin
+):
     """Configuration schema for the training process with ClearML functionality."""
 
+
+class LednikModelTrainConfig(BaseModel):
+    """Configuration for training a Lednik model."""
+
+    model_type: Literal["lednik"]
+    embeddings_dropout: float = 0.0
+    attention_dropout: float = 0.0
+    out_attn_dropout: float = 0.0
+    mlp_dropout: float = 0.0
+
+
+class StaticEmbeddingsTrainConfig(BaseModel):
+    """Configuration for training a static embeddings model."""
+
+    model_type: Literal["static_embeddings"]
     embedding_dropout: float = 0.0
 
 
@@ -32,11 +52,12 @@ class DataConfig(BaseModel):
     max_length: int = Field(gt=0)
 
 
-class TrainingSettings(KostylBaseModel):
+class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin):
     """Training parameters configuration."""
 
     teacher_model_id: str
     student_model_id: str
+    model_cfg: LednikModelTrainConfig | StaticEmbeddingsTrainConfig
     tokenizer_id: str
     trainer: LightningTrainerParameters
     early_stopping: EarlyStoppingConfig | None = None

@@ -1,16 +1,19 @@
 from kostyl.ml.configs import CheckpointConfig
 from kostyl.ml.configs import EarlyStoppingConfig
-from kostyl.ml.configs import KostylBaseModel
 from kostyl.ml.configs import LightningTrainerParameters
+from kostyl.ml.configs.mixins import ConfigLoadingMixin
+from kostyl.ml.integrations.clearml import ConfigSyncingClearmlMixin
 from pydantic import BaseModel
 from pydantic import Field
 
 from lednik.distill.training.configs import (
-    ClassifierTrainConfig as LednikClassifierTrainConfig,
+    ClassifierHyperparamsConfig as BaseClassifierHyperparamsConfig,
 )
 
 
-class TrainConfig(LednikClassifierTrainConfig, KostylBaseModel):
+class ClassifierHyperparamsConfig(
+    BaseClassifierHyperparamsConfig, ConfigLoadingMixin, ConfigSyncingClearmlMixin
+):
     """Configuration for classifier training."""
 
     embedding_dropout: float = 0.0
@@ -28,7 +31,7 @@ class DataConfig(BaseModel):
     max_length: int | None = None
 
 
-class TrainingSettings(KostylBaseModel):
+class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin):
     """Training parameters configuration."""
 
     model_id: str
