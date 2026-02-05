@@ -16,6 +16,7 @@ USER appuser
 
 ENV PYTHONPATH=/opt/app:$PYTHONPATH \
     MODEL_ID="" \
+    TOKENIZER_ID="" \
     CLEARML_API_ACCESS_KEY="" \
     CLEARML_API_SECRET_KEY="" \
     CLEARML_API_HOST="" \
@@ -23,4 +24,4 @@ ENV PYTHONPATH=/opt/app:$PYTHONPATH \
     AWS_SECRET_ACCESS_KEY="" \
     PORT=8080
 
-ENTRYPOINT [ "/bin/sh", "-c", "exec uv run --no-sync python ./lednik/serving/api.py --port ${PORT:-8080} --model-id ${MODEL_ID}" ]
+ENTRYPOINT [ "/bin/sh", "-c", "exec uv run --no-sync python ./lednik/serving/api.py --port ${PORT:-8080} --model-id ${MODEL_ID} --tokenizer-id ${TOKENIZER_ID:-''}" ]

@@ -8,6 +8,7 @@ services:
     container_name: lednik_serving
     environment:
       - MODEL_ID=${MODEL_ID}
+      - TOKENIZER_ID=${TOKENIZER_ID}
       - CLEARML_API_ACCESS_KEY=${CLEARML_API_ACCESS_KEY}
       - CLEARML_API_SECRET_KEY=${CLEARML_API_SECRET_KEY}
       - CLEARML_API_HOST=${CLEARML_API_HOST}
