@@ -36,6 +36,7 @@ from sklearn.metrics import precision_score
 from sklearn.metrics import recall_score
 from sklearn.model_selection import train_test_split
 from torch import nn
+from torch.distributed._composable.replicate import replicate
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import ShardingStrategy
@@ -60,7 +61,7 @@ from lednik.distill.training.configs import DirectDistillationConfig
 from lednik.distill.training.configs import DistillationConfig
 from lednik.distill.training.dist_utils import get_fsdp1_policies
 from lednik.distill.training.dist_utils import get_fsdp2_policies
-from lednik.distill.training.dist_utils import get_shard_transformer_modules
+from lednik.distill.training.dist_utils import get_transformer_wrap_classes
 from lednik.distill.training.dist_utils import select_wrap_policy
 from lednik.distill.training.knn import knn_predict
 from lednik.distill.training.layers import DINOHead
@@ -81,20 +82,6 @@ class _BaseStepOutput:
     student_embeddings: torch.Tensor
     student_sentence_embeddings: torch.Tensor
     teacher_sentence_embeddings: torch.Tensor
-
-
-@dataclass
-class _DirectDistillationOutput:
-    loss: torch.Tensor
-    teacher_embeddings: torch.Tensor
-    student_embeddings: torch.Tensor
-
-
-@dataclass
-class _DinoDistillationOutput:
-    loss: torch.Tensor
-    teacher_embeddings: torch.Tensor
-    student_embeddings: torch.Tensor
 
 
 @dataclass
@@ -197,16 +184,20 @@ class DistillationModule(KostylLightningModule):
                 self.student_to_teacher_proj,
                 self.student_dino_head,
                 self.teacher_dino_head,
-            ) = self._init_dino(  # type: ignore
-                self.distill_method_cfg
+            ) = self._init_dino(
+                self.distill_method_cfg,
+                teacher_hidden_size=teacher.config.hidden_size,
+                student_hidden_size=student.config.hidden_size,
             )
             self.pipeline_type = "dino"
         elif isinstance(self.distill_method_cfg, DirectDistillationConfig):
             (
                 self.student_to_teacher_proj,
                 self.direct_loss,
-            ) = self._init_direct(  # type: ignore
-                self.distill_method_cfg
+            ) = self._init_direct(
+                self.distill_method_cfg,
+                teacher_hidden_size=teacher.config.hidden_size,
+                student_hidden_size=student.config.hidden_size,
             )
             self.pipeline_type = "direct"
         else:
@@ -277,6 +268,7 @@ class DistillationModule(KostylLightningModule):
                     f"Expected ModelParallelStrategy but got {strategy_config.__class__.__name__} "
                     f"for {strategy.__class__.__name__} strategy"
                 )
+
             mesh = self.device_mesh
             if mesh is None:
                 raise ValueError(
@@ -288,22 +280,31 @@ class DistillationModule(KostylLightningModule):
                 raise ValueError(
                     "Tensor parallelism is not supported in this distillation module"
                 )
+
             policies = get_fsdp2_policies(strategy_config)
+
             for name, module in modules_shard.items():
-                modules_to_shard = get_shard_transformer_modules(model=module)
-                if modules_to_shard is None:
+                modules_to_shard = get_transformer_wrap_classes(model=module)
+                if modules_to_shard is None:  # TODO: add size-based wrap fallback
                     logger.warning(
                         f"Failed to get modules to shard for {name} module in ModelParallelStrategy. "
-                        "Module will be wrapped with root FSDP instance."
+                        "Module will be wrapped into one FSDP instance."
                     )
                 else:
                     modules_to_shard = tuple(modules_to_shard)
-
                     for child_module in module.modules():
                         if isinstance(child_module, modules_to_shard):
                             fully_shard(child_module, mesh=dp_mesh, **policies)
-                    fully_shard(module=module, mesh=dp_mesh, **policies)
-            fully_shard(self, mesh=dp_mesh, **policies)
+                fully_shard(module=module, mesh=dp_mesh, **policies)
+
+            for _, module in module_no_shard.items():
+                if (module is None) or isinstance(module, nn.Identity):
+                    continue
+                replicate(  # type: ignore
+                    module,
+                    mesh=dp_mesh,
+                    mp_policy=policies["mp_policy"],
+                )
         self.configured_flag = True
         return
 
@@ -478,6 +479,7 @@ class DistillationModule(KostylLightningModule):
             lr=self.train_cfg.lr.base_value,
             weight_decay=self.train_cfg.weight_decay.base_value,
         )
+
         schedulers: dict[str, BaseScheduler] = {}
         if self.train_cfg.lr.scheduler_type is not None:
             scheduler = create_scheduler(

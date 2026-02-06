@@ -46,7 +46,7 @@ from transformers import TokenizersBackend
 from lednik.distill.training.configs import ClassifierHyperparamsConfig
 from lednik.distill.training.dist_utils import get_fsdp1_policies
 from lednik.distill.training.dist_utils import get_fsdp2_policies
-from lednik.distill.training.dist_utils import get_shard_transformer_modules
+from lednik.distill.training.dist_utils import get_transformer_wrap_classes
 from lednik.distill.training.dist_utils import select_wrap_policy
 from lednik.models import StaticEmbeddingsForSequenceClassification
 from lednik.models import StaticEmbeddingsSequenceClassifierOutput as SEOutput
@@ -237,7 +237,7 @@ class ClassifierTrainingModule(KostylLightningModule):
                     "Tensor parallelism is not supported in this distillation module"
                 )
             policies = get_fsdp2_policies(strategy_config)
-            modules_to_shard = get_shard_transformer_modules(model=self.model)
+            modules_to_shard = get_transformer_wrap_classes(model=self.model)
             if modules_to_shard is None:  # TODO: add size based wrapping
                 logger.warning(
                     "Failed to get modules to shard in ModelParallelStrategy. "

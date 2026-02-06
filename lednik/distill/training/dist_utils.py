@@ -48,7 +48,7 @@ def _find_modules_to_exclude_from_wrapping(
     return modules_to_exclude
 
 
-def get_shard_transformer_modules(
+def get_transformer_wrap_classes(
     model: PreTrainedModel, exclude_sharding_substrings: list[str] | None = None
 ) -> set[type[nn.Module]] | None:
     """
@@ -83,14 +83,22 @@ def get_shard_transformer_modules(
         if module.__class__.__name__ in shard_modules_names:
             shard_modules.add(type(module))
 
-    shard_modules = shard_modules - _find_modules_to_exclude_from_wrapping(
-        shard_modules, exclude_sharding_substrings
+    modules_to_exclude = _find_modules_to_exclude_from_wrapping(
+        shard_modules,
+        exclude_sharding_substrings,
     )
-    logger.debug(
-        f"Identified {len(shard_modules)} shard modules: "
-        f"{[module.__name__ for module in shard_modules]}"
-    )
-    return shard_modules if len(shard_modules) > 0 else None
+    shard_modules = shard_modules - modules_to_exclude
+
+    if len(shard_modules) > 0:
+        logger.debug(
+            f"Identified {len(shard_modules)} shard modules: "
+            f"{[module.__name__ for module in shard_modules]}"
+        )
+        result = shard_modules
+    else:
+        logger.debug("No shard modules identified after filtering.")
+        result = None
+    return result
 
 
 def select_wrap_policy(
@@ -100,7 +108,7 @@ def select_wrap_policy(
     Selects an appropriate wrapping policy for FSDP1 (Fully Sharded Data Parallel) based on the model architecture.
 
     This function determines which modules within the model should be wrapped for sharding.
-    It prioritizes explicit no-shard modules if defined for the specific model type. If not found,
+    It prioritizes explicit shard modules if defined for the specific model type. If not found,
     it falls back to a size-based auto-wrap policy, while excluding specific module types that are known
     to cause issues with sharding (e.g., small layers or specific embeddings) determined dynamically.
 
@@ -108,7 +116,7 @@ def select_wrap_policy(
         model (PreTrainedModel): The model to be wrapped.
         exclude_sharding_substrings (list[str] | None, optional): A list of substrings to match
             against module names. If a module's name contains any of these substrings, it will
-            be excluded from the no-shard set. If None, a default set of substrings will be used.
+            be excluded from the shard set. If None, a default set of substrings will be used.
             Default set: ["embedding", "lmhead"]. Comparison will be case-insensitive.
 
     Returns:
@@ -116,11 +124,12 @@ def select_wrap_policy(
         how the model's layers should be wrapped by FSDP.
 
     """
-    shard_modules = get_shard_transformer_modules(model, exclude_sharding_substrings)
+    shard_modules = get_transformer_wrap_classes(model, exclude_sharding_substrings)
     if shard_modules is not None:
         return ModuleWrapPolicy(module_classes=shard_modules)
+
     logger.debug(
-        "No explicit no-shard modules found. "
+        "No explicit shard modules found. "
         "Falling back to size-based auto-wrap policy with exclusions."
     )
 
@@ -129,7 +138,7 @@ def select_wrap_policy(
         modules, exclude_sharding_substrings
     )
     logger.debug(
-        f"Excluding {len(modules_to_exclude)} modules from wrapping: "
+        f"Excluding {len(modules_to_exclude)} modules from size-based wrapping: "
         f"{[module.__name__ for module in modules_to_exclude]}"
     )
 
