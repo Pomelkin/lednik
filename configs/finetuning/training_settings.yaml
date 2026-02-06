@@ -4,7 +4,7 @@ data:
     Lenta-RU(train): c0db0a47494649e8a56c35ab237bd414
   val_datasets:
     Telegram-Financial-Sentiment(val): 15a6b40eb988463a9654e5109f784619
-  batch_size: 3
+  batch_size: 256
   num_workers: 5
   train_tokens_column: USER-bge-m3
   val_tokens_column: USER-bge-m3
@@ -16,13 +16,15 @@ trainer:
   accelerator: "gpu"
   max_epochs: 1
   strategy:
-    type: "single_device"
+    type: "fsdp1"
+    param_dtype: bfloat16
+    reduce_dtype: float32
+    buffer_dtype: float32
   val_check_interval: 0.1
-  devices: 1
-  precision: bf16-true
+  devices: 2
+  precision: 32-true
   log_every_n_steps: 25
-  limit_train_batches: 100
-  limit_val_batches: 100
+  limit_train_batches: 4200
 
 early_stopping:
   monitor: "val_loss"

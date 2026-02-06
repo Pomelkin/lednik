@@ -7,12 +7,12 @@ distillation_method:
   proj_dropout: 0.1
 optimizer:
   type: AdamW8bit
-  betas: [ 0.9, 0.98 ]
+  betas: [0.9, 0.98]
   block_size: 256
   bf16_stochastic_round: true
 lr:
   scheduler_type: plateau-with-cosine-annealing
-  warmup_ratio: 0.1
+  warmup_ratio: 0.15
   warmup_value: 8e-5
   base_value: 3e-4
   final_value: 5e-5

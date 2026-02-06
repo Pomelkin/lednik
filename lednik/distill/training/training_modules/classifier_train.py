@@ -214,6 +214,7 @@ class ClassifierTrainingModule(KostylLightningModule):
 
             self_fsdp_wrapped = FSDP(
                 module=self,
+                use_orig_params=True,
                 device_id=strategy.root_device.index,
                 sharding_strategy=strategy.sharding_strategy,
                 **policies,

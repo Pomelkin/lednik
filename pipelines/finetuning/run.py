@@ -94,7 +94,7 @@ def _distill_model(
         model=model_cls,
         task=task,
         name="Model to Distill (Student)",
-        **training_settings.model_cfg.model_dump(),
+        **training_settings.model_cfg.model_dump(exclude={"model_type"}),
     )
 
     ### Tokenizer Loading ###
@@ -118,7 +118,7 @@ def _distill_model(
     ### Callbacks, Loggers, and Strategy Setup ###
     ckpt_uploader_config = CheckpointUploaderConfig(
         model_name=clearml_student.name,
-        config_dict=clearml_student.config_dict,
+        config_dict=student.config.to_diff_dict(),
         upload_as_new_model=False,
         tags=[*clearml_student.tags],
         framework="PyTorch",
