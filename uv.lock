@@ -1457,15 +1457,15 @@ wheels = [
 
 [[package]]
 name = "kostyl-toolkit"
-version = "0.1.48"
+version = "0.1.50"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "case-converter" },
     { name = "loguru" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c1/13/a47f20a10ffdff3f07676841ce405acdbf3df860c3ae07c8144fb65ae4a0/kostyl_toolkit-0.1.48.tar.gz", hash = "sha256:96e4f64e80d5d7ef9ceb6860ecdf0a74b97536f56a8c5ec6669a9e6d22d0dca9", size = 31553, upload-time = "2026-02-05T11:36:24.474Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/c0/50d7d7a1a68a58dc5c48ebcfe1315c67cef691ffa36943efb2dc658225ad/kostyl_toolkit-0.1.50.tar.gz", hash = "sha256:1ff8eddbcd0ef366ccb4629952d793d4008e9d96eb4e08e5c01e35c4be02dbe9", size = 31621, upload-time = "2026-02-05T18:14:50.523Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/97/174f313d3093864227256654ce3542f93c78a0248e5b811dbcedf3681924/kostyl_toolkit-0.1.48-py3-none-any.whl", hash = "sha256:db3e62afe06d2143a937bb21609cbdf2e6c763e9ef603113d806583a1b8c5ac0", size = 47800, upload-time = "2026-02-05T11:36:23.269Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/5f/e3a81c167cd57c0eaf8e391b837bab5f8a7ea94658c0122855dd880dc8b8/kostyl_toolkit-0.1.50-py3-none-any.whl", hash = "sha256:6d9599031caabd0114d473b3774681d384a3024b2d0b268d71a66ee217d9c498", size = 48123, upload-time = "2026-02-05T18:14:49.077Z" },
 ]
 
 [package.optional-dependencies]
@@ -1499,6 +1499,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "scikit-learn" },
     { name = "torch" },
+    { name = "torchao" },
     { name = "tqdm" },
     { name = "transformers" },
 ]
@@ -1539,6 +1540,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
     { name = "torch", specifier = ">=2.10.0" },
+    { name = "torchao", specifier = ">=0.15.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "transformers", specifier = ">=4.57.1" },
 ]
@@ -3453,6 +3455,15 @@ wheels = [
 ]
 
 [[package]]
+name = "torchao"
+version = "0.15.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/2d/472b9362dceae05a4599e2b94f86e69a29c0e20964a6af84f34f6ead5938/torchao-0.15.0-cp310-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1cbe813201314ba6329a650a76944502f3e8ec4b1b44523f3f48676810d8d1f6", size = 7163930, upload-time = "2025-12-18T23:14:41.876Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/3b/6b9d5618720f63dbc2e2509cd6b57aae9c0d61b738d1d2172f4d5d9efaab/torchao-0.15.0-py3-none-any.whl", hash = "sha256:3f3812676048ef8a2a0e9d492d12d8971ba7a7ebb16f54aa56f690414e130d2c", size = 1080679, upload-time = "2025-12-18T23:14:43.807Z" },
+]
+
+[[package]]
 name = "torchmetrics"
 version = "1.8.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3509,10 +3520,9 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.0.0"
+version = "5.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "filelock" },
     { name = "huggingface-hub" },
     { name = "numpy" },
     { name = "packaging" },
@@ -3523,9 +3533,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typer-slim" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bc/79/845941711811789c85fb7e2599cea425a14a07eda40f50896b9d3fda7492/transformers-5.0.0.tar.gz", hash = "sha256:5f5634efed6cf76ad068cc5834c7adbc32db78bbd6211fb70df2325a9c37dec8", size = 8424830, upload-time = "2026-01-26T10:46:46.813Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/1d/a7d91500a6c02ec76058bc9e65fcdec1bdb8882854dec8e4adf12d0aa8b0/transformers-5.1.0.tar.gz", hash = "sha256:c60d6180e5845ea1b4eed38d7d1b06fcc4cc341c6b7fa5c1dc767d7e25fe0139", size = 8531810, upload-time = "2026-02-05T15:41:42.932Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/f3/ac976fa8e305c9e49772527e09fbdc27cc6831b8a2f6b6063406626be5dd/transformers-5.0.0-py3-none-any.whl", hash = "sha256:587086f249ce64c817213cf36afdb318d087f790723e9b3d4500b97832afd52d", size = 10142091, upload-time = "2026-01-26T10:46:43.88Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/66/57042d4b0f1ede8046d7ae6409bf3640df996e9cbc3fe20467aa29badc54/transformers-5.1.0-py3-none-any.whl", hash = "sha256:de534b50c9b2ce6217fc56421075a1734241fb40704fdc90f50f6a08fc533d59", size = 10276537, upload-time = "2026-02-05T15:41:40.358Z" },
 ]
 
 [[package]]
