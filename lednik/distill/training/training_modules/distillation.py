@@ -36,7 +36,7 @@ from sklearn.metrics import precision_score
 from sklearn.metrics import recall_score
 from sklearn.model_selection import train_test_split
 from torch import nn
-from torch.distributed._composable.replicate import replicate
+from torch.distributed._composable.replicate_with_fsdp import replicate
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import ShardingStrategy
@@ -147,8 +147,8 @@ class DistillationModule(KostylLightningModule):
 
         """
         super().__init__()
-        self.teacher = teacher.eval()
-        self.student = student.train()
+        self.teacher = teacher
+        self.student = student
 
         self.train_cfg = train_cfg
         self.strategy_config = strategy_config
@@ -206,7 +206,6 @@ class DistillationModule(KostylLightningModule):
                 f"Supported types: DinoDistillationConfig, DirectDistillationConfig"
             )
 
-        self._set_model_freeze_state("teacher", freeze=True)
         self.eval_outputs: list[_EvalResult] = []
         self.configured_flag = False
         return
@@ -301,7 +300,7 @@ class DistillationModule(KostylLightningModule):
             for _, module in module_no_shard.items():
                 if (module is None) or isinstance(module, nn.Identity):
                     continue
-                replicate(  # type: ignore
+                replicate(
                     module,
                     mesh=dp_mesh,
                     mp_policy=policies["mp_policy"],
@@ -395,7 +394,7 @@ class DistillationModule(KostylLightningModule):
         strategy = cast(ParallelStrategy, self.trainer.strategy)
         device_mesh: DeviceMesh | None = getattr(strategy, "device_mesh", None)
         if device_mesh is not None:
-            return device_mesh.get_group("data")
+            return device_mesh.get_group("data_parallel")
         return dist.group.WORLD
 
     @override
@@ -415,10 +414,10 @@ class DistillationModule(KostylLightningModule):
         match target_model:
             case "teacher":
                 for param in self.teacher.parameters():
-                    param.requires_grad = not freeze
+                    param.requires_grad_(not freeze)
             case "student":
                 for param in self.student.parameters():
-                    param.requires_grad = not freeze
+                    param.requires_grad_(not freeze)
             case _:
                 raise ValueError(
                     f"Unknown model to set freeze state: {target_model}. "
@@ -446,6 +445,10 @@ class DistillationModule(KostylLightningModule):
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
+        self._set_model_freeze_state("teacher", freeze=True)
+        self.teacher.eval()  # set teacher to eval mode to disable dropout if any, just in case
+        self.student.train()  # ensure student is in train mode for optimization
+
         if dist.is_initialized():
             lrs = {
                 "base_value": self.train_cfg.lr.base_value,

@@ -3,7 +3,7 @@ teacher_pooling_method: cls
 student_pooling_method: mean
 distillation_method:
   type: direct-distillation
-  loss_type: cosine
+  loss_type: mse
   proj_dropout: 0.1
 optimizer:
   type: AdamW8bit
