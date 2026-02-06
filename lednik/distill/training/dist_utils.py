@@ -1,4 +1,5 @@
 from functools import partial
+from typing import Any
 from typing import TypedDict
 
 import torch
@@ -155,6 +156,12 @@ def select_wrap_policy(
     )
 
 
+def _get_optional_attribute(obj: object, attr_name: str | None) -> Any | None:
+    if attr_name is None:
+        return None
+    return getattr(obj, attr_name, None)
+
+
 class FSDP2PolicyDict(TypedDict):  # noqa: D101
     mp_policy: MixedPrecisionPolicy
     offload_policy: CPUOffloadPolicy | OffloadPolicy
@@ -166,9 +173,9 @@ def get_fsdp2_policies(
     """Create a MixedPrecisionPolicy for FSDP2 based on the provided strategy configuration."""
     kwargs = {
         "mp_policy": MixedPrecisionPolicy(
-            param_dtype=getattr(torch, strategy_config.param_dtype, None),  # type: ignore
-            reduce_dtype=getattr(torch, strategy_config.reduce_dtype, None),  # type: ignore
-            output_dtype=getattr(torch, strategy_config.output_dtype, None),  # type: ignore
+            param_dtype=_get_optional_attribute(torch, strategy_config.param_dtype),
+            reduce_dtype=_get_optional_attribute(torch, strategy_config.reduce_dtype),
+            output_dtype=_get_optional_attribute(torch, strategy_config.output_dtype),
         ),
         "offload_policy": CPUOffloadPolicy(pin_memory=True)
         if strategy_config.use_cpu_offload
@@ -188,9 +195,10 @@ def get_fsdp1_policies(
     """Create a MixedPrecisionPolicy for FSDP1 based on the provided strategy configuration."""
     kwargs = {
         "mixed_precision": MixedPrecision(
-            param_dtype=getattr(torch, strategy_config.param_dtype, None),  # type: ignore
-            reduce_dtype=getattr(torch, strategy_config.reduce_dtype, None),  # type: ignore
-            buffer_dtype=getattr(torch, strategy_config.buffer_dtype, None),  # type: ignore
+            param_dtype=_get_optional_attribute(torch, strategy_config.param_dtype),
+            reduce_dtype=_get_optional_attribute(torch, strategy_config.reduce_dtype),
+            buffer_dtype=_get_optional_attribute(torch, strategy_config.buffer_dtype),
+            keep_low_precision_grads=strategy_config.keep_low_precision_grads,
         ),
         "cpu_offload": CPUOffload(offload_params=True)
         if strategy_config.use_cpu_offload
