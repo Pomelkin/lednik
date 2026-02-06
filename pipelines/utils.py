@@ -23,7 +23,6 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.strategies import FSDPStrategy
 from lightning.pytorch.strategies import ModelParallelStrategy
-from pydantic import BaseModel
 
 
 @dataclass
@@ -44,7 +43,8 @@ class Callbacks:
         return callbacks
 
 
-class CheckpointUploaderConfig(BaseModel):
+@dataclass
+class CheckpointUploaderConfig:
     """
     Configuration for uploading model checkpoints.
 
@@ -94,7 +94,7 @@ def setup_callbacks(
         logging_interval="step", log_weight_decay=True, log_momentum=False
     )
 
-    uploader_kwargs = checkpoint_uploader_config.model_dump()
+    uploader_kwargs = checkpoint_uploader_config.__dict__
     upload_strategy = uploader_kwargs.pop("upload_strategy")
     model_uploader = ClearMLCheckpointUploader(**uploader_kwargs)
 

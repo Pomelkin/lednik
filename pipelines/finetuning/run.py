@@ -69,7 +69,7 @@ def _distill_model(
     ROOT_PATH = Path(__file__).parent.parent.parent
 
     distill_config = DistillationConfig.connect_as_file(
-        task, ROOT_PATH / "configs" / "finetuning" / "train_config.yaml"
+        task, ROOT_PATH / "configs" / "finetuning" / "distill_config.yaml"
     )
     training_settings = TrainingSettings.connect_as_file(
         task, ROOT_PATH / "configs" / "finetuning" / "training_settings.yaml"

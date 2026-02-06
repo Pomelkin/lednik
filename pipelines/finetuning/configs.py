@@ -49,7 +49,7 @@ class DataConfig(BaseModel):
         gt=0,
         validate_default=False,
     )
-    max_length: int = Field(gt=0)
+    max_length: int | None = Field(default=None, gt=0, validate_default=False)
 
 
 class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin):
@@ -57,8 +57,8 @@ class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin)
 
     teacher_model_id: str
     student_model_id: str
-    model_cfg: LednikModelTrainConfig | StaticEmbeddingsTrainConfig
     tokenizer_id: str
+    model_cfg: LednikModelTrainConfig | StaticEmbeddingsTrainConfig
     trainer: LightningTrainerParameters
     early_stopping: EarlyStoppingConfig | None = None
     checkpoint: CheckpointConfig = CheckpointConfig()
