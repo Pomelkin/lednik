@@ -1,7 +1,7 @@
 data:
   datasets:
     Telegram-Financial-Sentiment: f2c2c19d7c1d4366bf1c24e8ab518ce6
-  batch_size: 128
+  batch_size: 32
   num_workers: 5
   tokens_column: USER-bge-m3
   label_column: label
@@ -9,11 +9,11 @@ data:
 
 trainer:
   accelerator: "gpu"
-  max_epochs: 5
+  max_epochs: 4
   strategy:
-    type: "ddp"
+    type: "fsdp1"
     find_unused_parameters: true
-  val_check_interval: 0.15
+  val_check_interval: 0.2
   devices: 2
   precision: bf16-mixed
   log_every_n_steps: 25
@@ -30,6 +30,6 @@ checkpoint:
   monitor: "val_loss"
   filename: "{epoch:02d}-{val_loss:.4f}"
 
-model_id: af954495ff03440abc58790c4e41ff22
+model_id: e7801bc57fad4e64b06b6fa33d5cfc3b
 tokenizer_id: 387811863bae48398d241934e61980c2
 weights_prefix: "static_model"

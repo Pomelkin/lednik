@@ -1,0 +1,21 @@
+grad_clip_val: 2.0
+teacher_pooling_method: cls
+student_pooling_method: mean
+distillation_method:
+  type: direct-distillation
+  loss_type: cosine
+  proj_dropout: 0.1
+optimizer:
+  type: AdamW8bit
+  betas: [ 0.9, 0.98 ]
+  block_size: 256
+  bf16_stochastic_round: true
+lr:
+  scheduler_type: plateau-with-cosine-annealing
+  warmup_ratio: 0.1
+  warmup_value: 8e-5
+  base_value: 3e-4
+  final_value: 5e-5
+  plateau_ratio: 0.7
+weight_decay:
+  base_value: 0.001
