@@ -121,7 +121,10 @@ def setup_callbacks(
 def setup_loggers(task: Task, root_path: Path) -> list[TensorBoardLogger]:
     """Set up PyTorch Lightning loggers for training."""
     loggers = [
-        setup_tb_logger(root_path / "runs" / task.name / task.id),
+        setup_tb_logger(
+            root_path / "runs" / task.name / task.id,
+            remove_folder_if_exists=True,
+        ),
     ]
     return loggers
 

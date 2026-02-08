@@ -1,4 +1,7 @@
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from typing import Literal
 from typing import cast
 
 import torch
@@ -26,7 +29,51 @@ from .configuration_lednik import LednikConfig
 try:
     from kostyl.ml.integrations.lightning import LightningCheckpointLoaderMixin
 except ImportError:
-    LightningCheckpointLoaderMixin = object
+
+    class LightningCheckpointLoaderMixin:  # pyrefly: ignore  # noqa: D101
+        @classmethod
+        def from_lightning_checkpoint[TModelInstance: PreTrainedModel](
+            cls: type[TModelInstance],  # pyright: ignore[reportGeneralTypeIssues]
+            checkpoint_path: str | Path,
+            config_key: str = "config",
+            weights_prefix: str | None = "model.",
+            strict_prefix: bool = False,
+            **kwargs: Any,
+        ) -> TModelInstance:
+            """
+            Load a model from a Lightning checkpoint file.
+
+            This class method loads a pretrained model from a PyTorch Lightning checkpoint file (.ckpt).
+            It extracts the model configuration from the checkpoint, instantiates the model, and loads
+            the state dictionary, handling any incompatible keys.
+
+            Note:
+                The method uses `torch.load` with `weights_only=False` and `mmap=True` for loading.
+                Incompatible keys (missing, unexpected, mismatched) are collected and optionally logged.
+
+            Args:
+                cls (type["LightningPretrainedModelMixin"]): The class of the model to instantiate.
+                checkpoint_path (str | Path): Path to the checkpoint file. Must be a .ckpt file.
+                config_key (str, optional): Key in the checkpoint dictionary where the config is stored.
+                    Defaults to "config".
+                weights_prefix (str | None, optional): Prefix to strip from state dict keys. Defaults to "model.".
+                    If not empty and doesn't end with ".", a "." is appended. If empty or None, no prefix stripping will be skipped.
+                strict_prefix (bool, optional): If True, drop tensors those keys that do not start with the
+                    specified prefix. Defaults to False.
+                kwargs: Additional keyword arguments to pass to the model's `from_pretrained` method.
+
+            Returns:
+                TModelInstance: The loaded model instance.
+
+            Raises:
+                ValueError: If checkpoint_path is a directory, not a .ckpt file, or invalid.
+                FileNotFoundError: If the checkpoint file does not exist.
+
+            """
+            raise ImportError(
+                "LightningCheckpointLoaderMixin requires PyTorch Lightning to be installed. "
+                "Please install it with `pip install lightning` to use this functionality."
+            )
 
 
 if is_flash_attn_2_available():
@@ -571,19 +618,61 @@ class LednikPreTrainedModel(
         )
 
 
-def unpad_inputs(
-    padded_inputs: torch.Tensor,
-    attention_mask: torch.Tensor,
-    position_ids: torch.Tensor | None = None,
-    labels: torch.Tensor | None = None,
-) -> tuple[
+UnpaddedInputsTuple = tuple[
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     int,
     torch.Tensor | None,
     torch.Tensor | None,
-]:
+]
+
+
+@dataclass
+class UnpaddedInputs:
+    """Dataclass for unpadded inputs used in attention forward pass."""
+
+    unpadded_inputs: torch.Tensor
+    non_pad_indices: torch.Tensor
+    cu_seqlens: torch.Tensor
+    max_seqlen: int
+    unpadded_position_ids: torch.Tensor | None
+    unpadded_labels: torch.Tensor | None
+
+    def as_tuple(
+        self,
+    ) -> UnpaddedInputsTuple:
+        """Returns the unpadded inputs as a tuple."""
+        return (
+            self.unpadded_inputs,
+            self.non_pad_indices,
+            self.cu_seqlens,
+            self.max_seqlen,
+            self.unpadded_position_ids,
+            self.unpadded_labels,
+        )
+
+    def to_model_inputs(
+        self, unpadded_inputs_type: Literal["input_ids", "inputs_embeds"] = "input_ids"
+    ) -> dict[str, torch.Tensor | int | None]:
+        """Formats the unpadded inputs into a dictionary suitable for model input."""
+        return {
+            unpadded_inputs_type: self.unpadded_inputs,
+            "cu_seqlens": self.cu_seqlens,
+            "max_seqlen": self.max_seqlen,
+            "non_pad_indices": self.non_pad_indices,
+            "position_ids": self.unpadded_position_ids,
+            "labels": self.unpadded_labels,
+        }
+
+
+def unpad_inputs(
+    padded_inputs: torch.Tensor,
+    attention_mask: torch.Tensor,
+    position_ids: torch.Tensor | None = None,
+    labels: torch.Tensor | None = None,
+    return_dict: bool = False,
+) -> UnpaddedInputs:
     """
     Removes padding from inputs and simultaneously filters corresponding elements from position_ids and labels.
 
@@ -596,10 +685,11 @@ def unpad_inputs(
              If provided, elements corresponding to padding are removed. Defaults to None.
         labels (torch.Tensor | None, optional): A 2D tensor (batch_size, seq_len) of labels (e.g. for NER).
              If provided, elements corresponding to padding are removed. Defaults to None.
+        return_dict (bool, optional): If True, returns a UnpaddedInputs TypedDict instead of a tuple. Defaults to False.
 
     Returns:
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, torch.Tensor | None, torch.Tensor | None]:
-            A tuple containing:
+        UnpaddedInputs:
+            A tuple containing
             - **unpadded_inputs:** The flattened inputs containing only non-pad tokens.
             - **non_pad_indices:** Indices in the flattened original tensor that correspond to non-pad tokens.
             - **cu_seqlens:** Cumulative sequence lengths (offsets) for the unpadded sequence (batch_size + 1).
@@ -644,13 +734,14 @@ def unpad_inputs(
         unpadded_labels = labels.flatten()[non_pad_indices]
     else:
         unpadded_labels = None
-    return (
-        unpadded_inputs,
-        non_pad_indices,
-        cu_seqlens,
-        max_seqlen,
-        unpadded_position_ids,
-        unpadded_labels,
+
+    return UnpaddedInputs(
+        unpadded_inputs=unpadded_inputs,
+        non_pad_indices=non_pad_indices,
+        cu_seqlens=cu_seqlens,
+        max_seqlen=max_seqlen,
+        unpadded_position_ids=unpadded_position_ids,
+        unpadded_labels=unpadded_labels,
     )
 
 
@@ -745,6 +836,7 @@ class LednikModel(LednikPreTrainedModel):
         position_ids: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        non_pad_indices: torch.Tensor | None = None,
         output_attentions: bool | None = None,
         **_kwargs: Any,
     ) -> BaseModelOutput:
@@ -772,6 +864,9 @@ class LednikModel(LednikPreTrainedModel):
                 of the input sequences. Used to index the unpadded tensors.
             max_seqlen (`int`, *optional*): Maximum sequence length in the batch
                 excluding padding tokens. Used to unpad input_ids and pad output tensors.
+            non_pad_indices (`torch.Tensor` of shape `(num_non_pad_tokens,)`, *optional*):
+                Indices of non-pad tokens in the flattened input tensor.
+                Used to index the unpadded tensors and to pad the output tensors back to the original shape.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers.
 
@@ -780,19 +875,21 @@ class LednikModel(LednikPreTrainedModel):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
             )
-        if (cu_seqlens is None) != (max_seqlen is None):
+        if (cu_seqlens is None) != (max_seqlen is None) != (non_pad_indices is None):
             raise ValueError(
-                "cu_seqlens and max_seqlen must be provided together for unpadded attention."
+                "cu_seqlens, max_seqlen and non_pad_indices must be provided together for unpadded attention."
             )
         if (
             (cu_seqlens is not None)
             and (max_seqlen is not None)
-            and ("flash" not in self.config._attn_implementation)
+            and (non_pad_indices is not None)
+            and not is_flash_attention_requested(self.config)
         ):
             logger.warning(
-                "cu_seqlens and max_seqlen are used only "
+                "cu_seqlens, max_seqlen and non_pad_indices are used only "
                 "when attn_implementation is Flash Attention."
             )
+
         if (input_ids is not None) and (cu_seqlens is None):
             self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask)
         self._warn_if_output_attentions_and_flash_attn(output_attentions)
@@ -800,21 +897,31 @@ class LednikModel(LednikPreTrainedModel):
         REPAD = False
         batch_size = None
         seqlen = None
-        non_pad_indices = None
         if is_flash_attention_requested(self.config):
             # unpad inputs
-            if (cu_seqlens is None) or (max_seqlen is None):
+            if (
+                (cu_seqlens is None)
+                or (max_seqlen is None)
+                or (non_pad_indices is None)
+            ):
                 if attention_mask is None:
                     raise ValueError(
                         "Attention mask must be provided "
-                        "when cu_seqlens and max_seqlen are not specified "
+                        "when cu_seqlens, max_seqlen and non_pad_indices are not specified "
                         f"and `attn_implementation` is {self.config._attn_implementation}."
                     )
                 REPAD = True
+
                 if inputs_embeds is None:
                     input_ids = cast(torch.LongTensor, input_ids)
                     batch_size, seqlen = input_ids.shape
                     with torch.no_grad():
+                        output = unpad_inputs(
+                            input_ids,
+                            attention_mask,
+                            position_ids,
+                            return_dict=False,
+                        )
                         (
                             input_ids,
                             non_pad_indices,
@@ -822,13 +929,14 @@ class LednikModel(LednikPreTrainedModel):
                             max_seqlen,
                             position_ids,
                             _,
-                        ) = unpad_inputs(
-                            input_ids,
-                            attention_mask,
-                            position_ids,
-                        )
+                        ) = output.as_tuple()
                 else:
                     batch_size, seqlen, *_ = inputs_embeds.shape
+                    output = unpad_inputs(
+                        inputs_embeds,
+                        attention_mask,
+                        position_ids,
+                    )
                     (
                         inputs_embeds,
                         non_pad_indices,
@@ -836,11 +944,7 @@ class LednikModel(LednikPreTrainedModel):
                         max_seqlen,
                         position_ids,
                         _,
-                    ) = unpad_inputs(
-                        inputs_embeds,
-                        attention_mask,
-                        position_ids,
-                    )
+                    ) = output.as_tuple()
             if cu_seqlens.dtype != torch.int32:
                 cu_seqlens = cu_seqlens.to(torch.int32)
 
@@ -901,7 +1005,7 @@ class LednikModel(LednikPreTrainedModel):
     ) -> None:
         if output_attentions is None:
             output_attentions = self.config.output_attentions
-        if output_attentions and ("flash" in self.config._attn_implementation):
+        if output_attentions and is_flash_attention_requested(self.config):
             logger.warning_once(
                 "Output_attentions supported only in `eager` mode. "
                 "Attention weights will be dummy !"

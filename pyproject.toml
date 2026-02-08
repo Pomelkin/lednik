@@ -57,6 +57,7 @@ project-excludes = [
   "**/.tox/**",
   "**/dist/**",
   "**/build/**",
+  "notebooks/**",
 ]
 python-platform = "linux"
 python-interpreter-path = ".venv/bin/python3"
