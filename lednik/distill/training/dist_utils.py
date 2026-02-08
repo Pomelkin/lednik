@@ -3,6 +3,7 @@ from typing import Any
 from typing import TypedDict
 
 import torch
+import torch.distributed as dist
 from kostyl.ml.configs.training_settings import FSDP1StrategyConfig
 from kostyl.ml.configs.training_settings import FSDP2StrategyConfig
 from kostyl.utils import setup_logger
@@ -205,3 +206,62 @@ def get_fsdp1_policies(
         else None,
     }
     return kwargs  # type: ignore
+
+
+class DistributedMMFunction(torch.autograd.Function):
+    """
+    Custom autograd function for distributed matrix multiplication.
+
+    This function performs matrix multiplication across multiple distributed processes,
+    gathering tensors from all ranks before computing the result. It implements custom
+    forward and backward passes to handle gradient computation in a distributed setting.
+    """
+
+    @staticmethod
+    def forward(  # type: ignore[override]  # noqa: D102
+        ctx: torch.autograd.Function,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        group: dist.ProcessGroup | None = None,
+    ) -> torch.Tensor:
+        if x.dim() != 2:
+            raise ValueError("Input x must be a 2D tensor.")
+        if not dist.is_initialized():
+            raise RuntimeError("Distributed process group is not initialized.")
+
+        handlers: list[dist.Work] = []
+        world_size = dist.get_world_size(group)
+        rank = dist.get_rank(group)
+
+        y_buff = y.new_empty((y.size(0) * world_size, y.size(1)))
+        y_handler = dist.all_gather_into_tensor(y_buff, y, group=group, async_op=True)
+        handlers.append(y_handler)  # type: ignore
+
+        x_buff = x.new_empty((x.size(0) * world_size, x.size(1)))
+        x_handler = dist.all_gather_into_tensor(x_buff, x, group=group, async_op=True)
+        handlers.append(x_handler)  # type: ignore
+
+        for handler in handlers:
+            handler.wait()
+
+        res = x_buff @ y_buff.T
+
+        ctx.save_for_backward(x_buff, y_buff)
+        ctx.x_offset = y.size(0) * rank  # type: ignore
+        ctx.x_batch_size = x.size(0)  # type: ignore
+        ctx.y_offset = y.size(0) * rank  # type: ignore
+        ctx.y_batch_size = y.size(0)  # type: ignore
+        return res
+
+    @staticmethod
+    def backward(  # type: ignore[override] # noqa: D102
+        ctx: Any, dres: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, None, None]:
+        x, y = ctx.saved_tensors
+
+        dx = dres @ y
+        dy = dres.T @ x
+
+        dx = dx[ctx.x_offset : ctx.x_offset + ctx.x_batch_size]
+        dy = dy[ctx.y_offset : ctx.y_offset + ctx.y_batch_size]
+        return dx, dy, None, None

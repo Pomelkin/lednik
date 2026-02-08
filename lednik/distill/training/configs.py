@@ -7,6 +7,7 @@ from kostyl.ml.configs.hyperparams import WeightDecay
 from kostyl.utils.logging import setup_logger
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic import model_validator
 
 
 logger = setup_logger(fmt="only_message")
@@ -23,40 +24,20 @@ class DirectDistillationConfig(BaseModel):
         validate_default=False,
     )
     proj_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
+    use_teacher_as_contrastive_target: bool = False
+    contrastive_loss_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    temperature: float | None = Field(default=None, gt=0.0, validate_default=False)
+
+    @model_validator(mode="after")
+    def _validate_temp(self) -> "DirectDistillationConfig":
+        if self.contrastive_loss_weight > 0.0 and self.temperature is None:
+            raise ValueError(
+                "Temperature must be provided when contrastive_loss_weight is greater than 0."
+            )
+        return self
 
 
-class DinoDistillationConfig(BaseModel):
-    """
-    Configuration for DINO-style distillation.
-
-    This configuration covering student/teacher embedding dimensions, temperature scheduling, momentum ramp-up,
-    Sinkhorn-Knopp iterations, and prototype head layout parameters.
-    """
-
-    type: Literal["dino"] = "dino"
-
-    student_to_teacher_intermediate_dim: int | None = Field(
-        default=None,
-        ge=1,
-        validate_default=False,
-    )
-    proj_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
-
-    start_teacher_temp: float
-    peak_teacher_temp: float
-    warmup_teacher_temp_steps_ratio: float
-    student_temp: float
-    start_teacher_momentum: float
-    final_teacher_momentum: float
-    sinkhorn_knopp_n_iters: int
-
-    head_nlayers: int
-    head_bottleneck_dim: int
-    head_hidden_dim: int
-    head_n_prototypes: int
-
-
-AVAILABLE_DISTILLATION_METHODS = DinoDistillationConfig | DirectDistillationConfig
+AVAILABLE_DISTILLATION_METHODS = DirectDistillationConfig
 
 
 class DistillationConfig(HyperparamsConfig):
@@ -67,7 +48,7 @@ class DistillationConfig(HyperparamsConfig):
     including learning rate schedules, dimension reduction strategies, and model dimensions.
     """
 
-    distillation_method: AVAILABLE_DISTILLATION_METHODS | None = None
+    distillation_method: AVAILABLE_DISTILLATION_METHODS
     teacher_pooling_method: Literal["cls", "mean", "last"]
     student_pooling_method: Literal["cls", "mean", "last"] | None = None
     grad_clip_val: float | None = Field(default=None, gt=0, validate_default=False)

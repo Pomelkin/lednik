@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -10,6 +9,7 @@ from typing import override
 import plotly.graph_objects as go
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from clearml import Task
 from kostyl.ml.configs.training_settings import SUPPORTED_STRATEGIES
 from kostyl.ml.configs.training_settings import FSDP1StrategyConfig
@@ -21,8 +21,6 @@ from kostyl.ml.optim.factory import create_optimizer
 from kostyl.ml.optim.factory import create_scheduler
 from kostyl.ml.optim.schedulers import BaseScheduler
 from kostyl.ml.optim.schedulers import CompositeScheduler
-from kostyl.ml.optim.schedulers import CosineParamScheduler
-from kostyl.ml.optim.schedulers import LinearParamScheduler
 from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.strategies import FSDPStrategy
@@ -42,7 +40,6 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import ShardingStrategy
 from torch.distributed.fsdp import fully_shard
 from torch.nn.modules.loss import _Loss
-from torch.optim.optimizer import Optimizer
 from torchmetrics.functional import accuracy as torchmetrics_accuracy
 from torchmetrics.functional import cosine_similarity
 from torchmetrics.functional import f1_score as torchmetrics_f1_score
@@ -56,17 +53,15 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from lednik.distill.dim_reduction import PCA
 from lednik.distill.emb_utils import get_sentence_embedding
-from lednik.distill.training.configs import DinoDistillationConfig
+from lednik.distill.training.configs import AVAILABLE_DISTILLATION_METHODS
 from lednik.distill.training.configs import DirectDistillationConfig
 from lednik.distill.training.configs import DistillationConfig
+from lednik.distill.training.dist_utils import DistributedMMFunction
 from lednik.distill.training.dist_utils import get_fsdp1_policies
 from lednik.distill.training.dist_utils import get_fsdp2_policies
 from lednik.distill.training.dist_utils import get_transformer_wrap_classes
 from lednik.distill.training.dist_utils import select_wrap_policy
 from lednik.distill.training.knn import knn_predict
-from lednik.distill.training.layers import DINOHead
-from lednik.distill.training.losses import dino_ce_loss
-from lednik.distill.training.losses import sinkhorn_knopp_teacher
 from lednik.models import LednikModel
 from lednik.models import StaticEmbeddingsModel
 from lednik.models.outputs import StaticEmbeddingsOutput
@@ -78,16 +73,19 @@ logger = setup_logger()
 @dataclass
 class _BaseStepOutput:
     loss: torch.Tensor
-    teacher_embeddings: torch.Tensor
-    student_embeddings: torch.Tensor
+    scaled_loss: torch.Tensor
+    contrastive_loss: torch.Tensor
+    per_token_loss: torch.Tensor
     student_sentence_embeddings: torch.Tensor
     teacher_sentence_embeddings: torch.Tensor
+    teacher_embeddings: torch.Tensor | None = None
+    student_embeddings: torch.Tensor | None = None
 
 
 @dataclass
 class _EvalResult:
-    teacher_embeddings: torch.Tensor
-    student_embeddings: torch.Tensor
+    teacher_sentence_embeddings: torch.Tensor
+    student_sentence_embeddings: torch.Tensor
     labels: torch.Tensor
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -167,30 +165,10 @@ class DistillationModule(KostylLightningModule):
             persistent=False,
         )
 
-        ### DINO specific attributes ###
-        self.student_dino_head: DINOHead | None = None
-        self.teacher_dino_head: DINOHead | None = None
-        self.teacher_temp_scheduler: LinearParamScheduler | None = None
-        self.teacher_momentum_scheduler: CosineParamScheduler | None = None
-        self.teacher_head_params_list: list[nn.Parameter] = []
-        self.student_head_params_list: list[nn.Parameter] = []
-
-        ### Direct distillation specific attributes ###
         self.student_to_teacher_proj: nn.Sequential | nn.Identity | None = None
         self.direct_loss: _Loss | None = None
 
-        if isinstance(self.distill_method_cfg, DinoDistillationConfig):
-            (
-                self.student_to_teacher_proj,
-                self.student_dino_head,
-                self.teacher_dino_head,
-            ) = self._init_dino(
-                self.distill_method_cfg,
-                teacher_hidden_size=teacher.config.hidden_size,
-                student_hidden_size=student.config.hidden_size,
-            )
-            self.pipeline_type = "dino"
-        elif isinstance(self.distill_method_cfg, DirectDistillationConfig):
+        if isinstance(self.distill_method_cfg, DirectDistillationConfig):
             (
                 self.student_to_teacher_proj,
                 self.direct_loss,
@@ -203,7 +181,7 @@ class DistillationModule(KostylLightningModule):
         else:
             raise ValueError(
                 f"Unsupported distillation method config type: {self.distill_method_cfg.__class__.__name__}"
-                f"Supported types: DinoDistillationConfig, DirectDistillationConfig"
+                f"Supported types: {AVAILABLE_DISTILLATION_METHODS}"
             )
 
         self.eval_outputs: list[_EvalResult] = []
@@ -218,8 +196,6 @@ class DistillationModule(KostylLightningModule):
         modules_shard = {"teacher": self.teacher, "student": self.student}
         module_no_shard = {
             "student_to_teacher_proj": self.student_to_teacher_proj,
-            "student_dino_head": self.student_dino_head,
-            "teacher_dino_head": self.teacher_dino_head,
         }
         strategy = self.trainer.strategy
         strategy_config = self.strategy_config
@@ -307,42 +283,6 @@ class DistillationModule(KostylLightningModule):
                 )
         self.configured_flag = True
         return
-
-    def _init_dino(
-        self,
-        config: DinoDistillationConfig,
-        teacher_hidden_size: int,
-        student_hidden_size: int,
-    ) -> tuple[nn.Sequential | nn.Identity, DINOHead, DINOHead]:
-        if teacher_hidden_size != student_hidden_size:
-            student_to_teacher_proj = _build_dim_proj(
-                input_dim=student_hidden_size,
-                intermediate_dim=config.student_to_teacher_intermediate_dim,
-                output_dim=teacher_hidden_size,
-                dropout=config.proj_dropout,
-            )
-        else:
-            student_to_teacher_proj = nn.Identity()
-
-        head = partial(
-            DINOHead,
-            in_dim=teacher_hidden_size,
-            out_dim=config.head_n_prototypes,
-            nlayers=config.head_nlayers,
-            bottleneck_dim=config.head_bottleneck_dim,
-            hidden_dim=config.head_hidden_dim,
-        )
-        student_dino_head = head()
-        teacher_dino_head = head().eval()
-        for param in teacher_dino_head.parameters():
-            param.requires_grad = False
-
-        output = (
-            student_to_teacher_proj,
-            student_dino_head,
-            teacher_dino_head,
-        )
-        return output
 
     def _init_direct(
         self,
@@ -502,23 +442,6 @@ class DistillationModule(KostylLightningModule):
             )
             schedulers[scheduler.param_name] = scheduler
 
-        if isinstance(self.distill_method_cfg, DinoDistillationConfig):
-            self.teacher_temp_scheduler = LinearParamScheduler(
-                param_name="teacher_temp",
-                initial_value=self.distill_method_cfg.start_teacher_temp,
-                final_value=self.distill_method_cfg.peak_teacher_temp,
-                num_iters=int(
-                    self.distill_method_cfg.warmup_teacher_temp_steps_ratio
-                    * total_steps
-                ),
-            )
-            self.teacher_momentum_scheduler = CosineParamScheduler(
-                param_name="teacher_momentum",
-                base_value=self.distill_method_cfg.start_teacher_momentum,
-                final_value=self.distill_method_cfg.final_teacher_momentum,
-                num_iters=total_steps,
-            )
-
         if len(schedulers) == 0:
             return optim
         elif len(schedulers) == 1:
@@ -542,43 +465,6 @@ class DistillationModule(KostylLightningModule):
         metric: Any | None,
     ) -> None:
         scheduler.step(self.global_step)
-        return
-
-    @override
-    def optimizer_zero_grad(
-        self, epoch: int, batch_idx: int, optimizer: Optimizer
-    ) -> None:
-        super().optimizer_zero_grad(epoch, batch_idx, optimizer)
-        if isinstance(self.distill_method_cfg, DinoDistillationConfig):
-            self._update_teacher_head()
-        return
-
-    @torch.no_grad()
-    def _update_teacher_head(self) -> None:
-        if self.teacher_momentum_scheduler is None:
-            raise ValueError("Teacher momentum scheduler is not initialized")
-        if self.student_dino_head is None or self.teacher_dino_head is None:
-            raise ValueError(
-                "DINO update_teacher_head called but DINO heads are not initialized"
-            )
-        mom = self.teacher_momentum_scheduler.step(self.global_step)
-        if (
-            len(self.teacher_head_params_list) == 0
-            or len(self.student_head_params_list) == 0
-        ):
-            for teacher_param, student_param in zip(
-                self.teacher_dino_head.parameters(),
-                self.student_dino_head.parameters(),
-                strict=True,
-            ):
-                self.teacher_head_params_list.append(teacher_param)
-                self.student_head_params_list.append(student_param)
-        torch._foreach_mul_(self.teacher_head_params_list, mom)  # type: ignore
-        torch._foreach_add_(  # type: ignore
-            self.teacher_head_params_list,
-            self.student_head_params_list,
-            alpha=1 - mom,
-        )
         return
 
     @torch.no_grad()
@@ -617,6 +503,7 @@ class DistillationModule(KostylLightningModule):
                 attention_mask=attention_mask,
             )
             student_embeddings = outputs[0]
+
             if self.train_cfg.student_pooling_method is not None:
                 pooling_method = self.train_cfg.student_pooling_method
             else:
@@ -631,11 +518,11 @@ class DistillationModule(KostylLightningModule):
             "student_sentence_embeddings": student_sentence_embeddings,
         }
 
-    def _direct_distillation_step(
+    def _calculate_per_token_similarity_loss(
         self,
         flat_student_embeddings: torch.Tensor,  # [b*seq_len, dim]
         flat_teacher_embeddings: torch.Tensor,  # [b*seq_len, dim]
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.direct_loss is None or self.student_to_teacher_proj is None:
             raise ValueError(
                 "Direct distillation step called but direct loss or "
@@ -658,56 +545,58 @@ class DistillationModule(KostylLightningModule):
             raise ValueError(
                 f"Unsupported loss: {type(self.direct_loss.__class__.__name__)}"
             )
-        return {
-            "loss": loss,
-            "teacher_embeddings": flat_teacher_embeddings,
-            "student_embeddings": flat_student_embeddings,
-        }
+        return loss, flat_teacher_embeddings, flat_student_embeddings
 
-    def _dino_distillation_step(
+    def _get_similarity_matrix(
+        self, sentence_embeddings: torch.Tensor, temp: float, return_probs: bool = True
+    ) -> torch.Tensor:
+        sentence_embeddings = sentence_embeddings / sentence_embeddings.norm(
+            p=2, dim=-1, keepdim=True
+        )
+        if dist.is_initialized():
+            similarity_matrix_raw = DistributedMMFunction.apply(
+                sentence_embeddings,
+                sentence_embeddings,
+                self._data_parallel_group,
+                multiply_grad_by_world_size=True,
+            )
+        else:
+            similarity_matrix_raw = sentence_embeddings @ sentence_embeddings.T
+
+        similarity_matrix_raw = similarity_matrix_raw / temp
+
+        if return_probs:
+            similarity_matrix_raw = similarity_matrix_raw.float()
+            similarity_matrix = (
+                similarity_matrix_raw - similarity_matrix_raw.amax(dim=-1, keepdim=True)
+            ).softmax(dim=-1)
+            output = similarity_matrix.to(sentence_embeddings.dtype)
+        else:
+            output = similarity_matrix_raw
+        return output
+
+    def _calculate_contrastive_loss(
         self,
-        flattened_student_embeddings: torch.Tensor,  # [b*seq_len, dim]
-        flattened_teacher_embeddings: torch.Tensor,  # [b*seq_len, dim]
-    ) -> dict[str, torch.Tensor]:
-        if not isinstance(self.distill_method_cfg, DinoDistillationConfig):
-            raise ValueError(
-                "DINO distillation step called but distillation config is not DinoDistillationConfig"
-            )
-        if self.student_dino_head is None or self.teacher_dino_head is None:
-            raise ValueError(
-                "DINO distillation step called but DINO heads are not initialized"
-            )
-        if self.student_to_teacher_proj is None:
-            raise ValueError(
-                "DINO distillation step called but student to teacher projection is not initialized"
-            )
-        if self.teacher_temp_scheduler is None:
-            raise ValueError(
-                "DINO distillation step called but teacher temperature scheduler is not initialized"
-            )
-        flattened_student_embeddings = self.student_to_teacher_proj(
-            flattened_student_embeddings
+        temp: float,
+        student_sentence_embeddings: torch.Tensor,
+        teacher_sentence_embeddings: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        student_similarity_matrix = self._get_similarity_matrix(
+            student_sentence_embeddings, temp=temp, return_probs=False
         )
-        with torch.no_grad():
-            teacher_temp = self.teacher_temp_scheduler.step(self.global_step)
-            teacher_logits = self.teacher_dino_head(flattened_teacher_embeddings)
-            teacher_probs = sinkhorn_knopp_teacher(
-                teacher_logits,
-                teacher_temp,
-                n_iterations=self.distill_method_cfg.sinkhorn_knopp_n_iters,
-                process_group=self._data_parallel_group,
+
+        if teacher_sentence_embeddings is not None:
+            teacher_similarity_matrix = self._get_similarity_matrix(
+                teacher_sentence_embeddings, temp=temp, return_probs=True
             )
-        student_logits = self.student_dino_head(flattened_student_embeddings)
-        loss = dino_ce_loss(
-            teacher_probs=teacher_probs,
-            student_logits=student_logits,
-            student_temp=self.distill_method_cfg.student_temp,
-        )
-        return {
-            "loss": loss,
-            "teacher_embeddings": flattened_teacher_embeddings,
-            "student_embeddings": flattened_student_embeddings,
-        }
+            targets = teacher_similarity_matrix
+        else:
+            targets = torch.arange(
+                student_sentence_embeddings.size(0),
+                device=student_sentence_embeddings.device,
+            )
+        loss = F.cross_entropy(student_similarity_matrix, targets, reduction="mean")
+        return loss
 
     def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
         """Performs a single training step for knowledge distillation."""
@@ -736,23 +625,66 @@ class DistillationModule(KostylLightningModule):
         student_embeddings = student_embeddings.view(bs * seqlen, -1)[~mask]
         teacher_embeddings = teacher_embeddings.view(bs * seqlen, -1)[~mask]
 
-        if self.pipeline_type == "direct":
-            output = self._direct_distillation_step(
-                flat_student_embeddings=student_embeddings,
-                flat_teacher_embeddings=teacher_embeddings,
-            )
-        elif self.pipeline_type == "dino":
-            output = self._dino_distillation_step(
-                flattened_student_embeddings=student_embeddings,
-                flattened_teacher_embeddings=teacher_embeddings,
+        contrastive_weight = self.distill_method_cfg.contrastive_loss_weight
+        if contrastive_weight < 1.0:
+            per_token_loss, flat_teacher_embeddings, flat_student_embeddings = (
+                self._calculate_per_token_similarity_loss(
+                    flat_student_embeddings=student_embeddings,
+                    flat_teacher_embeddings=teacher_embeddings,
+                )
             )
         else:
-            raise ValueError(f"Unsupported distillation method: {self.pipeline_type}")
+            flat_teacher_embeddings = None
+            flat_student_embeddings = None
+            per_token_loss = student_embeddings.new_tensor(0.0)
+
+        if contrastive_weight > 0.0:
+            temp = self.distill_method_cfg.temperature
+            if temp is None:
+                raise ValueError("Temperature must be specified for contrastive loss.")
+
+            if self.distill_method_cfg.use_teacher_as_contrastive_target:
+                contrastive_loss = self._calculate_contrastive_loss(
+                    student_sentence_embeddings=student_outputs[
+                        "student_sentence_embeddings"
+                    ],
+                    teacher_sentence_embeddings=teacher_outputs[
+                        "teacher_sentence_embeddings"
+                    ],
+                    temp=temp,
+                )
+            else:
+                contrastive_loss = self._calculate_contrastive_loss(
+                    student_sentence_embeddings=student_outputs[
+                        "student_sentence_embeddings"
+                    ],
+                    teacher_sentence_embeddings=None,
+                    temp=temp,
+                )
+        else:
+            contrastive_loss = student_embeddings.new_tensor(0.0)
+
+        loss = (
+            contrastive_weight * contrastive_loss
+            + (1 - contrastive_weight) * per_token_loss
+        )
+
+        if dist.is_initialized():
+            group_size = dist.get_world_size(group=self._data_parallel_group)
+            scaled_loss = (
+                contrastive_weight * group_size * contrastive_loss
+                + (1 - contrastive_weight) * per_token_loss
+            )
+        else:
+            scaled_loss = loss
 
         output = _BaseStepOutput(
-            loss=output["loss"],
-            teacher_embeddings=output["teacher_embeddings"],
-            student_embeddings=output["student_embeddings"],
+            scaled_loss=scaled_loss,
+            loss=loss,
+            contrastive_loss=contrastive_loss,
+            per_token_loss=per_token_loss,
+            teacher_embeddings=flat_teacher_embeddings,
+            student_embeddings=flat_student_embeddings,
             student_sentence_embeddings=student_outputs["student_sentence_embeddings"],
             teacher_sentence_embeddings=teacher_outputs["teacher_sentence_embeddings"],
         )
@@ -763,22 +695,29 @@ class DistillationModule(KostylLightningModule):
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
-
-        cosine_similarity_value = cosine_similarity(
-            output.student_embeddings.detach(),
-            output.teacher_embeddings.detach(),
-            reduction="mean",
-        )
-        rmse_value = mean_squared_error(
-            output.student_embeddings.detach(),
-            output.teacher_embeddings.detach(),
-            squared=False,
-        )
         metrics = {
-            "CosineSimilarity": cosine_similarity_value,
-            "RMSE": rmse_value,
             "loss": output.loss.detach(),
         }
+        if (
+            output.student_embeddings is not None
+            and output.teacher_embeddings is not None
+        ):
+            cosine_similarity_value = cosine_similarity(
+                output.student_embeddings.detach(),
+                output.teacher_embeddings.detach(),
+                reduction="mean",
+            )
+            rmse_value = mean_squared_error(
+                output.student_embeddings.detach(),
+                output.teacher_embeddings.detach(),
+                squared=False,
+            )
+            metrics["CosineSimilarity"] = cosine_similarity_value
+            metrics["RMSE"] = rmse_value
+        if output.contrastive_loss.item() > 0.0:
+            metrics["ContrastiveLoss"] = output.contrastive_loss.detach()
+        if output.per_token_loss.item() > 0.0:
+            metrics["PerTokenLoss"] = output.per_token_loss.detach()
 
         self.log_dict(
             metrics,
@@ -801,57 +740,42 @@ class DistillationModule(KostylLightningModule):
             sync_dist=True,
             sync_dist_group=self._data_parallel_group,
         )
-
-        if self.teacher_momentum_scheduler is not None:
-            val = self.teacher_momentum_scheduler.current_value()
-            self.log_dict(
-                val,
-                enable_graph=False,
-                prog_bar=False,
-                on_step=True,
-                on_epoch=False,
-                logger=True,
-                sync_dist=False,
-            )
-        if self.teacher_temp_scheduler is not None:
-            val = self.teacher_temp_scheduler.current_value()
-            self.log_dict(
-                val,
-                enable_graph=False,
-                prog_bar=False,
-                on_step=True,
-                on_epoch=False,
-                logger=True,
-                sync_dist=False,
-            )
-        return output.loss
+        return output.scaled_loss
 
     @override
     def validation_step(  # type: ignore
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
-
-        cosine_similarity_value = cosine_similarity(
-            output.student_embeddings.detach(),
-            output.teacher_embeddings.detach(),
-            reduction="mean",
-        )
-        rmse_value = mean_squared_error(
-            output.student_embeddings.detach(),
-            output.teacher_embeddings.detach(),
-            squared=False,
-        )
         metrics = {
-            "CosineSimilarity": cosine_similarity_value,
-            "RMSE": rmse_value,
             "loss": output.loss.detach(),
         }
+        if (
+            output.student_embeddings is not None
+            and output.teacher_embeddings is not None
+        ):
+            cosine_similarity_value = cosine_similarity(
+                output.student_embeddings.detach(),
+                output.teacher_embeddings.detach(),
+                reduction="mean",
+            )
+            rmse_value = mean_squared_error(
+                output.student_embeddings.detach(),
+                output.teacher_embeddings.detach(),
+                squared=False,
+            )
+            metrics["CosineSimilarity"] = cosine_similarity_value
+            metrics["RMSE"] = rmse_value
+        if output.contrastive_loss.item() > 0.0:
+            metrics["ContrastiveLoss"] = output.contrastive_loss.detach()
+        if output.per_token_loss.item() > 0.0:
+            metrics["PerTokenLoss"] = output.per_token_loss.detach()
+
         if self.trainer.is_global_zero:
             self.eval_outputs.append(
                 _EvalResult(
-                    teacher_embeddings=output.teacher_sentence_embeddings,
-                    student_embeddings=output.student_sentence_embeddings,
+                    teacher_sentence_embeddings=output.teacher_sentence_embeddings,
+                    student_sentence_embeddings=output.student_sentence_embeddings,
                     labels=batch["labels"],
                 )
             )
@@ -893,8 +817,8 @@ class DistillationModule(KostylLightningModule):
             student_embeddings_list = []
             labels_list = []
             for output in self.eval_outputs:
-                teacher_embeddings_list.append(output.teacher_embeddings)
-                student_embeddings_list.append(output.student_embeddings)
+                teacher_embeddings_list.append(output.teacher_sentence_embeddings)
+                student_embeddings_list.append(output.student_sentence_embeddings)
                 labels_list.append(output.labels)
 
             teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0)
