@@ -272,14 +272,14 @@ class DistillationModule(KostylLightningModule):
                 student_to_teacher_proj.bias._is_hf_initialized = True  # type: ignore
         else:
             student_to_teacher_proj = nn.Identity()
-        match config.loss_type:
+        match config.per_token_loss_type:
             case "cosine":
                 loss = nn.CosineEmbeddingLoss()
             case "mse":
                 loss = nn.MSELoss()
             case _:
                 raise ValueError(
-                    f"Unsupported loss type: {config.loss_type} "
+                    f"Unsupported loss type: {config.per_token_loss_type} "
                     f"Supported types: 'cosine', 'mse'"
                 )
         return student_to_teacher_proj, loss

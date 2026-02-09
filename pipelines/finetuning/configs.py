@@ -7,6 +7,7 @@ from kostyl.ml.configs.mixins import ConfigLoadingMixin
 from kostyl.ml.integrations.clearml import ConfigSyncingClearmlMixin
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic import model_validator
 
 from lednik.distill.training.configs import DistillationConfig as BaseDistillationConfig
 
@@ -58,8 +59,21 @@ class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin)
     teacher_model_id: str
     student_model_id: str
     tokenizer_id: str
+    is_student_lightning_checkpoint: bool = False
+    checkpoint_weight_prefix: str | None = None
     model_cfg: LednikModelTrainConfig | StaticEmbeddingsTrainConfig
     trainer: LightningTrainerParameters
     early_stopping: EarlyStoppingConfig | None = None
     checkpoint: CheckpointConfig = CheckpointConfig()
     data: DataConfig
+
+    @model_validator(mode="after")
+    def _validate_checkpoint_settigs(self) -> "TrainingSettings":
+        if (
+            self.is_student_lightning_checkpoint
+            and self.checkpoint_weight_prefix is None
+        ):
+            raise ValueError(
+                "checkpoint_weight_prefix must be provided when is_student_lightning_checkpoint is True."
+            )
+        return self

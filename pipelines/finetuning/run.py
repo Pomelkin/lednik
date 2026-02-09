@@ -89,12 +89,16 @@ def _distill_model(
 
     ### Student Model Loading ###
     model_cls = MODEL_MAPPING[training_settings.model_cfg.model_type]
+    load_kwargs = training_settings.model_cfg.model_dump(exclude={"model_type"})
+    if training_settings.is_student_lightning_checkpoint:
+        load_kwargs["weights_prefix"] = training_settings.checkpoint_weight_prefix
+
     student, clearml_student = load_model_from_clearml(
         model_id=training_settings.student_model_id,
         model=model_cls,
         task=task,
         name="Model to Distill (Student)",
-        **training_settings.model_cfg.model_dump(exclude={"model_type"}),
+        **load_kwargs,
     )
 
     ### Tokenizer Loading ###
