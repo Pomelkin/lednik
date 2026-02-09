@@ -17,7 +17,7 @@ trainer:
   max_epochs: 1
   strategy:
     type: "single_device"
-  val_check_interval: 0.05
+  val_check_interval: 0.01
   devices: 1
   precision: bf16-true
   log_every_n_steps: 25

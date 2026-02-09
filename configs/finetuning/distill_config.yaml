@@ -6,7 +6,6 @@ distillation_method:
   loss_type: cosine
   proj_dropout: 0.1
   contrastive_loss_weight: 0.7
-  use_teacher_as_contrastive_target: true
   temperature: 0.07
 optimizer:
   type: AdamW8bit
