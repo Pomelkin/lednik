@@ -223,6 +223,7 @@ class DistributedMMFunction(torch.autograd.Function):
         x: torch.Tensor,
         y: torch.Tensor,
         group: dist.ProcessGroup | None = None,
+        multi_by_world_size: bool = True,
     ) -> torch.Tensor:
         if x.dim() != 2:
             raise ValueError("Input x must be a 2D tensor.")
@@ -251,6 +252,8 @@ class DistributedMMFunction(torch.autograd.Function):
         ctx.x_batch_size = x.size(0)  # type: ignore
         ctx.y_offset = y.size(0) * rank  # type: ignore
         ctx.y_batch_size = y.size(0)  # type: ignore
+        ctx.world_size = world_size  # type: ignore
+        ctx.multi_by_world_size = multi_by_world_size  # type: ignore
         return res
 
     @staticmethod
@@ -264,4 +267,7 @@ class DistributedMMFunction(torch.autograd.Function):
 
         dx = dx[ctx.x_offset : ctx.x_offset + ctx.x_batch_size]
         dy = dy[ctx.y_offset : ctx.y_offset + ctx.y_batch_size]
+        if ctx.multi_by_world_size:
+            dx *= ctx.world_size
+            dy *= ctx.world_size
         return dx, dy, None, None

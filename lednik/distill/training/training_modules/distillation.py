@@ -70,7 +70,6 @@ logger = setup_logger()
 @dataclass
 class _BaseStepOutput:
     loss: torch.Tensor
-    scaled_loss: torch.Tensor
     contrastive_loss: torch.Tensor
     per_token_loss: torch.Tensor
     student_sentence_embeddings: torch.Tensor
@@ -91,26 +90,6 @@ class _EvalResult:
         value = value.detach().cpu()
         super().__setattr__(name, value)
         return
-
-
-def _build_dim_proj(
-    input_dim: int,
-    output_dim: int,
-    dropout: float,
-    intermediate_dim: int | None = None,
-) -> nn.Sequential:
-    intermediate_dim = output_dim if intermediate_dim is None else intermediate_dim
-    layers: list[nn.Module] = [
-        nn.Linear(input_dim, intermediate_dim),
-        nn.GELU(approximate="tanh"),
-        nn.Dropout(dropout) if dropout > 0.0 else nn.Identity(),
-        nn.Linear(intermediate_dim, output_dim),
-    ]
-    for layer in layers:
-        if isinstance(layer, nn.Linear):
-            nn.init.trunc_normal_(layer.weight, std=0.02)
-            nn.init.zeros_(layer.bias)
-    return nn.Sequential(*layers)
 
 
 class DistillationModule(KostylLightningModule):
@@ -169,6 +148,8 @@ class DistillationModule(KostylLightningModule):
             self.distill_method_cfg,
             teacher_hidden_size=teacher.config.hidden_size,
             student_hidden_size=student.config.hidden_size,
+            device=student.device,
+            dtype=student.dtype,
         )
 
         self.eval_outputs: list[_EvalResult] = []
@@ -277,14 +258,18 @@ class DistillationModule(KostylLightningModule):
         config: DirectDistillationConfig,
         teacher_hidden_size: int,
         student_hidden_size: int,
-    ) -> tuple[nn.Sequential | nn.Identity, _Loss]:
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[nn.Linear | nn.Identity, _Loss]:
         if student_hidden_size != teacher_hidden_size:
-            student_to_teacher_proj = _build_dim_proj(
-                input_dim=student_hidden_size,
-                intermediate_dim=config.student_to_teacher_intermediate_dim,
-                output_dim=teacher_hidden_size,
-                dropout=config.proj_dropout,
+            student_to_teacher_proj = nn.Linear(
+                student_hidden_size, teacher_hidden_size, device=device, dtype=dtype
             )
+            if device != torch.device("meta"):
+                nn.init.trunc_normal_(student_to_teacher_proj.weight, std=0.02)
+                nn.init.zeros_(student_to_teacher_proj.bias)
+                student_to_teacher_proj.weight._is_hf_initialized = True  # type: ignore
+                student_to_teacher_proj.bias._is_hf_initialized = True  # type: ignore
         else:
             student_to_teacher_proj = nn.Identity()
         match config.loss_type:
@@ -633,17 +618,7 @@ class DistillationModule(KostylLightningModule):
             + (1 - contrastive_weight) * per_token_loss
         )
 
-        if dist.is_initialized():
-            group_size = dist.get_world_size(group=self._data_parallel_group)
-            scaled_loss = (
-                contrastive_weight * group_size * contrastive_loss
-                + (1 - contrastive_weight) * per_token_loss
-            )
-        else:
-            scaled_loss = loss
-
         output = _BaseStepOutput(
-            scaled_loss=scaled_loss,
             loss=loss,
             contrastive_loss=contrastive_loss,
             per_token_loss=per_token_loss,
@@ -704,7 +679,7 @@ class DistillationModule(KostylLightningModule):
             sync_dist=True,
             sync_dist_group=self._data_parallel_group,
         )
-        return output.scaled_loss
+        return output.loss
 
     @override
     def validation_step(  # type: ignore

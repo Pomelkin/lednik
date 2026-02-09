@@ -18,12 +18,6 @@ class DirectDistillationConfig(BaseModel):
 
     type: Literal["direct-distillation"] = "direct-distillation"
     loss_type: Literal["cosine", "mse"] = "cosine"
-    student_to_teacher_intermediate_dim: int | None = Field(
-        default=None,
-        ge=1,
-        validate_default=False,
-    )
-    proj_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
     contrastive_loss_weight: float = Field(default=0.7, ge=0.0, le=1.0)
     temperature: float | None = Field(default=None, gt=0.0, validate_default=False)
 
