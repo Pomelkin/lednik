@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import multiprocessing as mp
+import threading
 from dataclasses import dataclass
 from typing import Any
 from typing import Literal
 from typing import cast
 from typing import override
 
+import numpy as np
 import plotly.graph_objects as go
 import torch
 import torch.distributed as dist
@@ -28,11 +31,6 @@ from lightning.pytorch.strategies import ModelParallelStrategy
 from lightning.pytorch.strategies import ParallelStrategy
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from plotly.subplots import make_subplots
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import f1_score
-from sklearn.metrics import precision_score
-from sklearn.metrics import recall_score
-from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.distributed._composable.replicate_with_fsdp import replicate
 from torch.distributed.device_mesh import DeviceMesh
@@ -53,7 +51,6 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from lednik.distill.dim_reduction import PCA
 from lednik.distill.emb_utils import get_sentence_embedding
-from lednik.distill.training.configs import AVAILABLE_DISTILLATION_METHODS
 from lednik.distill.training.configs import DirectDistillationConfig
 from lednik.distill.training.configs import DistillationConfig
 from lednik.distill.training.dist_utils import DistributedMMFunction
@@ -165,26 +162,17 @@ class DistillationModule(KostylLightningModule):
             persistent=False,
         )
 
-        self.student_to_teacher_proj: nn.Sequential | nn.Identity | None = None
-        self.direct_loss: _Loss | None = None
-
-        if isinstance(self.distill_method_cfg, DirectDistillationConfig):
-            (
-                self.student_to_teacher_proj,
-                self.direct_loss,
-            ) = self._init_direct(
-                self.distill_method_cfg,
-                teacher_hidden_size=teacher.config.hidden_size,
-                student_hidden_size=student.config.hidden_size,
-            )
-            self.pipeline_type = "direct"
-        else:
-            raise ValueError(
-                f"Unsupported distillation method config type: {self.distill_method_cfg.__class__.__name__}"
-                f"Supported types: {AVAILABLE_DISTILLATION_METHODS}"
-            )
+        (
+            self.student_to_teacher_proj,
+            self.direct_loss,
+        ) = self._init_direct(
+            self.distill_method_cfg,
+            teacher_hidden_size=teacher.config.hidden_size,
+            student_hidden_size=student.config.hidden_size,
+        )
 
         self.eval_outputs: list[_EvalResult] = []
+        self.logprobing_thread: threading.Thread | None = None
         self.configured_flag = False
         return
 
@@ -547,55 +535,40 @@ class DistillationModule(KostylLightningModule):
             )
         return loss, flat_teacher_embeddings, flat_student_embeddings
 
-    def _get_similarity_matrix(
-        self, sentence_embeddings: torch.Tensor, temp: float, return_probs: bool = True
-    ) -> torch.Tensor:
-        sentence_embeddings = sentence_embeddings / sentence_embeddings.norm(
-            p=2, dim=-1, keepdim=True
-        )
-        if dist.is_initialized():
-            similarity_matrix_raw = DistributedMMFunction.apply(
-                sentence_embeddings,
-                sentence_embeddings,
-                self._data_parallel_group,
-                multiply_grad_by_world_size=True,
-            )
-        else:
-            similarity_matrix_raw = sentence_embeddings @ sentence_embeddings.T
-
-        similarity_matrix_raw = similarity_matrix_raw / temp
-
-        if return_probs:
-            similarity_matrix_raw = similarity_matrix_raw.float()
-            similarity_matrix = (
-                similarity_matrix_raw - similarity_matrix_raw.amax(dim=-1, keepdim=True)
-            ).softmax(dim=-1)
-            output = similarity_matrix.to(sentence_embeddings.dtype)
-        else:
-            output = similarity_matrix_raw
-        return output
-
     def _calculate_contrastive_loss(
         self,
         temp: float,
         student_sentence_embeddings: torch.Tensor,
-        teacher_sentence_embeddings: torch.Tensor | None = None,
+        teacher_sentence_embeddings: torch.Tensor,
     ) -> torch.Tensor:
-        student_similarity_matrix = self._get_similarity_matrix(
-            student_sentence_embeddings, temp=temp, return_probs=False
+        student_sentence_embeddings = self.student_to_teacher_proj(
+            student_sentence_embeddings
+        )
+        student_sentence_embeddings = (
+            student_sentence_embeddings
+            / student_sentence_embeddings.norm(p=2, dim=-1, keepdim=True)
+            / temp
+        )
+        teacher_sentence_embeddings = (
+            teacher_sentence_embeddings
+            / teacher_sentence_embeddings.norm(p=2, dim=-1, keepdim=True)
+            / temp
         )
 
-        if teacher_sentence_embeddings is not None:
-            teacher_similarity_matrix = self._get_similarity_matrix(
-                teacher_sentence_embeddings, temp=temp, return_probs=True
+        if dist.is_initialized():
+            sim_matrix = DistributedMMFunction.apply(
+                student_sentence_embeddings,
+                teacher_sentence_embeddings,
+                self._data_parallel_group,
             )
-            targets = teacher_similarity_matrix
         else:
-            targets = torch.arange(
-                student_sentence_embeddings.size(0),
-                device=student_sentence_embeddings.device,
-            )
-        loss = F.cross_entropy(student_similarity_matrix, targets, reduction="mean")
+            sim_matrix = student_sentence_embeddings @ teacher_sentence_embeddings.T
+
+        targets = torch.arange(sim_matrix.size(0), device=sim_matrix.device)
+
+        teacher2student_loss = F.cross_entropy(sim_matrix, targets, reduction="mean")
+        student2teacher_loss = F.cross_entropy(sim_matrix.T, targets, reduction="mean")
+        loss = (teacher2student_loss + student2teacher_loss) / 2
         return loss
 
     def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
@@ -643,24 +616,15 @@ class DistillationModule(KostylLightningModule):
             if temp is None:
                 raise ValueError("Temperature must be specified for contrastive loss.")
 
-            if self.distill_method_cfg.use_teacher_as_contrastive_target:
-                contrastive_loss = self._calculate_contrastive_loss(
-                    student_sentence_embeddings=student_outputs[
-                        "student_sentence_embeddings"
-                    ],
-                    teacher_sentence_embeddings=teacher_outputs[
-                        "teacher_sentence_embeddings"
-                    ],
-                    temp=temp,
-                )
-            else:
-                contrastive_loss = self._calculate_contrastive_loss(
-                    student_sentence_embeddings=student_outputs[
-                        "student_sentence_embeddings"
-                    ],
-                    teacher_sentence_embeddings=None,
-                    temp=temp,
-                )
+            contrastive_loss = self._calculate_contrastive_loss(
+                student_sentence_embeddings=student_outputs[
+                    "student_sentence_embeddings"
+                ],
+                teacher_sentence_embeddings=teacher_outputs[
+                    "teacher_sentence_embeddings"
+                ],
+                temp=temp,
+            )
         else:
             contrastive_loss = student_embeddings.new_tensor(0.0)
 
@@ -811,7 +775,6 @@ class DistillationModule(KostylLightningModule):
 
         if self.trainer.is_global_zero and self.task is not None:
             NUM_POINTS2LOG = 200
-            clearml_logger = self.task.get_logger()
 
             teacher_embeddings_list = []
             student_embeddings_list = []
@@ -821,174 +784,247 @@ class DistillationModule(KostylLightningModule):
                 student_embeddings_list.append(output.student_sentence_embeddings)
                 labels_list.append(output.labels)
 
-            teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0)
-            student_embeddings = torch.cat(student_embeddings_list, dim=0)
-            labels = torch.cat(labels_list, dim=0)
+            teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0).to(
+                self.device
+            )
+            student_embeddings = torch.cat(student_embeddings_list, dim=0).to(
+                self.device
+            )
+            labels = torch.cat(labels_list, dim=0).to(self.device)
 
             if self.num_labels > 0:
-                metrics: dict[str, torch.Tensor] = {}
-                teacher_knn_preds = knn_predict(
-                    embeddings=teacher_embeddings,
+                self._log_knn_metrics(
+                    teacher_embeddings=teacher_embeddings,
+                    student_embeddings=student_embeddings,
                     labels=labels,
-                    num_labels=self.num_labels,
-                    k_neighbors=5,
+                    k=5,
                 )
 
-                student_knn_preds = knn_predict(
-                    embeddings=student_embeddings,
-                    labels=labels,
-                    num_labels=self.num_labels,
-                    k_neighbors=5,
-                )
+                if self.logprobing_thread is not None:
+                    self.logprobing_thread.join()
 
-                teacher_f1 = torchmetrics_f1_score(
-                    teacher_knn_preds,
-                    labels,
-                    task="multiclass" if self.num_labels > 2 else "binary",
-                    num_classes=self.num_labels,
-                    average="macro",
+                student_embeddings_np = student_embeddings.float().cpu().numpy()
+                labels_np = labels.float().cpu().numpy()
+                self.logprobing_thread = self._launch_async_probing(
+                    student_embeddings_np=student_embeddings_np,
+                    labels_np=labels_np,
                 )
-                teacher_accuracy = torchmetrics_accuracy(
-                    teacher_knn_preds,
-                    labels,
-                    task="multiclass" if self.num_labels > 2 else "binary",
-                    num_classes=self.num_labels,
-                )
-                student_f1 = torchmetrics_f1_score(
-                    student_knn_preds,
-                    labels,
-                    task="multiclass" if self.num_labels > 2 else "binary",
-                    num_classes=self.num_labels,
-                    average="macro",
-                )
-                student_accuracy = torchmetrics_accuracy(
-                    student_knn_preds,
-                    labels,
-                    task="multiclass" if self.num_labels > 2 else "binary",
-                    num_classes=self.num_labels,
-                )
-                metrics = {
-                    "Teacher_F1": teacher_f1,
-                    "Teacher_Accuracy": teacher_accuracy,
-                    "Student_F1": student_f1,
-                    "Student_Accuracy": student_accuracy,
-                }
-                for key, value in metrics.items():
-                    clearml_logger.report_scalar(
-                        title="KNN Evaluation Metrics",
-                        series=key,
-                        value=value.item(),
-                        iteration=self.global_step,
-                    )
-            if self.num_labels > 0:
-                try:
-                    student_embeddings_np = student_embeddings.float().cpu().numpy()
-                    labels_np = labels.float().cpu().numpy()
-
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        student_embeddings_np,
-                        labels_np,
-                        test_size=0.2,
-                        random_state=42,
-                        stratify=labels_np,
-                    )
-                    logreg = LogisticRegression(max_iter=1000, class_weight="balanced")
-                    logreg.fit(X_train, y_train)
-                    y_pred = logreg.predict(X_test)
-
-                    average = "binary" if self.num_labels == 2 else "macro"
-
-                    logreg_accuracy = logreg.score(X_test, y_test)
-                    logreg_f1 = f1_score(
-                        y_test,
-                        y_pred,
-                        average=average,
-                    )
-                    logreg_precision = precision_score(y_test, y_pred, average=average)
-                    logreg_recall = recall_score(y_test, y_pred, average=average)
-
-                    for name, value in [
-                        ("Accuracy", logreg_accuracy),
-                        ("F1", logreg_f1),
-                        ("Precision", logreg_precision),
-                        ("Recall", logreg_recall),
-                    ]:
-                        clearml_logger.report_scalar(
-                            title="Logistic Regression Metrics",
-                            series=name,
-                            value=value,  # type: ignore
-                            iteration=self.global_step,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"Logistic regression evaluation failed at step {self.global_step} with error: {e}"
-                    )
 
             teacher_embeddings = teacher_embeddings[:NUM_POINTS2LOG, :]
             student_embeddings = student_embeddings[:NUM_POINTS2LOG, :]
             labels = labels[:NUM_POINTS2LOG]
 
-            teacher_embeddings = teacher_embeddings.to(self.device)
-            student_embeddings = student_embeddings.to(self.device)
-
-            pca = PCA(n_components=2)
-
-            teacher_embeddings_2d = pca.transform(teacher_embeddings).reduced_data.cpu()
-            student_embeddings_2d = pca.transform(student_embeddings).reduced_data.cpu()
-
-            labels_list = labels.tolist()
-            fig = make_subplots(
-                rows=1,
-                cols=2,
-                subplot_titles=("Teacher embeddings", "Student embeddings"),
-                horizontal_spacing=0.08,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=teacher_embeddings_2d[:, 0].float().tolist(),
-                    y=teacher_embeddings_2d[:, 1].float().tolist(),
-                    mode="markers",
-                    marker={
-                        "color": labels_list,
-                        "colorscale": "Plotly3",
-                        "showscale": True,
-                        "opacity": 0.7,
-                    },
-                    name="Teacher",
-                ),
-                row=1,
-                col=1,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=student_embeddings_2d[:, 0].float().tolist(),
-                    y=student_embeddings_2d[:, 1].float().tolist(),
-                    mode="markers",
-                    marker={
-                        "color": labels_list,
-                        "colorscale": "Plotly3",
-                        "showscale": False,
-                        "opacity": 0.7,
-                    },
-                    name="Student",
-                ),
-                row=1,
-                col=2,
-            )
-
-            fig.update_xaxes(title_text="dim0", row=1, col=1)
-            fig.update_yaxes(title_text="dim1", row=1, col=1)
-            fig.update_xaxes(title_text="dim0", row=1, col=2)
-            fig.update_yaxes(title_text="dim1", row=1, col=2)
-
-            clearml_logger.report_plotly(
-                title="Embeddings Plots",
-                series="Embeddings Teacher vs Student Scatter",
-                figure=fig,
-                iteration=self.global_step,
+            self._log_embeddings_scatter(
+                teacher_embeddings=teacher_embeddings,
+                student_embeddings=student_embeddings,
+                labels=labels,
             )
             self.eval_outputs = []
 
         if dist.is_initialized():
             dist.barrier()
         return
+
+    def _log_knn_metrics(
+        self,
+        teacher_embeddings: torch.Tensor,
+        student_embeddings: torch.Tensor,
+        labels: torch.Tensor,
+        k: int = 5,
+    ) -> None:
+        task = cast(Task, self.task)
+
+        metrics: dict[str, torch.Tensor] = {}
+        teacher_knn_preds = knn_predict(
+            embeddings=teacher_embeddings,
+            labels=labels,
+            num_labels=self.num_labels,
+            k_neighbors=k,
+        )
+
+        student_knn_preds = knn_predict(
+            embeddings=student_embeddings,
+            labels=labels,
+            num_labels=self.num_labels,
+            k_neighbors=k,
+        )
+
+        teacher_f1 = torchmetrics_f1_score(
+            teacher_knn_preds,
+            labels,
+            task="multiclass" if self.num_labels > 2 else "binary",
+            num_classes=self.num_labels,
+            average="macro",
+        )
+        teacher_accuracy = torchmetrics_accuracy(
+            teacher_knn_preds,
+            labels,
+            task="multiclass" if self.num_labels > 2 else "binary",
+            num_classes=self.num_labels,
+        )
+        student_f1 = torchmetrics_f1_score(
+            student_knn_preds,
+            labels,
+            task="multiclass" if self.num_labels > 2 else "binary",
+            num_classes=self.num_labels,
+            average="macro",
+        )
+        student_accuracy = torchmetrics_accuracy(
+            student_knn_preds,
+            labels,
+            task="multiclass" if self.num_labels > 2 else "binary",
+            num_classes=self.num_labels,
+        )
+
+        metrics = {
+            "Teacher_F1": teacher_f1,
+            "Teacher_Accuracy": teacher_accuracy,
+            "Student_F1": student_f1,
+            "Student_Accuracy": student_accuracy,
+        }
+        for key, value in metrics.items():
+            task.get_logger().report_scalar(
+                title="KNN Evaluation Metrics",
+                series=key,
+                value=value.item(),
+                iteration=self.global_step,
+            )
+        return
+
+    def _launch_async_probing(
+        self,
+        student_embeddings_np: np.ndarray,
+        labels_np: np.ndarray,
+    ) -> threading.Thread:
+        if self.num_labels == 0:
+            raise ValueError(
+                "Cannot launch async probing without labels. num_labels is set to 0."
+            )
+        task = cast(Task, self.task)
+        iteration = self.global_step
+        ctx = mp.get_context("spawn")
+        out_q = ctx.Queue(maxsize=1)
+
+        payload = {
+            "student_embeddings": student_embeddings_np,
+            "labels": labels_np,
+            "num_labels": self.num_labels,
+        }
+        p = ctx.Process(target=_probing_worker, args=(payload, out_q))
+        p.start()
+
+        def _wait_and_log() -> None:
+            try:
+                metrics = out_q.get(timeout=600)
+                for metric_name, metric_value in metrics.items():
+                    task.get_logger().report_scalar(
+                        title="Logistic Regression Metrics",
+                        series=metric_name,
+                        value=metric_value,
+                        iteration=iteration,
+                    )
+            except Exception as e:
+                logger.error(f"Probing worker failed with exception: {e}")
+            finally:
+                p.join(timeout=5)
+                if p.is_alive():
+                    p.kill()
+            return
+
+        t = threading.Thread(target=_wait_and_log, daemon=True)
+        t.start()
+        return t
+
+    def _log_embeddings_scatter(
+        self,
+        teacher_embeddings: torch.Tensor,
+        student_embeddings: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> None:
+        task = cast(Task, self.task)
+
+        pca = PCA(n_components=2)
+
+        teacher_embeddings_2d = pca.transform(teacher_embeddings).reduced_data.cpu()
+        student_embeddings_2d = pca.transform(student_embeddings).reduced_data.cpu()
+
+        labels_list = labels.tolist()
+        fig = make_subplots(
+            rows=1,
+            cols=2,
+            subplot_titles=("Teacher embeddings", "Student embeddings"),
+            horizontal_spacing=0.08,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=teacher_embeddings_2d[:, 0].float().tolist(),
+                y=teacher_embeddings_2d[:, 1].float().tolist(),
+                mode="markers",
+                marker={
+                    "color": labels_list,
+                    "colorscale": "Plotly3",
+                    "showscale": True,
+                    "opacity": 0.7,
+                },
+                name="Teacher",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=student_embeddings_2d[:, 0].float().tolist(),
+                y=student_embeddings_2d[:, 1].float().tolist(),
+                mode="markers",
+                marker={
+                    "color": labels_list,
+                    "colorscale": "Plotly3",
+                    "showscale": False,
+                    "opacity": 0.7,
+                },
+                name="Student",
+            ),
+            row=1,
+            col=2,
+        )
+
+        fig.update_xaxes(title_text="dim0", row=1, col=1)
+        fig.update_yaxes(title_text="dim1", row=1, col=1)
+        fig.update_xaxes(title_text="dim0", row=1, col=2)
+        fig.update_yaxes(title_text="dim1", row=1, col=2)
+
+        task.get_logger().report_plotly(
+            title="Embeddings Plots",
+            series="Embeddings Teacher vs Student Scatter",
+            figure=fig,
+            iteration=self.global_step,
+        )
+        return
+
+
+def _probing_worker(payload: dict, out_q: mp.Queue) -> None:
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import f1_score
+    from sklearn.metrics import precision_score
+    from sklearn.metrics import recall_score
+    from sklearn.model_selection import train_test_split
+
+    X = payload["student_embeddings"]
+    y = payload["labels"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    logreg = LogisticRegression(max_iter=10000, class_weight="balanced")
+    logreg.fit(X_train, y_train)
+    y_pred = logreg.predict(X_test)
+
+    avg = "binary" if payload["num_labels"] <= 2 else "macro"
+    res = {
+        "logreg_accuracy": float(logreg.score(X_test, y_test)),
+        "logreg_f1": float(f1_score(y_test, y_pred, average=avg)),
+        "logreg_precision": float(precision_score(y_test, y_pred, average=avg)),
+        "logreg_recall": float(recall_score(y_test, y_pred, average=avg)),
+    }
+    out_q.put(res)
+    return
