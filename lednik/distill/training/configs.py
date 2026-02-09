@@ -24,7 +24,6 @@ class DirectDistillationConfig(BaseModel):
         validate_default=False,
     )
     proj_dropout: float = Field(default=0.0, ge=0.0, le=1.0)
-    use_teacher_as_contrastive_target: bool = False
     contrastive_loss_weight: float = Field(default=0.7, ge=0.0, le=1.0)
     temperature: float | None = Field(default=None, gt=0.0, validate_default=False)
 

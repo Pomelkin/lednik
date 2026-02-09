@@ -1,7 +1,7 @@
 import torch
 
 
-@torch.inference_mode()
+@torch.compile(mode="reduce-overhead")
 def knn_predict(
     embeddings: torch.Tensor,
     labels: torch.Tensor,
