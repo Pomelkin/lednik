@@ -347,7 +347,10 @@ def eager_attention_forward(
     )
     attn_output = attention_scores @ v
     attn_output = attn_output.transpose(1, 2).contiguous()  # [b, seq, num_heads, dim]
-    return attn_output, attention_scores.transpose(1, 2).contiguous()
+    attention_scores = attention_scores.transpose(
+        1, 2
+    ).contiguous()  # [b, seq, num_heads, seq]
+    return attn_output, attention_scores
 
 
 def flash_attention_forward(
@@ -548,7 +551,7 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
             cu_seqlens,
             max_seqlen,
         )
-        hidden_state = hidden_state + attn_output[0]
+        hidden_state = hidden_state + attn_output
         mlp_output = self.mlp(self.mlp_norm(hidden_state))
         hidden_state = hidden_state + self.mlp_dropout(mlp_output)
         return hidden_state
@@ -796,7 +799,12 @@ class LednikModel(LednikPreTrainedModel):
         self.layers = nn.ModuleList(
             [LednikEncoderLayer(config=config) for _ in range(config.num_hidden_layers)]
         )
-        self.final_norm = LigerRMSNorm(config.hidden_size)
+        self.output_projection = (
+            nn.Linear(config.hidden_size, config.output_hidden_size)
+            if config.output_hidden_size is not None
+            else nn.Identity()
+        )
+        self.final_norm = LigerRMSNorm(config.output_hidden_size or config.hidden_size)
         self.config = config
         self.post_init()
         return
@@ -875,7 +883,9 @@ class LednikModel(LednikPreTrainedModel):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
             )
-        if (cu_seqlens is None) != (max_seqlen is None) != (non_pad_indices is None):
+        if not (
+            (cu_seqlens is None) == (max_seqlen is None) == (non_pad_indices is None)
+        ):
             raise ValueError(
                 "cu_seqlens, max_seqlen and non_pad_indices must be provided together for unpadded attention."
             )
@@ -983,6 +993,7 @@ class LednikModel(LednikPreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
+        hidden_state = self.output_projection(hidden_state)
         hidden_state = self.final_norm(hidden_state)
 
         if REPAD:

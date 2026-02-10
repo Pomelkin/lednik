@@ -26,6 +26,8 @@ class LednikModelTrainConfig(BaseModel):
     attention_dropout: float = 0.0
     out_attn_dropout: float = 0.0
     mlp_dropout: float = 0.0
+    ignore_mismatched_sizes: bool = True
+    output_hidden_size: int | None = None
 
 
 class StaticEmbeddingsTrainConfig(BaseModel):
@@ -33,6 +35,7 @@ class StaticEmbeddingsTrainConfig(BaseModel):
 
     model_type: Literal["static_embeddings"]
     embedding_dropout: float = 0.0
+    ignore_mismatched_sizes: bool = True
 
 
 class DataConfig(BaseModel):

@@ -18,6 +18,7 @@ class LednikConfig(PreTrainedConfig):
         self,
         vocab_size: int = 30522,
         hidden_size: int = 384,
+        output_hidden_size: int | None = None,
         embeddings_dropout: float = 0.0,
         num_attention_heads: int = 6,
         num_hidden_layers: int = 1,
@@ -46,6 +47,8 @@ class LednikConfig(PreTrainedConfig):
                 `inputs_ids` passed when calling [`LednikModel`].
             hidden_size (`int`, *optional*, defaults to 384):
                 Dimensionality of the encoder layers and the pooler layer.
+            output_hidden_size (`int`, *optional*, defaults to 1024):
+                Dimensionality of the output hidden states of the model. This is the size of the sentence embeddings produced by the model.
             embeddings_dropout (`float`, *optional*, defaults to 0.0):
                 The dropout ratio for the embeddings.
             num_attention_heads (`int`, *optional*, defaults to 6):
@@ -120,6 +123,7 @@ class LednikConfig(PreTrainedConfig):
         self.embeddings_dropout = embeddings_dropout
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
+        self.output_hidden_size = output_hidden_size
         self.max_position_embeddings = max_position_embeddings
         self.num_attention_heads = num_attention_heads
         self.num_hidden_layers = num_hidden_layers

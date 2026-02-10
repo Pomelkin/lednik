@@ -147,7 +147,7 @@ class DistillationModule(KostylLightningModule):
         ) = self._init_direct(
             self.distill_method_cfg,
             teacher_hidden_size=teacher.config.hidden_size,
-            student_hidden_size=student.config.hidden_size,
+            student_hidden_size=self._get_student_hidden_size(),
             device=student.device,
             dtype=student.dtype,
         )
@@ -156,6 +156,12 @@ class DistillationModule(KostylLightningModule):
         self.logprobing_thread: threading.Thread | None = None
         self.configured_flag = False
         return
+
+    def _get_student_hidden_size(self) -> int:
+        output_hidden_size = getattr(self.student.config, "output_hidden_size", None)
+        if output_hidden_size is not None:
+            return output_hidden_size
+        return self.student.config.hidden_size
 
     @override
     def configure_model(self) -> None:  # noqa: C901
@@ -558,30 +564,30 @@ class DistillationModule(KostylLightningModule):
 
     def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
         """Performs a single training step for knowledge distillation."""
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        if isinstance(self.student, StaticEmbeddingsModel):
+            special_tokens_mask = torch.isin(
+                input_ids, cast(torch.Tensor, self.spec_tok_buff), invert=True
+            ).to(device=attention_mask.device, dtype=attention_mask.dtype)
+            attention_mask = attention_mask * special_tokens_mask
+
         student_outputs = self._get_student_outputs(
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
+            input_ids=input_ids,
+            attention_mask=attention_mask,
         )
         teacher_outputs = self._get_teacher_outputs(
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
+            input_ids=input_ids,
+            attention_mask=attention_mask,
         )
         student_embeddings = student_outputs["student_embeddings"]
         teacher_embeddings = teacher_outputs["teacher_embeddings"]
 
-        mask = batch["attention_mask"].flatten() == 0
-
-        if isinstance(self.student, StaticEmbeddingsModel):
-            flattened_input_ids = batch["input_ids"].flatten()
-
-            special_tokens_mask = torch.isin(
-                flattened_input_ids, cast(torch.Tensor, self.spec_tok_buff)
-            )
-            mask = mask | special_tokens_mask
+        mask = attention_mask.flatten() != 0
 
         bs, seqlen, *_ = student_embeddings.size()
-        student_embeddings = student_embeddings.view(bs * seqlen, -1)[~mask]
-        teacher_embeddings = teacher_embeddings.view(bs * seqlen, -1)[~mask]
+        student_embeddings = student_embeddings.view(bs * seqlen, -1)[mask]
+        teacher_embeddings = teacher_embeddings.view(bs * seqlen, -1)[mask]
 
         contrastive_weight = self.distill_method_cfg.contrastive_loss_weight
         if contrastive_weight < 1.0:
