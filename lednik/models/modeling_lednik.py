@@ -674,7 +674,6 @@ def unpad_inputs(
     attention_mask: torch.Tensor,
     position_ids: torch.Tensor | None = None,
     labels: torch.Tensor | None = None,
-    return_dict: bool = False,
 ) -> UnpaddedInputs:
     """
     Removes padding from inputs and simultaneously filters corresponding elements from position_ids and labels.
@@ -684,11 +683,10 @@ def unpad_inputs(
             or 3D+ (batch_size, seq_len, hidden_dim, ...).
         attention_mask (torch.Tensor): A 2D binary tensor (batch_size, seq_len) where 1 indicates
             valid tokens and 0 indicates padding.
-        position_ids (torch.Tensor | None, optional): A 2D tensor (batch_size, seq_len) of position indices.
+        position_ids (torch.Tensor | None, optional): A 2D tensor (1, seq_len) or 1D tensor of position indices.
              If provided, elements corresponding to padding are removed. Defaults to None.
         labels (torch.Tensor | None, optional): A 2D tensor (batch_size, seq_len) of labels (e.g. for NER).
              If provided, elements corresponding to padding are removed. Defaults to None.
-        return_dict (bool, optional): If True, returns a UnpaddedInputs TypedDict instead of a tuple. Defaults to False.
 
     Returns:
         UnpaddedInputs:
@@ -723,9 +721,13 @@ def unpad_inputs(
     cu_seqlens = cu_seqlens.to(torch.int32)
 
     if position_ids is not None:
-        if position_ids.ndim != 2:
+        if position_ids.ndim > 2:
             raise ValueError(
-                f"For unpadding position_ids must be 2D, got {position_ids.ndim}D"
+                f"For unpadding position_ids must be 1D or 2D, got {position_ids.ndim}D"
+            )
+        if position_ids.ndim == 2 and position_ids.size(0) != 1:
+            raise ValueError(
+                f"If position_ids is 2D, it must have batch size of 1, got {position_ids.size(0)}"
             )
         unpadded_position_ids = position_ids.flatten()[non_pad_indices]
     else:
@@ -930,7 +932,6 @@ class LednikModel(LednikPreTrainedModel):
                             input_ids,
                             attention_mask,
                             position_ids,
-                            return_dict=False,
                         )
                         (
                             input_ids,

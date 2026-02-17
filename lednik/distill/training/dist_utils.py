@@ -1,6 +1,7 @@
 from functools import partial
 from typing import Any
 from typing import TypedDict
+from typing import no_type_check
 
 import torch
 import torch.distributed as dist
@@ -218,15 +219,20 @@ class DistributedMMFunction(torch.autograd.Function):
     """
 
     @staticmethod
+    @no_type_check
     def forward(  # type: ignore[override]  # noqa: D102
         ctx: torch.autograd.Function,
         x: torch.Tensor,
         y: torch.Tensor,
         group: dist.ProcessGroup | None = None,
-        multi_by_world_size: bool = True,
+        multi_by_world_size: bool = False,
     ) -> torch.Tensor:
-        if x.dim() != 2:
-            raise ValueError("Input x must be a 2D tensor.")
+        if x.ndim != y.ndim:
+            raise ValueError("Input tensors must have the same number of dimensions.")
+        if x.size(-1) != y.size(-1):
+            raise ValueError(
+                "The last dimension of input tensors must be the same for multiplication."
+            )
         if not dist.is_initialized():
             raise RuntimeError("Distributed process group is not initialized.")
 
@@ -234,36 +240,40 @@ class DistributedMMFunction(torch.autograd.Function):
         world_size = dist.get_world_size(group)
         rank = dist.get_rank(group)
 
-        y_buff = y.new_empty((y.size(0) * world_size, y.size(1)))
+        y_bsz, *shapes = y.shape
+        y_buff = y.new_empty((y_bsz * world_size, *shapes))
         y_handler = dist.all_gather_into_tensor(y_buff, y, group=group, async_op=True)
-        handlers.append(y_handler)  # type: ignore
+        handlers.append(y_handler)
 
-        x_buff = x.new_empty((x.size(0) * world_size, x.size(1)))
+        x_bsz, *shapes = x.shape
+        x_buff = x.new_empty((x_bsz * world_size, *shapes))
         x_handler = dist.all_gather_into_tensor(x_buff, x, group=group, async_op=True)
-        handlers.append(x_handler)  # type: ignore
+        handlers.append(x_handler)
 
         for handler in handlers:
             handler.wait()
 
-        res = x_buff @ y_buff.T
+        res = x_buff @ y_buff.mT
 
         ctx.save_for_backward(x_buff, y_buff)
-        ctx.x_offset = y.size(0) * rank  # type: ignore
-        ctx.x_batch_size = x.size(0)  # type: ignore
-        ctx.y_offset = y.size(0) * rank  # type: ignore
-        ctx.y_batch_size = y.size(0)  # type: ignore
-        ctx.world_size = world_size  # type: ignore
-        ctx.multi_by_world_size = multi_by_world_size  # type: ignore
+        ctx.x_offset = x_bsz * rank
+        ctx.x_batch_size = x_bsz
+        ctx.y_offset = y_bsz * rank
+        ctx.y_batch_size = y_bsz
+        ctx.world_size = world_size
+        ctx.multi_by_world_size = multi_by_world_size
         return res
 
     @staticmethod
+    @no_type_check
     def backward(  # type: ignore[override] # noqa: D102
-        ctx: Any, dres: torch.Tensor
+        ctx: torch.autograd.Function,
+        dres: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, None, None]:
         x, y = ctx.saved_tensors
 
         dx = dres @ y
-        dy = dres.T @ x
+        dy = dres.mT @ x
 
         dx = dx[ctx.x_offset : ctx.x_offset + ctx.x_batch_size]
         dy = dy[ctx.y_offset : ctx.y_offset + ctx.y_batch_size]

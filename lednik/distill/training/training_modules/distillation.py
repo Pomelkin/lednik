@@ -551,6 +551,7 @@ class DistillationModule(KostylLightningModule):
                 student_sentence_embeddings,
                 teacher_sentence_embeddings,
                 self._data_parallel_group,
+                multi_by_world_size=True,
             )
         else:
             sim_matrix = student_sentence_embeddings @ teacher_sentence_embeddings.T
@@ -567,23 +568,27 @@ class DistillationModule(KostylLightningModule):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         if isinstance(self.student, StaticEmbeddingsModel):
-            special_tokens_mask = torch.isin(
+            special_tokens_mask = torch.isin(  # Exclude spec tokens (POS, BOS, EOS, CLS and etc) from processing because they are static (cannot be sentence invariant)
                 input_ids, cast(torch.Tensor, self.spec_tok_buff), invert=True
             ).to(device=attention_mask.device, dtype=attention_mask.dtype)
-            attention_mask = attention_mask * special_tokens_mask
+            teacher_attention_mask = attention_mask
+            student_attention_mask = attention_mask * special_tokens_mask
+        else:
+            teacher_attention_mask = attention_mask
+            student_attention_mask = attention_mask
 
         student_outputs = self._get_student_outputs(
             input_ids=input_ids,
-            attention_mask=attention_mask,
+            attention_mask=student_attention_mask,
         )
         teacher_outputs = self._get_teacher_outputs(
             input_ids=input_ids,
-            attention_mask=attention_mask,
+            attention_mask=teacher_attention_mask,
         )
         student_embeddings = student_outputs["student_embeddings"]
         teacher_embeddings = teacher_outputs["teacher_embeddings"]
 
-        mask = attention_mask.flatten() != 0
+        mask = student_attention_mask.flatten() != 0
 
         bs, seqlen, *_ = student_embeddings.size()
         student_embeddings = student_embeddings.view(bs * seqlen, -1)[mask]
@@ -992,10 +997,14 @@ def _probing_worker(payload: dict, out_q: mp.Queue) -> None:
 
     X = payload["student_embeddings"]
     y = payload["labels"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+    except ValueError:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=None
+        )
     logreg = LogisticRegression(max_iter=10000, class_weight="balanced")
     logreg.fit(X_train, y_train)
     y_pred = logreg.predict(X_test)
