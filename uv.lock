@@ -1458,15 +1458,15 @@ wheels = [
 
 [[package]]
 name = "kostyl-toolkit"
-version = "0.1.56"
+version = "0.1.57"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "case-converter" },
     { name = "loguru" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/7f/74253e12a95c9aac9c203c64170b47a1b73dc3601700f14d417b5ddab084/kostyl_toolkit-0.1.56.tar.gz", hash = "sha256:4b841120cfb60f9a0ce4c33a0ce96201cfa232d87f9a8bccd2d6d16376bf1932", size = 32383, upload-time = "2026-02-09T17:25:01.904Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/16/d5a97787dbdbc273bb7a386dad288c18aedd42ec255baee9a5cc4db66e81/kostyl_toolkit-0.1.57.tar.gz", hash = "sha256:6cbfdbc480d95168a8ca964e9d8788e733d8eb602d6259181bffdb4705da0ceb", size = 32385, upload-time = "2026-02-11T09:41:07.99Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/f2/df416acab0efdbba94f7d0b128303f11ee11d967c230644e05ae88de95bc/kostyl_toolkit-0.1.56-py3-none-any.whl", hash = "sha256:62a99080488e1f392e5845a3aa866ba351f5f8b3e9d61672d1fa333b92bfd714", size = 48856, upload-time = "2026-02-09T17:25:00.741Z" },
+    { url = "https://files.pythonhosted.org/packages/45/92/3263fece026017aff5364e85d267bd6059f56a7670bf69060c56662b25d4/kostyl_toolkit-0.1.57-py3-none-any.whl", hash = "sha256:8aa935c28ee483fcecc080bb660497b4bd5e3722b282d4bef96018fd75eeca4c", size = 48872, upload-time = "2026-02-11T09:41:06.917Z" },
 ]
 
 [package.optional-dependencies]
@@ -3437,7 +3437,7 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/1b/af5fccb50c341bd69dc016769503cb0857c1423fbe9343410dfeb65240f2/torch-2.10.0-1-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:7350f6652dfd761f11f9ecb590bfe95b573e2961f7a242eccb3c8e78348d26fe", size = 79498248, upload-time = "2026-02-06T17:37:31.982Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/23/2c9fe0c9c27f7f6cb865abcea8a4568f29f00acaeadfc6a37f6801f84cb4/torch-2.10.0-2-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:e521c9f030a3774ed770a9c011751fb47c4d12029a3d6522116e48431f2ff89e", size = 79498254, upload-time = "2026-02-10T21:44:44.095Z" },
     { url = "https://files.pythonhosted.org/packages/c9/6f/f2e91e34e3fcba2e3fc8d8f74e7d6c22e74e480bbd1db7bc8900fdf3e95c/torch-2.10.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:5c4d217b14741e40776dd7074d9006fd28b8a97ef5654db959d8635b2fe5f29b", size = 146004247, upload-time = "2026-01-21T16:24:29.335Z" },
     { url = "https://files.pythonhosted.org/packages/98/fb/5160261aeb5e1ee12ee95fe599d0541f7c976c3701d607d8fc29e623229f/torch-2.10.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:6b71486353fce0f9714ca0c9ef1c850a2ae766b409808acd58e9678a3edb7738", size = 915716445, upload-time = "2026-01-21T16:22:45.353Z" },
     { url = "https://files.pythonhosted.org/packages/6a/16/502fb1b41e6d868e8deb5b0e3ae926bbb36dab8ceb0d1b769b266ad7b0c3/torch-2.10.0-cp313-cp313-win_amd64.whl", hash = "sha256:c2ee399c644dc92ef7bc0d4f7e74b5360c37cdbe7c5ba11318dda49ffac2bc57", size = 113757050, upload-time = "2026-01-21T16:24:19.204Z" },
