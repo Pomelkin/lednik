@@ -1,75 +1,177 @@
-# Static Embeddings Distillation
+# Lednik
 
-This repository distills transformer knowledge into a lightweight static embedding model and optionally fine-tunes it with task-specific supervision. The core logic lives in `lednik/distill/distillation.py`, which exposes two entry points: `distill` for building a frozen embedding space and `finetune` for aligning it with downstream labels.
+Lednik is a library for distilling large transformer models into lightweight, efficient representations—either **Static Embeddings** or small **Lednik Transformers**. It provides tools for model initialization, knowledge distillation training, and downstream classifier training.
 
-## Static Model (`lednik/static_embeddings`)
+## Features
 
-- `StaticEmbeddingsConfig` defines tensor shapes, vocabulary metadata, and optional tokenizer customization flags.
-- `StaticEmbeddingsModel` wraps a learnable embedding table with dropout, positional weighting, and helper methods for attaching a tokenizer or updating token weights.
-- By default the model stores embeddings reduced via PCA and keeps PyTorch on the device/dtype passed to `distill` and `finetune`.
+- **Static Embeddings Distillation**: Compress a transformer's vocabulary into a static embedding matrix using PCA and Smooth Inverse Frequency (SIF) weighting.
+- **Lednik Transformer Distillation**: Initialize a small specific transformer model ("Lednik") from a teacher model and distill knowledge into it.
+- **Training Pipelines**: Ready-to-use [ClearML](https://clear.ml/) + [PyTorch Lightning](https://lightning.ai/) pipelines for distillation and classification.
+- **Efficient Inference**: Optimized model classes for fast CPU/GPU inference.
 
-## `distill` function
+## Project Structure
 
-````python
-from lednik.distill.distillation import distill
+```
+lednik/
+├── distill/            # Distillation logic, factory methods, and training modules
+├── models/             # Model definitions (LednikModel, StaticEmbeddingsModel)
+├── serving/            # FastAPI serving utilities
+pipelines/
+├── finetuning/         # Knowledge Distillation pipeline
+└── classifier_training/# Downstream classification pipeline
+configs/                # Configuration files (YAML) for training
+```
 
-static_model = distill(
-	model=teacher,
-	tokenizer=teacher_tokenizer,
-	embedding_dim=300,
-	pooling="mean",  # "mean", "last", or "cls"
-	embedding_extraction_batch_size=256,
-	device="cuda",
-	dtype="bfloat16",
-	modify_tokenizer=True,
-	sif_coefficient=1e-4,
+## Usage
+
+### 1. Creating a Base Model
+
+To start, you need to initialize a student model (Static or Lednik) from a pretrained Teacher transformer using the `model_factory`.
+
+#### Static Embeddings
+
+Extracts hidden states, applies PCA, and creates a `StaticEmbeddingsModel`.
+
+```python
+from transformers import AutoModel, AutoTokenizer
+from lednik.distill.model_factory import create_static_embeddings_model
+
+teacher = AutoModel.from_pretrained("deepvk/USER-bge-m3")
+tokenizer = AutoTokenizer.from_pretrained("deepvk/USER-bge-m3")
+
+static_model = create_static_embeddings_model(
+    model=teacher,
+    tokenizer=tokenizer,
+    embedding_dim=300,        # Target dimension
+    pooling="mean",           # Pooling strategy: "mean", "cls", "last"
+    embedding_extraction_batch_size=256,
+    device="cuda"
 )
-````
 
-`distill` workflow:
+static_model.save_pretrained("saved_models/static_base")
+```
 
-1. Extract transformer hidden states for every vocabulary token with the requested pooling strategy (`extract_embeddings`).
-2. Run PCA (`lednik/distill/dim_reduction.py::PCA`) to shrink representations to `embedding_dim` while logging explained variance.
-3. Build a `StaticEmbeddingsModel` with the reduced vectors and optional Smooth Inverse Frequency weights (`calculate_token_weights`).
-4. Optionally customize the tokenizer to align with the static model (`customize_tokenizer`).
+#### Lednik Transformer
 
-Use this when you only need fast lookups (e.g., retrieval, clustering) or as an initialization checkpoint for later supervised training.
+Initializes a small transformer (`LednikModel`) compatible with the teacher's tokenizer.
 
-## `finetune` function
+```python
+from lednik.models import LednikConfig
+from lednik.distill.model_factory import create_lednik_transformer
 
-````python
-from lednik.distill.distillation import finetune
-from lednik.distill.training.configs import FinetuningConfig
-
-finetuned_model = finetune(
-	teacher=teacher,
-	tokenizer=teacher_tokenizer,
-	static_model=static_model,
-	trainer=lightning_trainer,
-	train_cfg=FinetuningConfig(...),
-	data=lightning_datamodule_or_dataloaders,
-	task=optional_clearml_task,
+config = LednikConfig(hidden_size=384, num_hidden_layers=2, ...)
+lednik_model = create_lednik_transformer(
+    model=teacher,
+    tokenizer=tokenizer,
+    model_config=config,
+    pooling="cls",
+    embedding_extraction_batch_size=256
 )
-````
 
-- Wraps everything into `FineTuningModule` (`lednik/distill/training/training_modules/finetuning.py`).
-- Leverages PyTorch Lightning’s `Trainer.fit` with either a `LightningDataModule` or explicit loader dict.
-- Maintains cosine embedding loss training by default; customize via `FinetuningConfig`.
+lednik_model.save_pretrained("saved_models/lednik_base")
+```
 
-Use `finetune` after `distill` when a downstream dataset exists (classification, similarity, etc.). The function returns the updated `StaticEmbeddingsModel` so its tokenizer, PCA space, and positional weights stay in sync.
+### 2. Knowledge Distillation
 
-## Typical pipeline
+The distillation process aligns the student model's embeddings with the teacher's on specific datasets. This uses the `pipelines/finetuning/run.py` script.
 
-````python
-static_model = distill(...)
-finetuned_static_model = finetune(..., static_model=static_model, ...)
+#### Configuration
 
-torch.save(finetuned_static_model.state_dict(), "static_embeddings.pt")
-````
+The training pipeline uses hardcoded paths to configuration files in the `configs/finetuning/` directory. You should edit these files before running the script:
 
-## Tips
+1.  **Distillation Config** (`configs/finetuning/distill_config.yaml`): Defines hyperparameters like Learning Rate, Optimizer, and Loss weights.
+    ```yaml
+    optimizer:
+      type: AdamW8bit
+      betas: [0.9, 0.98]
+    lr:
+      scheduler_type: plateau-with-cosine-annealing
+      base_value: 9e-5
+    distillation_method:
+      type: direct-distillation
+      loss_type: cosine
+      contrastive_loss_weight: 0.8  # Weight for contrastive loss
+      temperature: 0.07             # Temp for contrastive loss
+    batch_size: 96
+    num_workers: 4
+    ```
 
-- Make sure the tokenizer has a valid `pad_token_id`; `distill` relies on it during batch inference.
-- When `sif_coefficient` is `None`, token weights default to 1.0 (uniform frequency assumption).
-- `distill` temporarily changes the default PyTorch dtype—avoid running other model code in parallel threads that depends on `torch.get_default_dtype()`.
-- Use Lightning checkpoints to resume fine-tuning; `FineTuningModule` is Lightning-native, so `Trainer.fit` handles logging and callbacks out of the box.
+2.  **Training Settings** (`configs/finetuning/training_settings.yaml`): Defines the environment, data paths, and trainer settings.
+    ```yaml
+    data:
+      train_datasets:
+        Dataset1: <CLEARML_ID>
+    trainer:
+      accelerator: "cuda"
+      devices: [0]
+      strategy: "fsdp1"
+      max_epochs: 2
+    # ClearML IDs for artifacts
+    teacher_model_id: <TEACHER_ID>
+    student_model_id: <STUDENT_ID>  # The model created in step 1
+    tokenizer_id: <TOKENIZER_ID>
+    ```
+
+#### Running the Training
+
+Run the pipeline module directly. The script automatically picks up the configuration files from the `configs/` directory.
+
+```bash
+python -m pipelines.finetuning.run
+```
+
+Optional arguments:
+- `--remote-execution-queue <QUEUE_NAME>`: Run the task remotely on a ClearML queue.
+- `--tags tag1,tag2`: Add tags to the ClearML task.
+
+### 3. Training a Classifier
+
+Once you have a distilled model, you can fine-tune it for a specific downstream classification task using `pipelines/classifier_training/run.py`.
+
+#### Configuration
+
+Edit the configuration files in `configs/classification/`:
+
+1.  **Training Config** (`configs/classification/train_config.yaml`):
+    ```yaml
+    label2id:
+      negative: 0
+      neutral: 1
+      positive: 2
+    lr:
+      base_value: 7e-4
+    class_weights: [0.55, 0.24, 0.21] # Optional
+    batch_size: 128
+    num_workers: 8
+    ```
+
+2.  **Training Settings** (`configs/classification/training_settings.yaml`):
+    ```yaml
+    data:
+      datasets:
+        MyDataset: <CLEARML_ID>
+      label_column: label
+      input_column: text
+    model_id: <DISTILLED_MODEL_ID> # Result from step 2
+    trainer:
+      accelerator: "cuda"
+      max_epochs: 10
+    ```
+
+#### Running the Training
+
+```bash
+python -m pipelines.classifier_training.run
+```
+
+Optional arguments:
+- `--remote-execution-queue <QUEUE_NAME>`: Run the task remotely on a ClearML queue.
+- `--tags tag1,tag2`: Add tags to the ClearML task.
+
+## Models
+
+### LednikModel
+A lightweight transformer model designed to be initialized from a larger parent model. It supports features like Rotary Positional Embeddings (RoPE) and Flash Attention.
+
+### StaticEmbeddingsModel
+A simple model that maps tokens directly to static vectors, optionally handling subword pooling and normalization. Ideal for extremely low-latency scenarios where full transformer context is not strictly required.
