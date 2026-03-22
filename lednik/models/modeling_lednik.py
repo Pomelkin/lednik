@@ -337,9 +337,9 @@ def eager_attention_forward(
     k = k.transpose(1, 2)  # [b, num_heads, seq, dim]
     v = v.transpose(1, 2)  # [b, num_heads, seq, dim]
     raw_scores = q @ k.mT
-    raw_scores = raw_scores / module.softmax_scale
+    raw_scores = raw_scores * module.softmax_scale
     raw_scores = raw_scores + attention_mask
-    attention_scores = raw_scores.softmax(dim=-1)
+    attention_scores = raw_scores.float().softmax(dim=-1).to(q.dtype)
     attention_scores = F.dropout(
         attention_scores,
         p=module.config.attention_dropout,
