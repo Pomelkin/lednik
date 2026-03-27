@@ -40,22 +40,18 @@ def knn_predict(
 
     k_neighbors = min(k_neighbors, embeddings.shape[0] - 1)
     B, _ = embeddings.shape
-    mask = torch.ones(B, dtype=torch.bool)
     predicts = torch.zeros(B, dtype=labels.dtype, device=labels.device)
 
-    for i in range(B):
-        batch_mask = mask.clone()
-        batch_mask[i] = False
-        embedding2pred = embeddings[i].unsqueeze(0)
-        embeddings2index = embeddings[batch_mask]
-        labels2index = labels[batch_mask]
+    distances = (
+        (embeddings.unsqueeze(1) - embeddings.unsqueeze(0)).pow(2).sum(-1).sqrt()
+    )
+    distances.fill_diagonal_(float("inf"))
 
-        distances = (embeddings2index - embedding2pred).pow(2).sum(-1).sqrt()
+    top_k_neighbors = distances.topk(k_neighbors, largest=False).indices
+    neighbors_labels = labels[top_k_neighbors]
 
-        knn_indices = distances.topk(k_neighbors, largest=False).indices
-        knn_labels = labels2index[knn_indices]
-
-        counts = torch.bincount(knn_labels, minlength=num_labels)
-        predicted_label = counts.argmax()
+    for i in range(neighbors_labels.size(0)):
+        bincount = neighbors_labels[i].bincount(minlength=num_labels)
+        predicted_label = bincount.argmax()
         predicts[i] = predicted_label
     return predicts
