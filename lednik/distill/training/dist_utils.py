@@ -1,7 +1,6 @@
 from functools import partial
 from typing import Any
 from typing import TypedDict
-from typing import no_type_check
 
 import torch
 import torch.distributed as dist
@@ -51,19 +50,18 @@ def _find_modules_to_exclude_from_wrapping(
     return modules_to_exclude
 
 
-def get_transformer_wrap_classes(
+def get_fsdp_wrap_classes(
     model: PreTrainedModel, exclude_sharding_substrings: list[str] | None = None
 ) -> set[type[nn.Module]] | None:
     """
-    Identifies transformer modules that should to be sharded during distributed training.
+    Identifies modules that should to be sharded during distributed training.
 
     This function inspects the provided `model` for a `_no_split_modules` attribute,
-    which typically contains a list of class names (strings) that should be kept intact
-    on a single device (e.g., Transformer blocks). It then resolves these names to
-    actual module classes present in the model instance.
+    which typically contains a list of class names (strings) and then resolves these names to
+    actual python classes (nn.Module subclasses) present in the model instance.
 
-    It also filters out specific sub-modules that might have been captured but should
-    be excluded from the no-shard set based on internal logic.
+    It also filters out specific sub-modules that might have been captured but shouldn't
+    be sharded (e.g., small layers, embeddings, debeddings) based on the presence of certain substrings in their class names.
 
     Args:
         model (PreTrainedModel): The Hugging Face PreTrainedModel instance to inspect.
@@ -127,7 +125,7 @@ def select_wrap_policy(
         how the model's layers should be wrapped by FSDP.
 
     """
-    shard_modules = get_transformer_wrap_classes(model, exclude_sharding_substrings)
+    shard_modules = get_fsdp_wrap_classes(model, exclude_sharding_substrings)
     if shard_modules is not None:
         return ModuleWrapPolicy(module_classes=shard_modules)
 
@@ -209,75 +207,94 @@ def get_fsdp1_policies(
     return kwargs  # type: ignore
 
 
-class DistributedMMFunction(torch.autograd.Function):
-    """
-    Custom autograd function for distributed matrix multiplication.
-
-    This function performs matrix multiplication across multiple distributed processes,
-    gathering tensors from all ranks before computing the result. It implements custom
-    forward and backward passes to handle gradient computation in a distributed setting.
-    """
+class GatherSentenceEmbeddings(torch.autograd.Function):
+    """Custom autograd function to gather sentence embeddings across distributed processes for contrastive loss computation."""
 
     @staticmethod
-    @no_type_check
     def forward(  # type: ignore[override]  # noqa: D102
         ctx: torch.autograd.Function,
-        x: torch.Tensor,
-        y: torch.Tensor,
+        anchors: torch.Tensor,
+        positives: torch.Tensor,
+        negatives: torch.Tensor | None = None,
         group: dist.ProcessGroup | None = None,
-        multi_by_world_size: bool = False,
-    ) -> torch.Tensor:
-        if x.ndim != y.ndim:
-            raise ValueError("Input tensors must have the same number of dimensions.")
-        if x.size(-1) != y.size(-1):
-            raise ValueError(
-                "The last dimension of input tensors must be the same for multiplication."
-            )
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         if not dist.is_initialized():
             raise RuntimeError("Distributed process group is not initialized.")
 
         handlers: list[dist.Work] = []
         world_size = dist.get_world_size(group)
-        rank = dist.get_rank(group)
+        # rank = dist.get_rank(group)
 
-        y_bsz, *shapes = y.shape
-        y_buff = y.new_empty((y_bsz * world_size, *shapes))
-        y_handler = dist.all_gather_into_tensor(y_buff, y, group=group, async_op=True)
-        handlers.append(y_handler)
+        local_embeddings = {
+            "anchors": anchors,
+            "positives": positives,
+            "negatives": negatives,
+        }
+        global_embeddings: dict[str, torch.Tensor | None] = {}
+        handlers: list[dist.Work] = []
+        for name, local_emb in local_embeddings.items():
+            if local_emb is None:
+                global_embeddings[name] = None
+                continue
 
-        x_bsz, *shapes = x.shape
-        x_buff = x.new_empty((x_bsz * world_size, *shapes))
-        x_handler = dist.all_gather_into_tensor(x_buff, x, group=group, async_op=True)
-        handlers.append(x_handler)
+            bsz, *shapes = local_emb.shape
+            buff = local_emb.new_empty((bsz * world_size, *shapes))
+            handler = dist.all_gather_into_tensor(
+                buff, local_emb, group=group, async_op=True
+            )
+            handlers.append(handler)  # type: ignore
+            global_embeddings[name] = buff
 
         for handler in handlers:
             handler.wait()
 
-        res = x_buff @ y_buff.mT
-
-        ctx.save_for_backward(x_buff, y_buff)
-        ctx.x_offset = x_bsz * rank
-        ctx.x_batch_size = x_bsz
-        ctx.y_offset = y_bsz * rank
-        ctx.y_batch_size = y_bsz
-        ctx.world_size = world_size
-        ctx.multi_by_world_size = multi_by_world_size
-        return res
+        ctx.group = group  # type: ignore
+        ctx.world_size = world_size  # type: ignore
+        return (  # type: ignore
+            global_embeddings["anchors"],
+            global_embeddings["positives"],
+            global_embeddings["negatives"],
+        )
 
     @staticmethod
-    @no_type_check
     def backward(  # type: ignore[override] # noqa: D102
         ctx: torch.autograd.Function,
-        dres: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, None, None]:
-        x, y = ctx.saved_tensors
+        danc: torch.Tensor,
+        dpos: torch.Tensor,
+        dneg: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, None]:
+        group: dist.ProcessGroup | None = ctx.group  # type: ignore
+        world_size: int = ctx.world_size  # type: ignore
 
-        dx = dres @ y
-        dy = dres.mT @ x
+        global_grads = {
+            "anchors": danc,
+            "positives": dpos,
+            "negatives": dneg,
+        }
+        local_grads: dict[str, torch.Tensor | None] = {}
+        handlers: list[dist.Work] = []
+        for name, global_grad in global_grads.items():
+            if global_grad is None:
+                local_grads[name] = None
+                continue
 
-        dx = dx[ctx.x_offset : ctx.x_offset + ctx.x_batch_size]
-        dy = dy[ctx.y_offset : ctx.y_offset + ctx.y_batch_size]
-        if ctx.multi_by_world_size:
-            dx *= ctx.world_size
-            dy *= ctx.world_size
-        return dx, dy, None, None
+            bsz_world, *shapes = global_grad.shape
+            bsz = bsz_world // world_size
+            local_grad_buff = global_grad.new_empty((bsz, *shapes))
+            handler = dist.reduce_scatter(
+                local_grad_buff,
+                list(global_grad.chunk(world_size, dim=0)),
+                group=group,
+                async_op=True,
+            )
+            handlers.append(handler)  # type: ignore
+            local_grads[name] = local_grad_buff
+
+        for handler in handlers:
+            handler.wait()
+        return (  # type: ignore
+            local_grads["anchors"],
+            local_grads["positives"],
+            local_grads["negatives"],
+            None,
+        )

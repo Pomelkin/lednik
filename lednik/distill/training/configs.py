@@ -50,6 +50,14 @@ class DistillationConfig(HyperparamsConfig):
     weight_decay: WeightDecay
 
 
+class MMREvaluationConfig(BaseModel):
+    """Configuration for MMR evaluation."""
+
+    url: str
+    port: int
+    top_k: int = Field(default=10, gt=0)
+
+
 class ClassifierHyperparamsConfig(HyperparamsConfig):
     """Configuration schema for classifier training hyperparameters."""
 

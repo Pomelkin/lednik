@@ -7,8 +7,10 @@ from typing import Any
 from typing import Literal
 from typing import cast
 from typing import override
+from uuid import uuid4
 
 import numpy as np
+import pacmap
 import plotly.graph_objects as go
 import torch
 import torch.distributed as dist
@@ -31,6 +33,12 @@ from lightning.pytorch.strategies import ModelParallelStrategy
 from lightning.pytorch.strategies import ParallelStrategy
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from plotly.subplots import make_subplots
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import QueryResponse
+from qdrant_client.models import Distance
+from qdrant_client.models import PointStruct
+from qdrant_client.models import QueryRequest
+from qdrant_client.models import VectorParams
 from torch import nn
 from torch.distributed._composable.replicate_with_fsdp import replicate
 from torch.distributed.device_mesh import DeviceMesh
@@ -49,14 +57,14 @@ from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 from transformers.modeling_outputs import BaseModelOutput
 
-from lednik.distill.dim_reduction import PCA
 from lednik.distill.emb_utils import get_sentence_embedding
 from lednik.distill.training.configs import DirectDistillationConfig
 from lednik.distill.training.configs import DistillationConfig
-from lednik.distill.training.dist_utils import DistributedMMFunction
+from lednik.distill.training.configs import MMREvaluationConfig
+from lednik.distill.training.dist_utils import GatherSentenceEmbeddings
 from lednik.distill.training.dist_utils import get_fsdp1_policies
 from lednik.distill.training.dist_utils import get_fsdp2_policies
-from lednik.distill.training.dist_utils import get_transformer_wrap_classes
+from lednik.distill.training.dist_utils import get_fsdp_wrap_classes
 from lednik.distill.training.dist_utils import select_wrap_policy
 from lednik.distill.training.knn import knn_predict
 from lednik.models import LednikModel
@@ -82,6 +90,8 @@ class _BaseStepOutput:
 class _EvalResult:
     teacher_sentence_embeddings: torch.Tensor
     student_sentence_embeddings: torch.Tensor
+    queries_mask: torch.Tensor
+    positives_mask: torch.Tensor
     labels: torch.Tensor
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -104,6 +114,7 @@ class DistillationModule(KostylLightningModule):
         tokenizer: SentencePieceBackend | TokenizersBackend | PreTrainedTokenizerBase,
         task: Task | None = None,
         num_labels: int | None = None,
+        mmr_eval_cfg: MMREvaluationConfig | None = None,
     ) -> None:
         """
         Initialize Fine-Tuning Lightning Module.
@@ -118,6 +129,7 @@ class DistillationModule(KostylLightningModule):
             num_labels : Number of classification labels for KNN evaluation metrics.
                 If provided, enables KNN-based evaluation during validation.
                 If None, KNN metrics are disabled.
+            mmr_eval_cfg : Configuration for MMR evaluation. If provided, enables MMR evaluation during validation.
 
         """
         super().__init__()
@@ -131,13 +143,10 @@ class DistillationModule(KostylLightningModule):
         self.tokenizer = tokenizer
         self.num_labels = num_labels if num_labels is not None else 0
         self.task = task
-        self.spec_tok_to_ids = {
-            tok: tokenizer.convert_tokens_to_ids(v)
-            for tok, v in tokenizer.special_tokens_map.items()
-        }
+        self.mmr_eval_cfg = mmr_eval_cfg
         self.register_buffer(
             "spec_tok_buff",
-            torch.tensor(list(self.spec_tok_to_ids.values())),
+            torch.tensor(list(tokenizer.special_tokens_map.values()), dtype=torch.long),
             persistent=False,
         )
 
@@ -153,8 +162,10 @@ class DistillationModule(KostylLightningModule):
         )
 
         self.eval_outputs: list[_EvalResult] = []
+        self.teacher_knn_results: dict[str, torch.Tensor] = {}
+        self.teacher_2d_embeddings: np.ndarray | None = None
         self.logprobing_thread: threading.Thread | None = None
-        self.configured_flag = False
+        self._configured = False
         return
 
     def _get_student_hidden_size(self) -> int:
@@ -165,23 +176,27 @@ class DistillationModule(KostylLightningModule):
 
     @override
     def configure_model(self) -> None:  # noqa: C901
-        if self.configured_flag:
+        if self._configured:
             return
 
-        modules_shard = {"teacher": self.teacher, "student": self.student}
-        module_no_shard = {
+        shard_modules = {"teacher": self.teacher, "student": self.student}
+        no_shard_modules = {
             "student_to_teacher_proj": self.student_to_teacher_proj,
         }
         strategy = self.trainer.strategy
         strategy_config = self.strategy_config
+
+        ### FSDP Wrapping ###
         if isinstance(strategy, FSDPStrategy):
             if not isinstance(strategy_config, FSDP1StrategyConfig):
                 raise ValueError(
-                    f"Expected FSDPStrategy but got {strategy_config.__class__.__name__} "
+                    f"Expected  FSDP1StrategyConfig but got {strategy_config.__class__.__name__} "
                     f"for {strategy.__class__.__name__} strategy"
                 )
+
             policies = get_fsdp1_policies(strategy_config)
-            for name, module in modules_shard.items():
+
+            for name, module in shard_modules.items():
                 wrap_policy = select_wrap_policy(module)
                 fsdp_model = FSDP(
                     module=module,
@@ -193,7 +208,7 @@ class DistillationModule(KostylLightningModule):
                 )
                 setattr(self, name, fsdp_model)
 
-            for name, module in module_no_shard.items():
+            for name, module in no_shard_modules.items():
                 if (module is None) or isinstance(module, nn.Identity):
                     continue
                 fsdp_module = FSDP(
@@ -213,10 +228,12 @@ class DistillationModule(KostylLightningModule):
                 **policies,
             )
             strategy.model = self_fsdp_wrapped
+
+        ### FSDP2 (Model Parallel) Wrapping ###
         elif isinstance(strategy, ModelParallelStrategy):
             if not isinstance(strategy_config, FSDP2StrategyConfig):
                 raise ValueError(
-                    f"Expected ModelParallelStrategy but got {strategy_config.__class__.__name__} "
+                    f"Expected FSDP2StrategyConfig but got {strategy_config.__class__.__name__} "
                     f"for {strategy.__class__.__name__} strategy"
                 )
 
@@ -225,8 +242,10 @@ class DistillationModule(KostylLightningModule):
                 raise ValueError(
                     "Device mesh is not initialized for ModelParallelStrategy"
                 )
+
             dp_mesh = mesh["data_parallel"]
             tp_mesh = mesh["tensor_parallel"]
+
             if tp_mesh.size() > 1:
                 raise ValueError(
                     "Tensor parallelism is not supported in this distillation module"
@@ -234,8 +253,8 @@ class DistillationModule(KostylLightningModule):
 
             policies = get_fsdp2_policies(strategy_config)
 
-            for name, module in modules_shard.items():
-                modules_to_shard = get_transformer_wrap_classes(model=module)
+            for name, module in shard_modules.items():
+                modules_to_shard = get_fsdp_wrap_classes(model=module)
                 if modules_to_shard is None:  # TODO: add size-based wrap fallback
                     logger.warning(
                         f"Failed to get modules to shard for {name} module in ModelParallelStrategy. "
@@ -248,7 +267,7 @@ class DistillationModule(KostylLightningModule):
                             fully_shard(child_module, mesh=dp_mesh, **policies)
                 fully_shard(module=module, mesh=dp_mesh, **policies)
 
-            for _, module in module_no_shard.items():
+            for module in no_shard_modules.values():
                 if (module is None) or isinstance(module, nn.Identity):
                     continue
                 replicate(
@@ -256,7 +275,7 @@ class DistillationModule(KostylLightningModule):
                     mesh=dp_mesh,
                     mp_policy=policies["mp_policy"],
                 )
-        self.configured_flag = True
+        self._configured = True
         return
 
     def _init_direct(
@@ -292,6 +311,12 @@ class DistillationModule(KostylLightningModule):
 
     @property
     @override
+    def model_instance(self) -> PreTrainedModel | nn.Module:
+        """Returns the underlying model."""
+        return self.student
+
+    @property
+    @override
     def model_config(self) -> PreTrainedConfig | None:
         return self.student.config
 
@@ -299,12 +324,6 @@ class DistillationModule(KostylLightningModule):
     @override
     def grad_clip_val(self) -> float | None:
         return self.train_cfg.grad_clip_val
-
-    @property
-    @override
-    def model_instance(self) -> PreTrainedModel | nn.Module:
-        """Returns the underlying model."""
-        return self.student
 
     @property
     def _data_parallel_group(self) -> dist.ProcessGroup | None:
@@ -327,7 +346,7 @@ class DistillationModule(KostylLightningModule):
                 state_dict.pop(key)
         return
 
-    def _set_model_freeze_state(
+    def _set_freeze_state(
         self, target_model: Literal["teacher", "student"], freeze: bool
     ) -> None:
         match target_model:
@@ -364,7 +383,7 @@ class DistillationModule(KostylLightningModule):
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        self._set_model_freeze_state("teacher", freeze=True)
+        self._set_freeze_state("teacher", freeze=True)
         self.teacher.eval()  # set teacher to eval mode to disable dropout if any, just in case
         self.student.train()  # ensure student is in train mode for optimization
 
@@ -378,7 +397,7 @@ class DistillationModule(KostylLightningModule):
                 lrs["warmup_value"] = self.train_cfg.lr.warmup_value
             scaled_lrs = scale_lrs_by_world_size(
                 lrs=lrs,
-                verbose_level="only-zero-rank",
+                verbosity_level="only-zero-rank",
                 group=self._data_parallel_group,
             )
             for key, value in scaled_lrs.items():
@@ -474,7 +493,7 @@ class DistillationModule(KostylLightningModule):
                 attention_mask,
                 apply_token_weights=False,
             )
-            student_embeddings = student_output.embeddings
+            student_embeddings = student_output.token_embeddings
             student_sentence_embeddings = student_output.sentence_embeddings
         else:
             outputs = self.student(
@@ -483,10 +502,12 @@ class DistillationModule(KostylLightningModule):
             )
             student_embeddings = outputs[0]
 
-            if self.train_cfg.student_pooling_method is not None:
-                pooling_method = self.train_cfg.student_pooling_method
-            else:
-                pooling_method = self.train_cfg.teacher_pooling_method
+            pooling_method = (
+                self.train_cfg.student_pooling_method
+                if self.train_cfg.student_pooling_method is not None
+                else self.train_cfg.teacher_pooling_method
+            )
+
             student_sentence_embeddings = get_sentence_embedding(
                 student_embeddings,
                 attention_mask,
@@ -528,39 +549,55 @@ class DistillationModule(KostylLightningModule):
 
     def _calculate_contrastive_loss(
         self,
+        sentence_embeddings: torch.Tensor,
         temp: float,
-        student_sentence_embeddings: torch.Tensor,
-        teacher_sentence_embeddings: torch.Tensor,
+        queries_mask: torch.Tensor,
+        pos_mask: torch.Tensor,
     ) -> torch.Tensor:
-        student_sentence_embeddings = self.student_to_teacher_proj(
-            student_sentence_embeddings
+        sentence_embeddings: torch.Tensor = self.student_to_teacher_proj(
+            sentence_embeddings
         )
-        student_sentence_embeddings = (
-            student_sentence_embeddings
-            / student_sentence_embeddings.norm(p=2, dim=-1, keepdim=True)
-            / temp
-        )
-        teacher_sentence_embeddings = (
-            teacher_sentence_embeddings
-            / teacher_sentence_embeddings.norm(p=2, dim=-1, keepdim=True)
-            / temp
+        sentence_embeddings = sentence_embeddings / sentence_embeddings.norm(
+            p=2, dim=-1, keepdim=True
         )
 
+        queries_emb = sentence_embeddings[queries_mask]
+        pos_emb = sentence_embeddings[pos_mask]
+
+        if queries_emb.size != pos_emb.size():
+            raise ValueError(
+                f"Anchors and positives have different sizes. Found {queries_emb.size()} and {pos_emb.size()} respectively."
+            )
+
+        bsz_queries = queries_emb.size(0)
+        bsz_positives = pos_emb.size(0)
         if dist.is_initialized():
-            sim_matrix = DistributedMMFunction.apply(
-                student_sentence_embeddings,
-                teacher_sentence_embeddings,
-                self._data_parallel_group,
-                multi_by_world_size=True,
+            rank = dist.get_rank(group=self._data_parallel_group)
+            global_anchors, global_positives, _ = GatherSentenceEmbeddings.apply(  #  type: ignore
+                anchors=queries_emb, positives=pos_emb, group=self._data_parallel_group
             )
         else:
-            sim_matrix = student_sentence_embeddings @ teacher_sentence_embeddings.T
+            rank = 0
+            global_anchors = queries_emb
+            global_positives = pos_emb
 
-        targets = torch.arange(sim_matrix.size(0), device=sim_matrix.device)
+        local_anchors = global_anchors[rank * bsz_queries : (rank + 1) * bsz_queries]
+        local_positives = global_positives[
+            rank * bsz_positives : (rank + 1) * bsz_positives
+        ]
 
-        teacher2student_loss = F.cross_entropy(sim_matrix, targets, reduction="mean")
-        student2teacher_loss = F.cross_entropy(sim_matrix.T, targets, reduction="mean")
-        loss = (teacher2student_loss + student2teacher_loss) / 2
+        targets = torch.arange(
+            rank * bsz_positives,
+            (rank + 1) * bsz_positives,
+            device=local_anchors.device,
+        )
+
+        anchor2pos_sim = local_anchors @ global_positives.T / temp
+        pos2achors_sim = local_positives @ global_anchors.T / temp
+
+        anchor2pos_loss = F.cross_entropy(anchor2pos_sim, targets, reduction="mean")
+        pos2achors_loss = F.cross_entropy(pos2achors_sim.T, targets, reduction="mean")
+        loss = (anchor2pos_loss + pos2achors_loss) / 2
         return loss
 
     def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
@@ -613,12 +650,9 @@ class DistillationModule(KostylLightningModule):
                 raise ValueError("Temperature must be specified for contrastive loss.")
 
             contrastive_loss = self._calculate_contrastive_loss(
-                student_sentence_embeddings=student_outputs[
-                    "student_sentence_embeddings"
-                ],
-                teacher_sentence_embeddings=teacher_outputs[
-                    "teacher_sentence_embeddings"
-                ],
+                sentence_embeddings=student_outputs["student_sentence_embeddings"],
+                queries_mask=batch["queries_mask"],
+                pos_mask=batch["positives_mask"],
                 temp=temp,
             )
         else:
@@ -716,6 +750,7 @@ class DistillationModule(KostylLightningModule):
             )
             metrics["CosineSimilarity"] = cosine_similarity_value
             metrics["RMSE"] = rmse_value
+
         if output.contrastive_loss.item() > 0.0:
             metrics["ContrastiveLoss"] = output.contrastive_loss.detach()
         if output.per_token_loss.item() > 0.0:
@@ -727,6 +762,8 @@ class DistillationModule(KostylLightningModule):
                     teacher_sentence_embeddings=output.teacher_sentence_embeddings,
                     student_sentence_embeddings=output.student_sentence_embeddings,
                     labels=batch["labels"],
+                    queries_mask=batch["queries_mask"],
+                    positives_mask=batch["positives_mask"],
                 )
             )
 
@@ -755,7 +792,7 @@ class DistillationModule(KostylLightningModule):
 
     @override
     @torch.inference_mode()
-    def on_validation_epoch_end(self) -> None:
+    def on_validation_epoch_end(self) -> None:  # type: ignore
         if self.trainer.sanity_checking:
             return
 
@@ -765,18 +802,26 @@ class DistillationModule(KostylLightningModule):
             teacher_embeddings_list = []
             student_embeddings_list = []
             labels_list = []
+            queries_mask_list = []
+            pos_mask_list = []
             for output in self.eval_outputs:
                 teacher_embeddings_list.append(output.teacher_sentence_embeddings)
                 student_embeddings_list.append(output.student_sentence_embeddings)
                 labels_list.append(output.labels)
+                queries_mask_list.append(output.queries_mask)
+                pos_mask_list.append(output.positives_mask)
 
-            teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0).to(
-                self.device
-            )
-            student_embeddings = torch.cat(student_embeddings_list, dim=0).to(
-                self.device
-            )
-            labels = torch.cat(labels_list, dim=0).to(self.device)
+            ### TORCH TENSORS ###
+            teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0)
+            student_embeddings = torch.cat(student_embeddings_list, dim=0)
+            labels = torch.cat(labels_list, dim=0)
+            queries_mask = torch.cat(queries_mask_list, dim=0)
+            pos_mask = torch.cat(pos_mask_list, dim=0)
+
+            ### NUMPY ARRAYS ###
+            teacher_embeddings_np = teacher_embeddings.float().cpu().numpy()
+            student_embeddings_np = student_embeddings.float().cpu().numpy()
+            labels_np = labels.float().cpu().numpy()
 
             if self.num_labels > 0:
                 self._log_knn_metrics(
@@ -789,21 +834,24 @@ class DistillationModule(KostylLightningModule):
                 if self.logprobing_thread is not None:
                     self.logprobing_thread.join()
 
-                student_embeddings_np = student_embeddings.float().cpu().numpy()
-                labels_np = labels.float().cpu().numpy()
                 self.logprobing_thread = self._launch_async_probing(
                     student_embeddings_np=student_embeddings_np,
                     labels_np=labels_np,
                 )
 
-            teacher_embeddings = teacher_embeddings[:NUM_POINTS2LOG, :]
-            student_embeddings = student_embeddings[:NUM_POINTS2LOG, :]
-            labels = labels[:NUM_POINTS2LOG]
+            if self.mmr_eval_cfg is not None:
+                queries_emb = student_embeddings[queries_mask].cpu().float().numpy()
+                pos_emb = student_embeddings[pos_mask].cpu().float().numpy()
+                self._log_mrr(queries=queries_emb, positives=pos_emb)
+
+            teacher_embeddings_np = teacher_embeddings_np[:NUM_POINTS2LOG]
+            student_embeddings_np = student_embeddings_np[:NUM_POINTS2LOG]
+            labels_np = labels_np[:NUM_POINTS2LOG]
 
             self._log_embeddings_scatter(
-                teacher_embeddings=teacher_embeddings,
-                student_embeddings=student_embeddings,
-                labels=labels,
+                teacher_embeddings=teacher_embeddings_np,
+                student_embeddings=student_embeddings_np,
+                labels=labels_np,
             )
             self.eval_outputs = []
 
@@ -821,32 +869,37 @@ class DistillationModule(KostylLightningModule):
         task = cast(Task, self.task)
 
         metrics: dict[str, torch.Tensor] = {}
-        teacher_knn_preds = knn_predict(
-            embeddings=teacher_embeddings,
-            labels=labels,
-            num_labels=self.num_labels,
-            k_neighbors=k,
-        )
+        if len(self.teacher_knn_results) == 0:
+            teacher_knn_preds = knn_predict(
+                embeddings=teacher_embeddings.to(self.device),
+                labels=labels.to(self.device),
+                num_labels=self.num_labels,
+                k_neighbors=k,
+            )
+            teacher_accuracy = torchmetrics_accuracy(
+                teacher_knn_preds,
+                labels,
+                task="multiclass" if self.num_labels > 2 else "binary",
+                num_classes=self.num_labels,
+            )
+            teacher_f1 = torchmetrics_f1_score(
+                teacher_knn_preds,
+                labels,
+                task="multiclass" if self.num_labels > 2 else "binary",
+                num_classes=self.num_labels,
+                average="macro",
+            )
+            self.teacher_knn_results["Teacher_F1"] = teacher_f1
+            self.teacher_knn_results["Teacher_Accuracy"] = teacher_accuracy
+        else:
+            teacher_f1 = self.teacher_knn_results["Teacher_F1"]
+            teacher_accuracy = self.teacher_knn_results["Teacher_Accuracy"]
 
         student_knn_preds = knn_predict(
-            embeddings=student_embeddings,
-            labels=labels,
+            embeddings=student_embeddings.to(self.device),
+            labels=labels.to(self.device),
             num_labels=self.num_labels,
             k_neighbors=k,
-        )
-
-        teacher_f1 = torchmetrics_f1_score(
-            teacher_knn_preds,
-            labels,
-            task="multiclass" if self.num_labels > 2 else "binary",
-            num_classes=self.num_labels,
-            average="macro",
-        )
-        teacher_accuracy = torchmetrics_accuracy(
-            teacher_knn_preds,
-            labels,
-            task="multiclass" if self.num_labels > 2 else "binary",
-            num_classes=self.num_labels,
         )
         student_f1 = torchmetrics_f1_score(
             student_knn_preds,
@@ -877,6 +930,163 @@ class DistillationModule(KostylLightningModule):
             )
         return
 
+    def _log_embeddings_scatter(
+        self,
+        teacher_embeddings: np.ndarray,
+        student_embeddings: np.ndarray,
+        labels: np.ndarray,
+    ) -> None:
+        task = cast(Task, self.task)
+
+        pmap = pacmap.PaCMAP(n_components=2, n_neighbors=10, MN_ratio=0.5, FP_ratio=2.0)
+
+        if self.teacher_2d_embeddings is None:
+            teacher_2d_embeddings = pmap.fit_transform(teacher_embeddings, init="pca")
+            self.teacher_2d_embeddings = teacher_2d_embeddings
+        else:
+            teacher_2d_embeddings = self.teacher_2d_embeddings
+
+        student_2d_embeddings = pmap.fit_transform(student_embeddings, init="pca")
+
+        teacher_2d_embeddings = cast(np.ndarray, teacher_2d_embeddings)
+        student_2d_embeddings = cast(np.ndarray, student_2d_embeddings)
+
+        fig = make_subplots(
+            rows=1,
+            cols=2,
+            subplot_titles=("Teacher embeddings", "Student embeddings"),
+            horizontal_spacing=0.08,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=teacher_2d_embeddings[:, 0].tolist(),
+                y=teacher_2d_embeddings[:, 1].tolist(),
+                mode="markers",
+                marker={
+                    "color": labels.tolist(),
+                    "colorscale": "Plotly3",
+                    "showscale": True,
+                    "opacity": 0.7,
+                },
+                name="Teacher",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=student_2d_embeddings[:, 0].tolist(),
+                y=student_2d_embeddings[:, 1].tolist(),
+                mode="markers",
+                marker={
+                    "color": labels.tolist(),
+                    "colorscale": "Plotly3",
+                    "showscale": False,
+                    "opacity": 0.7,
+                },
+                name="Student",
+            ),
+            row=1,
+            col=2,
+        )
+
+        fig.update_xaxes(title_text="dim0", row=1, col=1)
+        fig.update_yaxes(title_text="dim1", row=1, col=1)
+        fig.update_xaxes(title_text="dim0", row=1, col=2)
+        fig.update_yaxes(title_text="dim1", row=1, col=2)
+
+        task.get_logger().report_plotly(
+            title="Embeddings Plots",
+            series="Embeddings Teacher vs Student Scatter",
+            figure=fig,
+            iteration=self.global_step,
+        )
+        return
+
+    def _log_mrr(self, queries: np.ndarray, positives: np.ndarray) -> None:
+        if self.mmr_eval_cfg is None:
+            logger.warning_once(
+                "MRR evaluation is not configured. Skipping MRR logging."
+            )
+            return
+
+        task = cast(Task, self.task)
+        id2query = {}
+        id2pos = {}
+        for query_emb, pos_emb in zip(queries, positives, strict=True):
+            uuid_ = uuid4().hex
+            id2query[uuid_] = query_emb
+            id2pos[uuid_] = pos_emb
+
+        client = QdrantClient(host=self.mmr_eval_cfg.url, port=self.mmr_eval_cfg.port)
+
+        EMB_TYPE_TO_COLL_NAME = {
+            "query": "lendik-queries",
+            "pos": "lednik-positives",
+        }
+        EMB_TYPE_TO_MAPPING = {
+            "query": id2query,
+            "pos": id2pos,
+        }
+        EMB_TYPES = {"query", "pos"}
+        VECTOR_SIMILARITY_MAPPING = {"query": "pos", "pos": "query"}
+
+        ### Create collections and upload data ###
+        for emb_type in EMB_TYPES:
+            coll_name = EMB_TYPE_TO_COLL_NAME[emb_type]
+            if client.collection_exists(collection_name=coll_name):
+                client.delete_collection(collection_name=coll_name)
+
+            resp = client.create_collection(
+                collection_name=coll_name,
+                vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+            )
+            if not resp:
+                raise RuntimeError(f"Failed to create collection {coll_name}")
+
+            points = []
+            for emb_id, emb in EMB_TYPE_TO_MAPPING[emb_type].items():
+                point = PointStruct(id=emb_id, vector=emb)
+                points.append(point)
+            client.upload_points(
+                collection_name=coll_name, points=points, wait=True, parallel=4
+            )
+
+        ### Calculate MRR ###
+        mrr = 0.0
+        for emb_type in EMB_TYPES:
+            vs_emb_type = VECTOR_SIMILARITY_MAPPING[emb_type]
+            coll_name = EMB_TYPE_TO_COLL_NAME[vs_emb_type]
+            embeds = EMB_TYPE_TO_MAPPING[emb_type]
+
+            query_requests = []
+            target_ids = []
+            for emb_id, emb in embeds.items():
+                request = QueryRequest(query=emb, limit=self.mmr_eval_cfg.top_k)
+                query_requests.append(request)
+                target_ids.append(emb_id)
+
+            query_responses = client.query_batch_points(
+                collection_name=EMB_TYPE_TO_COLL_NAME["query"], requests=query_requests
+            )
+            uuids = _extract_uuids_from_points(query_responses)
+
+            mrr_sum = 0.0
+
+            for response_uuids, target_id in zip(uuids, target_ids, strict=True):
+                sample_mrr = _calculate_mrr_for_query(response_uuids, target_id)
+                mrr_sum += sample_mrr
+
+            mrr += mrr_sum / len(target_ids) / len(EMB_TYPES)
+
+        task.get_logger().report_scalar(
+            title="MRR Evaluation",
+            series="MRR",
+            value=mrr,
+            iteration=self.global_step,
+        )
+        return
+
     def _launch_async_probing(
         self,
         student_embeddings_np: np.ndarray,
@@ -901,7 +1111,7 @@ class DistillationModule(KostylLightningModule):
 
         def _wait_and_log() -> None:
             try:
-                metrics = out_q.get(timeout=600)
+                metrics: dict[str, float] = out_q.get(timeout=600)  # type: ignore
                 for metric_name, metric_value in metrics.items():
                     task.get_logger().report_scalar(
                         title="Logistic Regression Metrics",
@@ -921,71 +1131,23 @@ class DistillationModule(KostylLightningModule):
         t.start()
         return t
 
-    def _log_embeddings_scatter(
-        self,
-        teacher_embeddings: torch.Tensor,
-        student_embeddings: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> None:
-        task = cast(Task, self.task)
 
-        pca = PCA(n_components=2)
+def _calculate_mrr_for_query(response_uuids: list[str], target_uuid: str) -> float:
+    for rank, uuid_ in enumerate(response_uuids, start=1):
+        if uuid_ == target_uuid:
+            return 1 / rank
+    return 0.0
 
-        teacher_embeddings_2d = pca.transform(teacher_embeddings).reduced_data.cpu()
-        student_embeddings_2d = pca.transform(student_embeddings).reduced_data.cpu()
 
-        labels_list = labels.tolist()
-        fig = make_subplots(
-            rows=1,
-            cols=2,
-            subplot_titles=("Teacher embeddings", "Student embeddings"),
-            horizontal_spacing=0.08,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=teacher_embeddings_2d[:, 0].float().tolist(),
-                y=teacher_embeddings_2d[:, 1].float().tolist(),
-                mode="markers",
-                marker={
-                    "color": labels_list,
-                    "colorscale": "Plotly3",
-                    "showscale": True,
-                    "opacity": 0.7,
-                },
-                name="Teacher",
-            ),
-            row=1,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=student_embeddings_2d[:, 0].float().tolist(),
-                y=student_embeddings_2d[:, 1].float().tolist(),
-                mode="markers",
-                marker={
-                    "color": labels_list,
-                    "colorscale": "Plotly3",
-                    "showscale": False,
-                    "opacity": 0.7,
-                },
-                name="Student",
-            ),
-            row=1,
-            col=2,
-        )
-
-        fig.update_xaxes(title_text="dim0", row=1, col=1)
-        fig.update_yaxes(title_text="dim1", row=1, col=1)
-        fig.update_xaxes(title_text="dim0", row=1, col=2)
-        fig.update_yaxes(title_text="dim1", row=1, col=2)
-
-        task.get_logger().report_plotly(
-            title="Embeddings Plots",
-            series="Embeddings Teacher vs Student Scatter",
-            figure=fig,
-            iteration=self.global_step,
-        )
-        return
+def _extract_uuids_from_points(responses: list[QueryResponse]) -> list[list[str]]:
+    results = []
+    for response in responses:
+        response_uuids = []
+        for point in response.points:
+            uuid_ = str(point.id).replace("-", "")
+            response_uuids.append(uuid_)
+        results.append(response_uuids)
+    return results
 
 
 def _probing_worker(payload: dict, out_q: mp.Queue) -> None:
@@ -1005,7 +1167,7 @@ def _probing_worker(payload: dict, out_q: mp.Queue) -> None:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=None
         )
-    logreg = LogisticRegression(max_iter=10000, class_weight="balanced")
+    logreg = LogisticRegression(max_iter=500, class_weight="balanced")
     logreg.fit(X_train, y_train)
     y_pred = logreg.predict(X_test)
 
