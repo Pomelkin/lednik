@@ -46,7 +46,7 @@ from transformers import TokenizersBackend
 from lednik.distill.training.configs import ClassifierHyperparamsConfig
 from lednik.distill.training.dist_utils import get_fsdp1_policies
 from lednik.distill.training.dist_utils import get_fsdp2_policies
-from lednik.distill.training.dist_utils import get_transformer_wrap_classes
+from lednik.distill.training.dist_utils import get_fsdp_wrap_classes
 from lednik.distill.training.dist_utils import select_wrap_policy
 from lednik.models import StaticEmbeddingsForSequenceClassification
 from lednik.models import StaticEmbeddingsSequenceClassifierOutput as SEOutput
@@ -238,7 +238,7 @@ class ClassifierTrainingModule(KostylLightningModule):
                     "Tensor parallelism is not supported in this distillation module"
                 )
             policies = get_fsdp2_policies(strategy_config)
-            modules_to_shard = get_transformer_wrap_classes(model=self.model)
+            modules_to_shard = get_fsdp_wrap_classes(model=self.model)
             if modules_to_shard is None:  # TODO: add size based wrapping
                 logger.warning(
                     "Failed to get modules to shard in ModelParallelStrategy. "
@@ -301,7 +301,7 @@ class ClassifierTrainingModule(KostylLightningModule):
                 lrs["warmup_value"] = self.train_cfg.lr.warmup_value
             scaled_lrs = scale_lrs_by_world_size(
                 lrs=lrs,
-                verbose_level="only-zero-rank",
+                verbosity_level="only-zero-rank",
                 group=self._data_parallel_group,
             )
             for key, value in scaled_lrs.items():
