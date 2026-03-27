@@ -169,13 +169,13 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrained
             safe_serialization=safe_serialization,
             variant=variant,
         )
-        if hasattr(self, "tokenizer"):
-            if self.tokenizer is not None and is_main_process:
-                self.tokenizer.save_pretrained(save_directory)  # type: ignore
-        elif (model := getattr(self, self.base_model_prefix, None)) is not None:
-            if hasattr(model, "tokenizer"):
-                if model.tokenizer is not None and is_main_process:
-                    model.tokenizer.save_pretrained(save_directory)  # type: ignore
+        tokenizer = getattr(
+            self,
+            "tokenizer",
+            getattr(getattr(self, self.base_model_prefix, None), "tokenizer", None),
+        )
+        if tokenizer is not None and is_main_process:
+            tokenizer.save_pretrained(save_directory)
         return
 
 
@@ -194,6 +194,12 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
             config.vocab_size,
             1,
         )
+        self.output_proj = (
+            nn.Linear(config.hidden_size, config.output_hidden_size)
+            if config.output_hidden_size is not None
+            else nn.Identity()
+        )
+        self.norm = nn.RMSNorm(config.output_hidden_size or config.hidden_size)
         self.dropout = (
             nn.Dropout(config.embeddings_dropout)
             if config.embeddings_dropout > 0.0
@@ -273,7 +279,7 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
 
     @classmethod
     def initialize(
-        cls: type["StaticEmbeddingsModel"],
+        cls,
         config: StaticEmbeddingsConfig,
         embeddings: torch.Tensor | nn.Parameter,
     ) -> "StaticEmbeddingsModel":
@@ -341,7 +347,9 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
 
         result = outputs[0]
         for output in outputs[1:]:
-            result.embeddings = torch.cat((result.embeddings, output.embeddings), dim=0)
+            result.token_embeddings = torch.cat(
+                (result.token_embeddings, output.token_embeddings), dim=0
+            )
             result.pos_weights = torch.cat(  # type: ignore
                 (result.pos_weights, output.pos_weights),
                 dim=0,
@@ -355,26 +363,23 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        apply_token_weights: bool = True,
     ) -> StaticEmbeddingsOutput:
         """Forward pass."""
         if input_ids.dtype != torch.long:
             input_ids = input_ids.long()
-        embeddings = self.embeddings(input_ids)
-        embeddings = self.dropout(embeddings)
+        embeddings = self.norm(
+            self.output_proj(self.dropout(self.embeddings(input_ids)))
+        )
         masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
 
-        if apply_token_weights:
-            token_weights = self.token_pos_weights(input_ids)
-            masked_embeddings = masked_embeddings * token_weights
-        else:
-            token_weights = None
+        token_weights = self.token_pos_weights(input_ids)
+        masked_embeddings = masked_embeddings * token_weights
 
         sentence_embeddings = masked_embeddings.sum(dim=1) / attention_mask.sum(
-            dim=1, keepdim=True
+            dim=-1, keepdim=True
         )
         output = StaticEmbeddingsOutput(
-            embeddings=embeddings,
+            token_embeddings=embeddings,
             pos_weights=token_weights,
             sentence_embeddings=sentence_embeddings,
         )
@@ -449,15 +454,10 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
             input_ids = input_ids.long()
         embeddings_output = self.model(input_ids, attention_mask)
         logits = self.classifier(embeddings_output.sentence_embeddings)
-
-        if labels is not None:
-            loss = self.loss_function(logits, labels)
-        else:
-            loss = None
-
+        loss = self.loss_function(logits, labels) if labels is not None else None  #  type: ignore
         output = StaticEmbeddingsSequenceClassifierOutput(
             logits=logits,
-            loss=loss,
+            loss=loss,  # type: ignore
         )
         return output
 

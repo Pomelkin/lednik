@@ -1,5 +1,5 @@
+import contextlib
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -11,6 +11,7 @@ from kostyl.utils import setup_logger
 from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
+from torch import Tensor
 from torch import nn
 from transformers import PreTrainedModel
 from transformers.integrations import use_kernel_func_from_hub
@@ -18,62 +19,13 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutput
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_rope_utils import dynamic_rope_update
-from transformers.utils.generic import check_model_inputs
 from transformers.utils.generic import is_flash_attention_requested
 from transformers.utils.generic import maybe_autocast
+from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.import_utils import is_flash_attn_2_available
+from transformers.utils.output_capturing import capture_outputs
 
 from .configuration_lednik import LednikConfig
-
-
-try:
-    from kostyl.ml.integrations.lightning import LightningCheckpointLoaderMixin
-except ImportError:
-
-    class LightningCheckpointLoaderMixin:  # pyrefly: ignore  # noqa: D101
-        @classmethod
-        def from_lightning_checkpoint[TModelInstance: PreTrainedModel](
-            cls: type[TModelInstance],  # pyright: ignore[reportGeneralTypeIssues]
-            checkpoint_path: str | Path,
-            config_key: str = "config",
-            weights_prefix: str | None = "model.",
-            strict_prefix: bool = False,
-            **kwargs: Any,
-        ) -> TModelInstance:
-            """
-            Load a model from a Lightning checkpoint file.
-
-            This class method loads a pretrained model from a PyTorch Lightning checkpoint file (.ckpt).
-            It extracts the model configuration from the checkpoint, instantiates the model, and loads
-            the state dictionary, handling any incompatible keys.
-
-            Note:
-                The method uses `torch.load` with `weights_only=False` and `mmap=True` for loading.
-                Incompatible keys (missing, unexpected, mismatched) are collected and optionally logged.
-
-            Args:
-                cls (type["LightningPretrainedModelMixin"]): The class of the model to instantiate.
-                checkpoint_path (str | Path): Path to the checkpoint file. Must be a .ckpt file.
-                config_key (str, optional): Key in the checkpoint dictionary where the config is stored.
-                    Defaults to "config".
-                weights_prefix (str | None, optional): Prefix to strip from state dict keys. Defaults to "model.".
-                    If not empty and doesn't end with ".", a "." is appended. If empty or None, no prefix stripping will be skipped.
-                strict_prefix (bool, optional): If True, drop tensors those keys that do not start with the
-                    specified prefix. Defaults to False.
-                kwargs: Additional keyword arguments to pass to the model's `from_pretrained` method.
-
-            Returns:
-                TModelInstance: The loaded model instance.
-
-            Raises:
-                ValueError: If checkpoint_path is a directory, not a .ckpt file, or invalid.
-                FileNotFoundError: If the checkpoint file does not exist.
-
-            """
-            raise ImportError(
-                "LightningCheckpointLoaderMixin requires PyTorch Lightning to be installed. "
-                "Please install it with `pip install lightning` to use this functionality."
-            )
 
 
 if is_flash_attn_2_available():
@@ -321,7 +273,7 @@ def apply_rotary_pos_emb_unpadded(
         cos = cos.squeeze(0)
     if sin.ndim == 3:
         sin = sin.squeeze(0)
-    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)
+    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)  # type: ignore
 
 
 def eager_attention_forward(
@@ -377,6 +329,7 @@ def flash_attention_forward(
         softmax_scale=module.softmax_scale,
         dropout_p=module.config.attention_dropout if module.training else 0.0,
     )
+    attn_output = cast(Tensor, attn_output)
     if convert_dtype:
         attn_output = attn_output.to(original_dtype)
     return attn_output, torch.empty((1,))  # dummy attention weights
@@ -498,7 +451,7 @@ class LednikAttention(nn.Module):
                 unsqueeze_dim=2,
             )
         attn_output, attention_weights = LEDNIK_ATTENTION_FUNCTION[
-            self.config._attn_implementation
+            self.config._attn_implementation  # type: ignore
         ](
             q=q,
             k=k,
@@ -606,16 +559,14 @@ class LednikPreTrainedModel(
         "attentions": LednikAttention,
     }
 
-    def _check_and_adjust_attn_implementation(
+    def _check_and_adjust_attn_implementation(  # type: ignore[override]
         self, attn_implementation: str | None, is_init_check: bool = False
     ) -> str:
         if attn_implementation is None:
-            try:
+            with contextlib.suppress(ValueError, ImportError):
                 attn_implementation = (
                     "flash_attention_2" if self._flash_attn_2_can_dispatch() else None
                 )
-            except (ValueError, ImportError):
-                pass
         return super()._check_and_adjust_attn_implementation(
             attn_implementation, is_init_check
         )
@@ -837,7 +788,8 @@ class LednikModel(LednikPreTrainedModel):
         self.embeddings.emb.weight = new_embeddings
         return
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(  # noqa: C901
         self,
         input_ids: torch.Tensor | None = None,
