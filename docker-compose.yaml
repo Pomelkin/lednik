@@ -1,20 +1,8 @@
 name: lednik
 
 services:
-  serving:
-    build:
-      context: .
-      dockerfile: docker/serving.Dockerfile
-    container_name: lednik_serving
-    environment:
-      - MODEL_ID=${MODEL_ID}
-      - TOKENIZER_ID=${TOKENIZER_ID}
-      - CLEARML_API_ACCESS_KEY=${CLEARML_API_ACCESS_KEY}
-      - CLEARML_API_SECRET_KEY=${CLEARML_API_SECRET_KEY}
-      - CLEARML_API_HOST=${CLEARML_API_HOST}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - PORT=8080
+  qdrant:
+    image: qdrant/qdrant:v1.17
+    container_name: qdrant
     ports:
-      - '127.0.0.1:8080:8080'
-    restart: unless-stopped
+      - '127.0.0.1:6333:6333'
