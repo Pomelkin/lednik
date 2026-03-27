@@ -66,6 +66,14 @@ repos:
       # Optional: enable autofix on commit
       args: [ --fix ]
 
+- repo: https://github.com/facebook/pyrefly-pre-commit
+  rev: 0.56.0
+  hooks:
+    - id: pyrefly-check
+      name: Pyrefly (type checking)
+      pass_filenames: false  # Recommended to do full repo checks. However, you can change this to `true` to only check changed files
+      language: system  # Use system-installed pyrefly
+
 # - repo: https://github.com/hoxbro/clean_notebook
 #   rev: v0.1.17
 #   hooks:
