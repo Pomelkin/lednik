@@ -84,7 +84,7 @@ class DINOHead(nn.Module):
         self.apply(self._init_weights)
         return None
 
-    def _init_weights(self, m) -> None:
+    def _init_weights(self, m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:

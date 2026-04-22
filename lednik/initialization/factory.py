@@ -7,13 +7,13 @@ from transformers import PreTrainedModel
 from transformers import TokenizersBackend
 from transformers.modeling_utils import local_torch_dtype
 
-from lednik.distill.dim_reduction import PCA
+from lednik.emb_utils import extract_embeddings
 from lednik.models import LednikConfig
 from lednik.models import LednikModel
 from lednik.models import StaticEmbeddingsConfig
 from lednik.models import StaticEmbeddingsModel
 
-from .emb_utils import extract_embeddings
+from .dim_reduction import PCA
 from .generic import get_torch_dtype
 from .tokenizer_utils import calculate_token_weights
 from .tokenizer_utils import customize_tokenizer

@@ -51,7 +51,7 @@ def sinkhorn_knopp_teacher(
         Q /= torch.sum(Q, dim=0, keepdim=True)
         Q /= B
 
-    Q *= B  # the colomns must sum to 1 so that Q is an assignment
+    Q *= B  # the columns must sum to 1 so that Q is an assignment
     return Q.t()
 
 
@@ -70,7 +70,9 @@ def dino_ce_loss(
             "student_logits and teacher_probs must be 2-dimensional tensors"
         )
     if student_logits.size(0) != teacher_probs.size(0):
-        raise ValueError
+        raise ValueError(
+            "student_logits and teacher_probs must have the same batch size"
+        )
 
     B_T, _ = student_logits.shape
     student_logprob = F.log_softmax(student_logits.float() / student_temp, dim=-1)

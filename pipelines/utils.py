@@ -134,10 +134,7 @@ def setup_strategy(
     devices: list[int] | int,
 ) -> Literal["auto"] | ModelParallelStrategy | DDPStrategy | FSDPStrategy:
     """Configure and return a PyTorch Lightning training strategy."""
-    if isinstance(devices, list):
-        num_devices = len(devices)
-    else:
-        num_devices = devices
+    num_devices = len(devices) if isinstance(devices, list) else devices
 
     match strategy_settings:
         case FSDP1StrategyConfig():

@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
 
+from lednik.distill.validation import RedisConfig
+
 
 logger = setup_logger(fmt="only_message")
 
@@ -48,28 +50,4 @@ class DistillationConfig(HyperparamsConfig):
     optimizer: OPTIMIZER_CONFIG
     lr: Lr
     weight_decay: WeightDecay
-
-
-class MMREvaluationConfig(BaseModel):
-    """Configuration for MMR evaluation."""
-
-    url: str
-    port: int
-    top_k: int = Field(default=10, gt=0)
-
-
-class ClassifierHyperparamsConfig(HyperparamsConfig):
-    """Configuration schema for classifier training hyperparameters."""
-
-    label2id: dict[str, int]
-    class_weights: list[float] | None = None
-
-    @property
-    def num_labels(self) -> int:
-        """Get the number of labels."""
-        return len(self.label2id)
-
-    @property
-    def id2label(self) -> dict[int, str]:
-        """Get the mapping from label IDs to label names."""
-        return {v: k for k, v in self.label2id.items()}
+    redis: RedisConfig | None = None

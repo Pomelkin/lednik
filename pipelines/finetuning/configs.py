@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
 
-from lednik.distill.training.configs import DistillationConfig as BaseDistillationConfig
+from lednik.distill.configs import DistillationConfig as BaseDistillationConfig
 
 
 class DistillationConfig(
