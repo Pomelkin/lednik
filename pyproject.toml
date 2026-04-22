@@ -41,7 +41,16 @@ distill = [
   "tensorboard>=2.20.0",
   "torchmetrics>=1.8.2",
 ]
+logprob-woker = [
+    "redis>=7.4.0",
+]
 serving = ["click>=8.3.1", "litserve>=0.2.16", "rich>=14.2.0"]
+validation = [
+    "pydantic>=2.13.0",
+    "pydantic-settings>=2.13.1",
+    "qdrant-client>=1.17.1",
+    "redis>=7.4.0",
+]
 
 [tool.uv]
 default-groups = ["dev", "distill"]
@@ -100,7 +109,6 @@ select = [
 ]
 
 ignore = [
-  "ANN101", # missing type annotation for self in method
   "ANN002", # Missing type annotation for *args
   "ANN003", # Missing type annotation for **kwargs
   "ANN401", # Dynamically typed expressions (typing.Any) are disallowed
