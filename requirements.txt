@@ -84,6 +84,7 @@ anyio==4.13.0 \
     # via
     #   httpx
     #   jupyter-server
+    #   openai
 appnope==0.1.4 ; sys_platform == 'darwin' \
     --hash=sha256:1de3860566df9caf38f01f86f65e0e13e379af54f9e4bee1e66b48f2efffd1ee \
     --hash=sha256:502575ee11cd7a28c0205f379b525beefebab9d161b7c964670864014ed7213c
@@ -381,6 +382,10 @@ distlib==0.4.0 \
     --hash=sha256:9659f7d87e46584a30b5780e43ac7a2143098441670ff0a49d5f9034c54a6c16 \
     --hash=sha256:feec40075be03a04501a973d81f633735b4b69f98b05450592310c0f401a4e0d
     # via virtualenv
+distro==1.9.0 \
+    --hash=sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed \
+    --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
+    # via openai
 einops==0.8.2 \
     --hash=sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193 \
     --hash=sha256:609da665570e5e265e27283aab09e7f279ade90c4f01bcfca111f3d3e13f2827
@@ -532,6 +537,7 @@ furl==2.1.4 \
     --hash=sha256:877657501266c929269739fb5f5980534a41abd6bbabcb367c136d1d3b2a6015 \
     --hash=sha256:da34d0b34e53ffe2d2e6851a7085a05d96922b5b578620a37377ff1dbeeb11c8
     # via clearml
+geracl @ git+https://github.com/deepvk/geracl@c3ab268050790a44080bffd3856f77e2f5b4abd7
 grpcio==1.80.0 \
     --hash=sha256:29aca15edd0688c22ba01d7cc01cb000d72b2033f4a3c72a81a19b56fd143257 \
     --hash=sha256:2bea16af2750fd0a899bf1abd9022244418b55d1f37da2202249ba4ba673838d \
@@ -607,6 +613,7 @@ httpx==0.28.1 \
     #   datasets
     #   huggingface-hub
     #   jupyterlab
+    #   openai
     #   qdrant-client
 huggingface-hub==1.10.2 \
     --hash=sha256:4b276f820483b709dc86a53bcb8183ea496b8d8447c9f7f88a115a12b498a95f \
@@ -672,6 +679,55 @@ jinja2==3.1.6 \
     #   jupyterlab-server
     #   nbconvert
     #   torch
+jiter==0.14.0 \
+    --hash=sha256:004df5fdb8ecbd6d99f3227df18ba1a259254c4359736a2e6f036c944e02d7c5 \
+    --hash=sha256:14c0cb10337c49f5eafe8e7364daca5e29a020ea03580b8f8e6c597fed4e1588 \
+    --hash=sha256:1aca29ba52913f78362ec9c2da62f22cdc4c3083313403f90c15460979b84d9b \
+    --hash=sha256:1bf7ff85517dd2f20a5750081d2b75083c1b269cf75afc7511bdf1f9548beb3b \
+    --hash=sha256:215a6cb8fb7dc702aa35d475cc00ddc7f970e5c0b1417fb4b4ac5d82fa2a29db \
+    --hash=sha256:2492e5f06c36a976d25c7cc347a60e26d5470178d44cde1b9b75e60b4e519f28 \
+    --hash=sha256:260bf7ca20704d58d41f669e5e9fe7fe2fa72901a6b324e79056f5d52e9c9be2 \
+    --hash=sha256:26679d58ba816f88c3849306dd58cb863a90a1cf352cdd4ef67e30ccf8a77994 \
+    --hash=sha256:2e692633a12cda97e352fdcd1c4acc971b1c28707e1e33aeef782b0cbf051975 \
+    --hash=sha256:2f7877ed45118de283786178eceaf877110abacd04fde31efff3940ae9672674 \
+    --hash=sha256:34f19dcc35cb1abe7c369b3756babf8c7f04595c0807a848df8f26ef8298ef92 \
+    --hash=sha256:37826e3df29e60f30a382f9294348d0238ef127f4b5d7f5f8da78b5b9e050560 \
+    --hash=sha256:3a99c1387b1f2928f799a9de899193484d66206a50e98233b6b088a7f0c1edb2 \
+    --hash=sha256:4b77da71f6e819be5fbcec11a453fde5b1d0267ef6ed487e2a392fd8e14e4e3a \
+    --hash=sha256:5419d4aa2024961da9fe12a9cfe7484996735dca99e8e090b5c88595ef1951ff \
+    --hash=sha256:6112f26f5afc75bcb475787d29da3aa92f9d09c7858f632f4be6ffe607be82e9 \
+    --hash=sha256:62fe2451f8fcc0240261e6a4df18ecbcd58327857e61e625b2393ea3b468aac9 \
+    --hash=sha256:645be49c46f2900937ba0eaf871ad5183c96858c0af74b6becc7f4e367e36e06 \
+    --hash=sha256:651a8758dd413c51e3b7f6557cdc6921faf70b14106f45f969f091f5cda990ea \
+    --hash=sha256:6f396837fc7577871ca8c12edaf239ed9ccef3bbe39904ae9b8b63ce0a48b140 \
+    --hash=sha256:7282342d32e357543565286b6450378c3cd402eea333fc1ebe146f1fabb306fc \
+    --hash=sha256:7609cfbe3a03d37bfdbf5052012d5a879e72b83168a363deae7b3a26564d57de \
+    --hash=sha256:77f4ea612fe8b84b8b04e51d0e78029ecf3466348e25973f953de6e6a59aa4c1 \
+    --hash=sha256:78d918a68b26e9fab068c2b5453577ef04943ab2807b9a6275df2a812599a310 \
+    --hash=sha256:7b25beaa0d4447ea8c7ae0c18c688905d34840d7d0b937f2f7bdd52162c98a40 \
+    --hash=sha256:801028dcfc26ac0895e4964cbc0fd62c73be9fd4a7d7b1aaf6e5790033a719b7 \
+    --hash=sha256:80381f5a19af8fa9aef743f080e34f6b25ebd89656475f8cf0470ec6157052aa \
+    --hash=sha256:882bcb9b334318e233950b8be366fe5f92c86b66a7e449e76975dfd6d776a01f \
+    --hash=sha256:8b39b7d87a952b79949af5fef44d2544e58c21a28da7f1bae3ef166455c61746 \
+    --hash=sha256:9b8c571a5dba09b98bd3462b5a53f27209a5cbbe85670391692ede71974e979f \
+    --hash=sha256:a4d50ea3d8ba4176f79754333bd35f1bbcd28e91adc13eb9b7ca91bc52a6cef9 \
+    --hash=sha256:ab18d11074485438695f8d34a1b6da61db9754248f96d51341956607a8f39985 \
+    --hash=sha256:ad425b087aafb4a1c7e1e98a279200743b9aaf30c3e0ba723aec93f061bd9bc8 \
+    --hash=sha256:af72f204cf4d44258e5b4c1745130ac45ddab0e71a06333b01de660ab4187a94 \
+    --hash=sha256:b08997c35aee1201c1a5361466a8fb9162d03ae7bf6568df70b6c859f1e654a4 \
+    --hash=sha256:bd77945f38866a448e73b0b7637366afa814d4617790ecd88a18ca74377e6c02 \
+    --hash=sha256:be808176a6a3a14321d18c603f2d40741858a7c4fc982f83232842689fe86dd9 \
+    --hash=sha256:c8ef8791c3e78d6c6b157c6d360fbb5c715bebb8113bc6a9303c5caff012754a \
+    --hash=sha256:ce17f8a050447d1b4153bda4fb7d26e6a9e74eb4f4a41913f30934c5075bf615 \
+    --hash=sha256:cff5708f7ed0fa098f2b53446c6fa74c48469118e5cd7497b4f1cd569ab06928 \
+    --hash=sha256:e1a7eead856a5038a8d291f1447176ab0b525c77a279a058121b5fccee257f6f \
+    --hash=sha256:e74663b8b10da1fe0f4e4703fd7980d24ad17174b6bb35d8498d6e3ebce2ae6a \
+    --hash=sha256:e89bcd7d426a75bb4952c696b267075790d854a07aad4c9894551a82c5b574ab \
+    --hash=sha256:e8a39e66dac7153cf3f964a12aad515afa8d74938ec5cc0018adcdae5367c79e \
+    --hash=sha256:f2d4c61da0821ee42e0cdf5489da60a6d074306313a377c2b35af464955a3611 \
+    --hash=sha256:f4f1c4b125e1652aefbc2e2c1617b60a160ab789d180e3d423c41439e5f32850 \
+    --hash=sha256:fc4ab96a30fb3cb2c7e0cd33f7616c8860da5f5674438988a54ac717caccdbaa
+    # via openai
 jmespath==1.1.0 \
     --hash=sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d \
     --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
@@ -1276,6 +1332,9 @@ nvidia-nvtx==13.0.85 ; sys_platform == 'linux' \
     --hash=sha256:4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4 \
     --hash=sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6
     # via cuda-toolkit
+openai==2.32.0 \
+    --hash=sha256:4dcc9badeb4bf54ad0d187453742f290226d30150890b7890711bda4f32f192f \
+    --hash=sha256:c54b27a9e4cb8d51f0dd94972ffd1a04437efeb259a9e60d8922b8bd26fe55e0
 orderedmultidict==1.0.2 \
     --hash=sha256:16a7ae8432e02cc987d2d6d5af2df5938258f87c870675c73ee77a0920e6f4a6 \
     --hash=sha256:ab5044c1dca4226ae4c28524cfc5cc4c939f0b49e978efa46a6ad6468049f79b
@@ -1607,6 +1666,7 @@ pydantic==2.13.0 \
     # via
     #   kostyl-toolkit
     #   lednik
+    #   openai
     #   qdrant-client
 pydantic-core==2.46.0 \
     --hash=sha256:004a2081c881abfcc6854a4623da6a09090a0d7c1398a6ae7133ca1256cee70b \
@@ -2086,6 +2146,10 @@ six==1.17.0 \
     #   pathlib2
     #   python-dateutil
     #   rfc3339-validator
+sniffio==1.3.1 \
+    --hash=sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2 \
+    --hash=sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc
+    # via openai
 soupsieve==2.8.3 \
     --hash=sha256:3267f1eeea4251fb42728b6dfb746edc9acaffc4a45b27e19450b676586e8349 \
     --hash=sha256:ed64f2ba4eebeab06cc4962affce381647455978ffc1e36bb79a545b91f45a95
@@ -2098,6 +2162,9 @@ sympy==1.14.0 \
     --hash=sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517 \
     --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
     # via torch
+tenacity==9.1.4 \
+    --hash=sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55 \
+    --hash=sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a
 tensorboard==2.20.0 \
     --hash=sha256:9dc9f978cb84c0723acf9a345d96c184f0293d18f166bb8d59ee098e6cfaaba6
 tensorboard-data-server==0.7.2 \
@@ -2199,6 +2266,7 @@ tqdm==4.67.3 \
     #   huggingface-hub
     #   lednik
     #   lightning
+    #   openai
     #   pytorch-lightning
     #   transformers
 traitlets==5.14.3 \
@@ -2251,6 +2319,7 @@ typing-extensions==4.15.0 \
     #   huggingface-hub
     #   lightning
     #   lightning-utilities
+    #   openai
     #   pydantic
     #   pydantic-core
     #   pytorch-lightning
