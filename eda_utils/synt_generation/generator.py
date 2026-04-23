@@ -3,9 +3,7 @@ from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED
 from concurrent.futures import Future
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import as_completed
 from concurrent.futures import wait
-from dataclasses import dataclass
 from typing import Literal
 
 import polars as pl
