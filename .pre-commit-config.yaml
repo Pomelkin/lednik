@@ -26,9 +26,9 @@ repos:
   rev: v0.15.11
   hooks:
   - id: ruff
-    name: ruff lint + isort
-    types_or: [ python, pyi, jupyter ]
-    args: [ "--select", "I", "--fix" ]
+    name: ruff lint
+    types_or: [ python, pyi, jupyter, pyproject ]
+    args: [ --fix ]
 
   - id: ruff-format
     name: ruff format
