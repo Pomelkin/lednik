@@ -19,10 +19,10 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutput
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_rope_utils import dynamic_rope_update
+from transformers.utils import is_flash_attn_2_available
 from transformers.utils.generic import is_flash_attention_requested
 from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
-from transformers.utils.import_utils import is_flash_attn_2_available
 from transformers.utils.output_capturing import capture_outputs
 
 from .configuration_lednik import LednikConfig
@@ -54,10 +54,12 @@ class LednikRotaryEmbedding(nn.Module):
         self.original_max_seqlen = config.max_position_embeddings
         self.config = config
         self.rope_type = self.config.rope_parameters["rope_type"]
-        if self.rope_type != "default":
-            rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
-        else:
-            rope_init_fn = self.compute_default_rope_parameters
+
+        rope_init_fn = (
+            ROPE_INIT_FUNCTIONS[self.rope_type]  # type: ignore
+            if self.rope_type != "default"
+            else self.compute_default_rope_parameters
+        )
         inv_freq, scale = rope_init_fn(config, device=device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
@@ -90,7 +92,6 @@ class LednikRotaryEmbedding(nn.Module):
             post-processing scaling factor applied to the computed cos/sin (unused in this type of RoPE).
 
         """
-        base = config.rope_parameters["rope_theta"]
         dim = getattr(config, "head_dim", None)
         if dim is None:
             if config.num_attention_heads is None:
@@ -99,6 +100,11 @@ class LednikRotaryEmbedding(nn.Module):
                 )
             dim = config.hidden_size // config.num_attention_heads
 
+        base = config.rope_parameters["rope_theta"]
+        if base is None:
+            raise ValueError(
+                "`rope_theta` must be specified in `rope_parameters` for default RoPE."
+            )
         inv_freq = 1.0 / (
             base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim)
         )
@@ -565,7 +571,9 @@ class LednikPreTrainedModel(
         if attn_implementation is None:
             with contextlib.suppress(ValueError, ImportError):
                 attn_implementation = (
-                    "flash_attention_2" if self._flash_attn_2_can_dispatch() else None
+                    "flash_attention_2"
+                    if self._flash_attn_can_dispatch(2, is_init_check=True)
+                    else None
                 )
         return super()._check_and_adjust_attn_implementation(
             attn_implementation, is_init_check
