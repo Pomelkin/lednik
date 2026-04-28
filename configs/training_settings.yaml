@@ -1,30 +1,36 @@
+redis:
+  host: localhost
+  port: 6379
+  stream_name: validation_tasks
+  password: 387811863bae48398d241934e61980c2
+
 data:
-  train_datasets:
-    Cultura-Ru(train): f3f9ac08e9054d39928853d797a4ab8d
-    Lenta-RU(train): c0db0a47494649e8a56c35ab237bd414
-  val_datasets:
-    Telegram-Financial-Sentiment(val): 15a6b40eb988463a9654e5109f784619
-  batch_size: 384
+  datasets:
+    RuBQ-Reranking: a1c152d6491e43959cd8da88658e2e05
+    Mixed-Summarization-Dataset: 2ef9572e96d94bc69ace31aa2de05387
+    ru-HNP: 4cafe217d08242dc858ecf5e3347683e
+  batch_size: 16
   num_workers: 5
-  train_tokens_column: USER-bge-m3
-  val_tokens_column: USER-bge-m3
-  val_label_column: label
-  val_num_labels: 3
-  max_length: 1024
+  query_colname: query-tokens
+  pos_colname: pos-tokens
+  neg_colname: neg-tokens
+  val_label_colname: label
+  val_num_labels: 6
 
 trainer:
   accelerator: "cuda"
   max_epochs: 2
   strategy:
-    type: "fsdp1"
-    param_dtype: bfloat16
-    reduce_dtype: float32
-    buffer_dtype: float32
-  val_check_interval: 0.01
-  devices: 2
+    type: "single_device"
+    # param_dtype: bfloat16
+    # reduce_dtype: float32
+    # buffer_dtype: float32
+  val_check_interval: 0.2
+  devices: 1
   precision: bf16-true
   log_every_n_steps: 25
-  limit_train_batches: 4200
+  limit_train_batches: 3000
+  limit_val_batches: 200
 
 early_stopping:
   monitor: "val_loss"
@@ -39,11 +45,12 @@ checkpoint:
   filename: "{epoch:02d}-{val_loss:.4f}"
 
 teacher_model_id: af954495ff03440abc58790c4e41ff22
-student_model_id: e37f57e81dd54065a96169bd7b1d286d
+student_model_id: 5621a1d159754611b72c638d27810fb9
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
+
 model_cfg:
   model_type: lednik
   embeddings_dropout: 0.1
-  attention_dropout: 0.05
-  out_attn_dropout: 0.15
-  mlp_dropout: 0.15
+  attention_dropout: 0.0
+  out_attn_dropout: 0.1
+  mlp_dropout: 0.1
