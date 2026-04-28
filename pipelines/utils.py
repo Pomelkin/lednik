@@ -57,13 +57,13 @@ class CheckpointUploaderConfig:
         framework: The framework of the model (e.g., "PyTorch", "TensorFlow").
         base_model_id: Optional ClearML model ID to use as a base for the new model
         upload_as_new_model: Whether to create a new ClearML model
-            for every upload or update weights of the same model. When True,
-            each checkpoint is uploaded as a separate model with timestamp added to the name.
-            When False, weights of the same model are updated.
+            for every checkpoint upload or update weights of the same model. When True,
+            each checkpoint will be uploaded as a separate model with timestamp added to the name and
+            when False, weights of the same model will be updated.
         verbose: Whether to log messages during upload.
         upload_strategy: Checkpoint upload mode:
-            - "only-best": only the best checkpoint is uploaded
-            - "every-checkpoint": every saved checkpoint is uploaded
+            - "only-best": only the best checkpoints will be uploaded
+            - "every-checkpoint": every saved checkpoint will be uploaded
 
     """
 

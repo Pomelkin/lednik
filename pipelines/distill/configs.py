@@ -10,6 +10,7 @@ from pydantic import Field
 from pydantic import model_validator
 
 from lednik.distill.configs import DistillationConfig as BaseDistillationConfig
+from lednik.distill.validation.structs import RedisConfig
 
 
 class DistillationConfig(
@@ -26,7 +27,6 @@ class LednikModelTrainConfig(BaseModel):
     attention_dropout: float = 0.0
     out_attn_dropout: float = 0.0
     mlp_dropout: float = 0.0
-    ignore_mismatched_sizes: bool = True
     output_hidden_size: int | None = None
 
 
@@ -35,19 +35,20 @@ class StaticEmbeddingsTrainConfig(BaseModel):
 
     model_type: Literal["static_embeddings"]
     embedding_dropout: float = 0.0
-    ignore_mismatched_sizes: bool = True
 
 
 class DataConfig(BaseModel):
     """Data configuration."""
 
-    train_datasets: dict[str, str]  # except eval
-    val_datasets: dict[str, str]
+    datasets: dict[str, str]
     batch_size: int
     num_workers: int = Field(ge=1)
-    train_tokens_column: str
-    val_tokens_column: str
-    val_label_column: str
+
+    query_colname: str
+    pos_colname: str
+    neg_colname: str
+
+    val_label_colname: str | None = None
     val_num_labels: int | None = Field(
         default=None,
         gt=0,
@@ -62,13 +63,17 @@ class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin)
     teacher_model_id: str
     student_model_id: str
     tokenizer_id: str
+    model_cfg: LednikModelTrainConfig | StaticEmbeddingsTrainConfig
+
     is_student_lightning_checkpoint: bool = False
     checkpoint_weight_prefix: str | None = None
-    model_cfg: LednikModelTrainConfig | StaticEmbeddingsTrainConfig
+
     trainer: LightningTrainerParameters
     early_stopping: EarlyStoppingConfig | None = None
     checkpoint: CheckpointConfig = CheckpointConfig()
     data: DataConfig
+
+    redis: RedisConfig | None = None
 
     @model_validator(mode="after")
     def _validate_checkpoint_settigs(self) -> "TrainingSettings":

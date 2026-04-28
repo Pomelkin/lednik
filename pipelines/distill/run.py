@@ -11,11 +11,11 @@ from kostyl.utils.logging import setup_logger
 from transformers import AutoModel
 from transformers import PreTrainedModel
 
-from lednik.distill.training.training_modules import DistillationModule
+from lednik.distill.training_module import DistillationModule
 from lednik.models import MODEL_MAPPING
-from pipelines.finetuning.configs import DistillationConfig
-from pipelines.finetuning.configs import TrainingSettings
-from pipelines.finetuning.datamodule import DataModule
+from pipelines.distill.configs import DistillationConfig
+from pipelines.distill.configs import TrainingSettings
+from pipelines.distill.datamodule import DataModule
 from pipelines.utils import CheckpointUploaderConfig
 from pipelines.utils import setup_callbacks
 from pipelines.utils import setup_loggers
@@ -63,16 +63,16 @@ def _distill_model(
             "matplotlib": True,
             "detect_repository": True,
         },
-        tags=["distillation", *tags],
+        tags=tags,
     )
 
     ROOT_PATH = Path(__file__).parent.parent.parent
 
     distill_config = DistillationConfig.connect_as_file(
-        task, ROOT_PATH / "configs" / "finetuning" / "distill_config.yaml"
+        task, ROOT_PATH / "configs" / "distill_config.yaml"
     )
     training_settings = TrainingSettings.connect_as_file(
-        task, ROOT_PATH / "configs" / "finetuning" / "training_settings.yaml"
+        task, ROOT_PATH / "configs" / "training_settings.yaml"
     )
 
     if remote_execution_queue != "":
@@ -89,9 +89,12 @@ def _distill_model(
 
     ### Student Model Loading ###
     model_cls = MODEL_MAPPING[training_settings.model_cfg.model_type]
+
     load_kwargs = training_settings.model_cfg.model_dump(exclude={"model_type"})
     if training_settings.is_student_lightning_checkpoint:
-        load_kwargs["weights_prefix"] = training_settings.checkpoint_weight_prefix
+        load_kwargs.update(
+            {"weights_prefix": training_settings.checkpoint_weight_prefix}
+        )
 
     student, clearml_student = load_model_from_clearml(
         model_id=training_settings.student_model_id,
@@ -117,6 +120,7 @@ def _distill_model(
         strategy_config=training_settings.trainer.strategy,
         task=task,
         num_labels=training_settings.data.val_num_labels,
+        redis_config=training_settings.redis,
     )
 
     ### Callbacks, Loggers, and Strategy Setup ###
@@ -141,7 +145,7 @@ def _distill_model(
         devices=training_settings.trainer.devices,
     )
 
-    datamodule = DataModule(data_cfg=training_settings.data, tokenizer=tokenizer)
+    datamodule = DataModule(config=training_settings.data, tokenizer=tokenizer)
 
     trainer = L.Trainer(
         max_epochs=training_settings.trainer.max_epochs,
