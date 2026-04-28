@@ -81,7 +81,7 @@ def create_static_embeddings_model(
 
     dtype = get_torch_dtype(dtype)
     with local_torch_dtype(dtype):
-        model.to(dtype=dtype).eval()
+        model.to(dtype=dtype).eval()  # ty:ignore[missing-argument]
 
         vocab_tokens_ids = [[tok_id] for tok_id in tokenizer.get_vocab().values()]
         vocab_len = len(vocab_tokens_ids)
@@ -182,7 +182,7 @@ def create_lednik_transformer(
     dtype = get_torch_dtype(dtype)
 
     with local_torch_dtype(dtype):
-        model.to(dtype=dtype).eval()
+        model.to(dtype=dtype).eval()  # ty:ignore[missing-argument]
 
         vocab_tokens_ids = [[tok_id] for tok_id in tokenizer.get_vocab().values()]
         vocab_size = len(vocab_tokens_ids)
@@ -192,7 +192,7 @@ def create_lednik_transformer(
                 "Updating config."
             )
             model_config.vocab_size = vocab_size
-        pad_token = int(tokenizer.pad_token_id)  # type: ignore
+        pad_token = int(tokenizer.pad_token_id)
         if pad_token != model_config.pad_token_id:
             logger.warning(
                 f"Passed config's pad token id {model_config.pad_token_id} does not match tokenizer pad token id {pad_token}. "
