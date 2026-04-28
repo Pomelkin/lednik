@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from kostyl.ml.integrations.lightning import LightningCheckpointLoaderMixin
 from kostyl.utils import setup_logger
 from torch import nn
-from tqdm.auto import tqdm
+from tqdm.auto import tqdm  # pyrefly: ignore
 from transformers import AutoTokenizer
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
@@ -201,8 +201,8 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         )
         self.norm = nn.RMSNorm(config.output_hidden_size or config.hidden_size)
         self.dropout = (
-            nn.Dropout(config.embeddings_dropout)
-            if config.embeddings_dropout > 0.0
+            nn.Dropout(config.embedding_dropout)
+            if config.embedding_dropout > 0.0
             else nn.Identity()
         )
 
@@ -238,16 +238,10 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
                 f"new_embeddings should have size {self.embeddings.weight.size()}, "
                 f"but got {new_embeddings.size()}."
             )
+
         new_embeddings = new_embeddings.clone()  # use clone() to avoid weight tying
         if isinstance(new_embeddings, torch.Tensor):
             new_embeddings = nn.Parameter(new_embeddings)  # avoiding weight ties
-
-        new_embeddings = new_embeddings.to(
-            device=self.embeddings.weight.device,
-            dtype=self.embeddings.weight.dtype,
-        )
-        new_embeddings.requires_grad_(self.embeddings.weight.requires_grad)
-
         self.embeddings.weight = new_embeddings
         return
 
@@ -267,13 +261,6 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         new_pos_weights = new_pos_weights.clone()  # use clone() to avoid weight tying
         if isinstance(new_pos_weights, torch.Tensor):
             new_pos_weights = nn.Parameter(new_pos_weights)  # avoiding weight ties
-
-        new_pos_weights = new_pos_weights.to(
-            device=self.token_pos_weights.weight.device,
-            dtype=self.token_pos_weights.weight.dtype,
-        )
-        new_pos_weights.requires_grad_(self.token_pos_weights.weight.requires_grad)
-
         self.token_pos_weights.weight = new_pos_weights
         return
 
@@ -367,14 +354,11 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         """Forward pass."""
         if input_ids.dtype != torch.long:
             input_ids = input_ids.long()
-        embeddings = self.norm(
-            self.output_proj(self.dropout(self.embeddings(input_ids)))
-        )
-        masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
-
+        embeddings = self.output_proj(self.dropout(self.embeddings(input_ids)))
         token_weights = self.token_pos_weights(input_ids)
-        masked_embeddings = masked_embeddings * token_weights
+        embeddings = self.norm(embeddings)
 
+        masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
         sentence_embeddings = masked_embeddings.sum(dim=1) / attention_mask.sum(
             dim=-1, keepdim=True
         )

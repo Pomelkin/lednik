@@ -1,6 +1,5 @@
 from typing import Literal
 
-from huggingface_hub.dataclasses import strict
 from kostyl.utils.logging import setup_logger
 from transformers import PreTrainedConfig
 from transformers.modeling_rope_utils import RopeParameters
@@ -9,7 +8,6 @@ from transformers.modeling_rope_utils import RopeParameters
 logger = setup_logger(fmt="only_message")
 
 
-@strict
 class LednikConfig(PreTrainedConfig):
     """Configuration class for Lednik Model."""
 
@@ -33,7 +31,7 @@ class LednikConfig(PreTrainedConfig):
     # Dropout after attention output projection.
     out_attn_dropout: float = 0.0
     # RoPE parameters dictionary.
-    rope_parameters: RopeParameters
+    rope_parameters: RopeParameters | None = None
     # Maximum supported sequence length.
     max_position_embeddings: int = 1024
     # Activation function in feed-forward.

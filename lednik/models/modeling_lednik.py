@@ -24,6 +24,7 @@ from transformers.utils.generic import is_flash_attention_requested
 from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
+from transformers.modeling_rope_utils import RopeParameters
 
 from .configuration_lednik import LednikConfig
 
@@ -50,10 +51,10 @@ class LednikRotaryEmbedding(nn.Module):
                 "The `rope_parameters` is None. "
                 "Please specify it during the creation of the LednikConfig."
             )
-        self.max_seqlen_cached = config.max_position_embeddings
+        self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seqlen = config.max_position_embeddings
         self.config = config
-        self.rope_type = self.config.rope_parameters["rope_type"]
+        self.rope_type = config.rope_parameters["rope_type"]
 
         rope_init_fn = (
             ROPE_INIT_FUNCTIONS[self.rope_type]  # type: ignore
@@ -100,11 +101,13 @@ class LednikRotaryEmbedding(nn.Module):
                 )
             dim = config.hidden_size // config.num_attention_heads
 
-        base = config.rope_parameters["rope_theta"]
+        rope_parameters = cast(RopeParameters, config.rope_parameters)
+        base = rope_parameters["rope_theta"]
         if base is None:
             raise ValueError(
                 "`rope_theta` must be specified in `rope_parameters` for default RoPE."
             )
+
         inv_freq = 1.0 / (
             base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim)
         )
@@ -136,7 +139,7 @@ class LednikRotaryEmbedding(nn.Module):
         return cos.to(x.dtype), sin.to(x.dtype)
 
     def extra_repr(self) -> str:  # noqa: D102
-        return f"rope_type={self.rope_type}, max_seqlen_cached={self.max_seqlen_cached}, theta={self.config.rope_parameters['rope_theta']}"
+        return f"rope_type={self.rope_type}, max_seq_len_cached={self.max_seq_len_cached}, theta={self.config.rope_parameters['rope_theta']}"  # type: ignore
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -235,7 +238,7 @@ class RotaryEmbUnpad(torch.autograd.Function):
         ctx: torch.autograd.function.Function,
         dq_rotated: torch.Tensor,
         dk_rotated: torch.Tensor,
-    ) -> Any:
+    ) -> Any:  # ty:ignore[invalid-method-override]
         """Backward pass for rotary embedding on unpadded sequences."""
         dqk_rotated = torch.cat((dq_rotated, dk_rotated), dim=1).contiguous()
         cos, sin, cu_seqlens = cast(
@@ -565,8 +568,11 @@ class LednikPreTrainedModel(
         "attentions": LednikAttention,
     }
 
-    def _check_and_adjust_attn_implementation(  # type: ignore[override]
-        self, attn_implementation: str | None, is_init_check: bool = False
+    def _check_and_adjust_attn_implementation(
+        self,
+        attn_implementation: str | None,
+        is_init_check: bool = False,
+        allow_all_kernels: bool = False,
     ) -> str:
         if attn_implementation is None:
             with contextlib.suppress(ValueError, ImportError):
@@ -576,7 +582,7 @@ class LednikPreTrainedModel(
                     else None
                 )
         return super()._check_and_adjust_attn_implementation(
-            attn_implementation, is_init_check
+            attn_implementation, is_init_check, allow_all_kernels
         )
 
 
@@ -786,13 +792,6 @@ class LednikModel(LednikPreTrainedModel):
         new_embeddings = new_embeddings.clone()  # use clone() to avoid weight tying
         if isinstance(new_embeddings, torch.Tensor):
             new_embeddings = nn.Parameter(new_embeddings)
-
-        new_embeddings = new_embeddings.to(
-            device=self.embeddings.emb.weight.device,
-            dtype=self.embeddings.emb.weight.dtype,
-        )
-        new_embeddings.requires_grad_(self.embeddings.emb.weight.requires_grad)
-
         self.embeddings.emb.weight = new_embeddings
         return
 
@@ -969,7 +968,7 @@ class LednikModel(LednikPreTrainedModel):
                 batch_size,
                 padding_value=0,
             )
-        return BaseModelOutput(last_hidden_state=hidden_state)
+        return BaseModelOutput(last_hidden_state=hidden_state)  # ty:ignore[invalid-argument-type]
 
     def _warn_if_output_attentions_and_flash_attn(
         self,
