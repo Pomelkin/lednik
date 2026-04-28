@@ -33,7 +33,6 @@ class LLMTextGenerator:
         self,
         api_url: str,
         key: str = "abc",
-        callbacks: list[Callback] | None = None,
     ) -> None:
         """
         Initializes LLMTextGenerator.
@@ -52,7 +51,6 @@ class LLMTextGenerator:
         )
         self.global_step = 0
         self.results: list[dict[str, str]] = []
-        self.callbacks = callbacks
         return
 
     def _generate_prompt_iterator(
@@ -74,15 +72,15 @@ class LLMTextGenerator:
         model_name: str,
         max_tokens: int,
         top_p: float,
-        top_k: int,
         temperature: float,
         prompt: str,
         data_id: str,
         system_prompt: str | None = None,
     ) -> GenerationResult:
-        messages = [{"role": "user", "content": prompt}]
+        messages = []
         if system_prompt is not None:
-            messages.insert(0, {"role": "system", "content": system_prompt})
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
 
         response = self.client.chat.completions.create(  # type: ignore
             model=model_name,
@@ -90,7 +88,6 @@ class LLMTextGenerator:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            top_k=top_k,
         )
         result = GenerationResult(
             data_id=data_id, prompt=prompt, response=response.choices[0].message.content
@@ -115,11 +112,11 @@ class LLMTextGenerator:
         prompt_template: str,
         system_prompt: str | None = None,
         top_p: float = 0.8,
-        top_k: int = 40,
         temperature: float = 1.0,
         max_tokens: int = 1024,
         response_postprocessor_fn: Callable[[GenerationResult], dict[str, str]]
         | None = None,
+        callbacks: list[Callback] | None = None,
     ) -> pl.DataFrame:
         """
         Runs the generation loop over all rows of a DataFrame.
@@ -139,12 +136,12 @@ class LLMTextGenerator:
                 interpolated by column name, e.g. ``"{headline} {body}"``.
             system_prompt: Optional system message prepended to every request.
             top_p: Nucleus sampling probability threshold. Defaults to ``0.8``.
-            top_k: Top-k sampling cutoff. Defaults to ``40``.
             temperature: Sampling temperature. Defaults to ``1.0``.
             max_tokens: Maximum number of tokens to generate per response.
                 Defaults to ``1024``.
             response_postprocessor_fn: Optional function applied to each raw
                 ``{prompt, response}`` dict before it is stored in results.
+            callbacks: Optional list of callbacks invoked after each generation step and at the end of the generation loop.
 
         Returns:
             A DataFrame with generated responses.
@@ -152,6 +149,8 @@ class LLMTextGenerator:
         """
         if batch_size < 1:
             raise ValueError("`batch_size` must be at least 1")
+
+        self._setup_callbacks(callbacks=callbacks)
 
         self.results = []
         self.global_step = 0
@@ -186,7 +185,6 @@ class LLMTextGenerator:
                         model_name=model_name,
                         max_tokens=max_tokens,
                         top_p=top_p,
-                        top_k=top_k,
                         temperature=temperature,
                         prompt=prompt,
                         system_prompt=system_prompt,
@@ -224,28 +222,38 @@ class LLMTextGenerator:
                 if len(task_to_remove) > 0:
                     self.global_step += len(task_to_remove)
                     pg.update(len(task_to_remove))
-                    self._run_callbacks(method_name="on_step")
+                    self._run_callbacks(callbacks=callbacks, method_name="on_step")
 
-        self._run_callbacks(method_name="on_end")
+        self._run_callbacks(callbacks=callbacks, method_name="on_end")
         pg.close()
-        return self._build_dataframe()
+        return self._build_dataframe(callbacks=callbacks)
+
+    def _setup_callbacks(self, callbacks: list[Callback] | None) -> None:
+        if callbacks is not None:
+            for callback in callbacks:
+                callback.setup()
+        return
 
     def _run_callbacks(
         self,
+        callbacks: list[Callback] | None,
         method_name: Literal["on_step", "on_end"],
     ) -> None:
-        if self.callbacks is not None:
-            for callback in self.callbacks:
+        if callbacks is not None:
+            for callback in callbacks:
                 if method_name == "on_step":
                     callback.on_step(self.results, self.global_step)
                 else:
                     callback.on_end(self.results)
         return
 
-    def _build_dataframe(self) -> pl.DataFrame:
+    def _build_dataframe(
+        self,
+        callbacks: list[Callback] | None,
+    ) -> pl.DataFrame:
         checkpoint_callback = None
-        if self.callbacks is not None:
-            for callback in self.callbacks:
+        if callbacks is not None:
+            for callback in callbacks:
                 if isinstance(callback, CheckpointCallback):
                     checkpoint_callback = callback
                     break

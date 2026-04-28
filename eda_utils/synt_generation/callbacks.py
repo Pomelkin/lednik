@@ -15,6 +15,10 @@ logger = setup_logger()
 class Callback:
     """Abstract base class for callbacks to be used during the generation process."""
 
+    def setup(self) -> None:
+        """Called once before the generation loop starts. Can be used for setup tasks."""
+        pass
+
     def on_step(self, results: list[dict[str, str]], step: int) -> None:
         """Called after each generation step."""
         pass
@@ -66,10 +70,10 @@ class CheckpointCallback(Callback):
         self.ckpt_name = ckpt_name
 
         self._last_save_step = 0
-        self._setup()
         return
 
-    def _setup(self) -> None:
+    @override
+    def setup(self) -> None:
         # Ensure directory exists before building DirLock, as DirLock requires an existing path.
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -80,7 +84,7 @@ class CheckpointCallback(Callback):
                         self.checkpoint_dir.glob(f"*{self.ckpt_name}*_ckpt.parquet")
                     )
                     if len(files) > 0:
-                        self.prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        self.prefix = datetime.now().strftime("%Y|%m|%d_%H|%M|%S.")
                         logger.warning(
                             f"Found {len(files)} existing checkpoints with name {self.ckpt_name} in checkpoint directory {self.checkpoint_dir}.\n"
                             f"Prefix {self.prefix} will be added to all checkpoints filenames."
@@ -98,7 +102,7 @@ class CheckpointCallback(Callback):
         prefix = ""
         if self.ckpt_name is not None:
             prefix += f"{self.ckpt_name}_"
-        if self.prefix:
+        if self.prefix is not None:
             prefix += f"{self.prefix}_"
         return prefix
 
