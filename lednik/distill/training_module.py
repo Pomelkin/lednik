@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any
 from typing import Literal
@@ -50,6 +48,7 @@ from lednik.dist_utils import select_wrap_policy
 from lednik.distill.configs import DirectDistillationConfig
 from lednik.distill.configs import DistillationConfig
 from lednik.distill.validation import EvaluationDispatcher
+from lednik.distill.validation import RedisConfig
 from lednik.distill.validation import ValidationContract
 from lednik.emb_utils import get_sentence_embedding
 from lednik.models import LednikModel
@@ -87,6 +86,13 @@ class _EvalResult:
         return
 
 
+def _get_special_tokens_ids(
+    tokenizer: SentencePieceBackend | TokenizersBackend,
+) -> list[int]:
+    special_tokens = tokenizer.special_tokens_map.values()
+    return [tokenizer.convert_tokens_to_ids(token) for token in special_tokens]  # type: ignore
+
+
 class DistillationModule(KostylLightningModule):
     """A PyTorch Lightning module for fine-tuning a static embeddings model via knowledge distillation."""
 
@@ -94,9 +100,10 @@ class DistillationModule(KostylLightningModule):
         self,
         teacher: PreTrainedModel,
         student: StaticEmbeddingsModel | LednikModel,
+        tokenizer: SentencePieceBackend | TokenizersBackend | PreTrainedTokenizerBase,
         train_cfg: DistillationConfig,
         strategy_config: SUPPORTED_STRATEGIES,
-        tokenizer: SentencePieceBackend | TokenizersBackend | PreTrainedTokenizerBase,
+        redis_config: RedisConfig | None = None,
         task: Task | None = None,
         num_labels: int | None = None,
     ) -> None:
@@ -113,6 +120,7 @@ class DistillationModule(KostylLightningModule):
             num_labels : Number of classification labels for KNN evaluation metrics.
                 If provided, enables KNN-based evaluation during validation.
                 If None, KNN metrics are disabled.
+            redis_config : Configuration for Redis-based evaluation dispatching (optional).
 
         """
         super().__init__()
@@ -120,16 +128,17 @@ class DistillationModule(KostylLightningModule):
         self.student = student
         self.register_buffer(
             "spec_tok_buff",
-            torch.tensor(list(tokenizer.special_tokens_map.values()), dtype=torch.long),
+            torch.tensor(_get_special_tokens_ids(tokenizer), dtype=torch.long),  # type: ignore
             persistent=False,
         )
+
         (
             self.student_to_teacher_proj,
             self.direct_loss,
         ) = self._init_direct(
             train_cfg.distillation_method,
             teacher_hidden_size=teacher.config.hidden_size,
-            student_hidden_size=self.student.config.hidden_size,
+            student_hidden_size=student.config.hidden_size,
             device=student.device,
             dtype=student.dtype,
         )
@@ -142,8 +151,8 @@ class DistillationModule(KostylLightningModule):
         self.task = task
 
         self.evaluation_dispatcher = (
-            EvaluationDispatcher(redis_config=DistillationConfig.redis)
-            if DistillationConfig.redis is not None
+            EvaluationDispatcher(redis_config=redis_config)
+            if redis_config is not None
             else None
         )
 
@@ -286,6 +295,16 @@ class DistillationModule(KostylLightningModule):
 
     @property
     @override
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
+
+    @property
+    @override
+    def dtype(self) -> torch.dtype:  # pyrefly: ignore
+        return next(self.parameters()).dtype
+
+    @property
+    @override
     def model_instance(self) -> PreTrainedModel | nn.Module:
         """Returns the underlying model."""
         return self.student
@@ -387,7 +406,7 @@ class DistillationModule(KostylLightningModule):
             model=self,
             lr=self.train_cfg.lr.base_value,
             weight_decay=self.train_cfg.weight_decay.base_value,
-            no_decay_keywords={"emb"},
+            no_decay_keywords={"emb", "token_pos_weights"},
         )
 
         optim = create_optimizer(
@@ -422,7 +441,7 @@ class DistillationModule(KostylLightningModule):
         else:
             scheduler = CompositeScheduler(optimizer=optim, **schedulers)
 
-        return {  # pyrefly: ignore[bad-return]
+        return {  # pyrefly: ignore
             "optimizer": optim,
             "lr_scheduler": {
                 "scheduler": scheduler,
@@ -432,7 +451,7 @@ class DistillationModule(KostylLightningModule):
         }
 
     @override
-    def lr_scheduler_step(  # pyrefly: ignore[bad-override]
+    def lr_scheduler_step(  # pyrefly: ignore
         self,
         scheduler: BaseScheduler,
         metric: Any | None,
@@ -466,7 +485,6 @@ class DistillationModule(KostylLightningModule):
             student_output: StaticEmbeddingsOutput = self.student(
                 input_ids,
                 attention_mask,
-                apply_token_weights=False,
             )
             student_embeddings = student_output.token_embeddings
             student_sentence_embeddings = student_output.sentence_embeddings
@@ -497,14 +515,7 @@ class DistillationModule(KostylLightningModule):
         self,
         flat_student_embeddings: torch.Tensor,  # [b*seq_len, dim]
         flat_teacher_embeddings: torch.Tensor,  # [b*seq_len, dim]
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.direct_loss is None or self.student_to_teacher_proj is None:
-            raise ValueError(
-                "Direct distillation step called but direct loss or "
-                "student to teacher projection is not initialized"
-            )
-
-        flat_student_embeddings = self.student_to_teacher_proj(flat_student_embeddings)
+    ) -> torch.Tensor:
         if isinstance(self.direct_loss, nn.CosineEmbeddingLoss):
             loss = self.direct_loss(
                 flat_student_embeddings,
@@ -520,7 +531,7 @@ class DistillationModule(KostylLightningModule):
             raise ValueError(
                 f"Unsupported loss: {type(self.direct_loss.__class__.__name__)}"
             )
-        return loss, flat_teacher_embeddings, flat_student_embeddings
+        return loss
 
     def _calculate_contrastive_loss(
         self,
@@ -528,6 +539,7 @@ class DistillationModule(KostylLightningModule):
         temp: float,
         queries_mask: torch.Tensor,
         pos_mask: torch.Tensor,
+        neg_mask: torch.Tensor,
     ) -> torch.Tensor:
         sentence_embeddings = sentence_embeddings / sentence_embeddings.norm(
             p=2, dim=-1, keepdim=True
@@ -535,24 +547,30 @@ class DistillationModule(KostylLightningModule):
 
         queries_emb = sentence_embeddings[queries_mask]
         pos_emb = sentence_embeddings[pos_mask]
-
-        if queries_emb.size != pos_emb.size():
+        neg_emb = sentence_embeddings[neg_mask]
+        if queries_emb.size() != pos_emb.size():
             raise ValueError(
                 f"Anchors and positives have different sizes. Found {queries_emb.size()} and {pos_emb.size()} respectively."
             )
 
-        bsz_queries = queries_emb.size(0)
-        bsz_positives = pos_emb.size(0)
         if dist.is_initialized():
             rank = dist.get_rank(group=self._data_parallel_group)
-            global_anchors, global_positives, _ = GatherSentenceEmbeddings.apply(  #  type: ignore
-                anchors=queries_emb, positives=pos_emb, group=self._data_parallel_group
+            global_anchors, global_positives, global_negatives = (
+                GatherSentenceEmbeddings.apply(  #  type: ignore
+                    anchors=queries_emb,
+                    positives=pos_emb,
+                    negatives=neg_emb,
+                    group=self._data_parallel_group,
+                )
             )
         else:
             rank = 0
             global_anchors = queries_emb
             global_positives = pos_emb
+            global_negatives = neg_emb
 
+        bsz_queries = queries_emb.size(0)
+        bsz_positives = pos_emb.size(0)
         local_anchors = global_anchors[rank * bsz_queries : (rank + 1) * bsz_queries]
         local_positives = global_positives[
             rank * bsz_positives : (rank + 1) * bsz_positives
@@ -564,7 +582,11 @@ class DistillationModule(KostylLightningModule):
             device=local_anchors.device,
         )
 
-        anchor2pos_sim = local_anchors @ global_positives.T / temp
+        anchor2pos_sim = (
+            local_anchors
+            @ torch.cat((global_positives, global_negatives), dim=0).T
+            / temp
+        )
         pos2achors_sim = local_positives @ global_anchors.T / temp
 
         anchor2pos_loss = F.cross_entropy(anchor2pos_sim, targets, reduction="mean")
@@ -576,15 +598,24 @@ class DistillationModule(KostylLightningModule):
         """Performs a single training step for knowledge distillation."""
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
-        if isinstance(self.student, StaticEmbeddingsModel):
-            special_tokens_mask = torch.isin(  # Exclude spec tokens (POS, BOS, EOS, CLS and etc) from processing because they are static (cannot be sentence invariant)
-                input_ids, cast(torch.Tensor, self.spec_tok_buff), invert=True
-            ).to(device=attention_mask.device, dtype=attention_mask.dtype)
-            student_attention_mask = attention_mask * special_tokens_mask
-        else:
-            student_attention_mask = attention_mask
+        non_special_tokens_mask = torch.isin(
+            input_ids, cast(torch.Tensor, self.spec_tok_buff), invert=True
+        ).to(device=attention_mask.device)
 
+        # Keep special tokens in the student's forward + pooling, but exclude them from
+        # token-level distillation to avoid biasing towards service tokens.
+        per_token_loss_mask = attention_mask * non_special_tokens_mask.long()
+
+        # if student is static embeddings model,
+        # we need to exclude special tokens from sentence embedding (we use mask for pooling in forward)
+        # because they are static (cannot be sentence-dependent) and would degrade the quality of sentence embeddings.
+        student_attention_mask = (
+            attention_mask
+            if not isinstance(self.student, StaticEmbeddingsModel)
+            else per_token_loss_mask
+        )
         teacher_attention_mask = attention_mask
+
         student_outputs = self._get_student_outputs(
             input_ids=input_ids,
             attention_mask=student_attention_mask,
@@ -593,27 +624,25 @@ class DistillationModule(KostylLightningModule):
             input_ids=input_ids,
             attention_mask=teacher_attention_mask,
         )
-        student_embeddings = student_outputs["student_embeddings"]
-        teacher_embeddings = teacher_outputs["teacher_embeddings"]
-
-        mask = student_attention_mask.flatten() != 0
-
-        bs, seqlen, *_ = student_embeddings.size()
-        student_embeddings = student_embeddings.view(bs * seqlen, -1)[mask]
-        teacher_embeddings = teacher_embeddings.view(bs * seqlen, -1)[mask]
 
         contrastive_weight = self.distill_method_cfg.contrastive_loss_weight
         if contrastive_weight < 1.0:
-            per_token_loss, flat_teacher_embeddings, flat_student_embeddings = (
-                self._calculate_per_token_similarity_loss(
-                    flat_student_embeddings=student_embeddings,
-                    flat_teacher_embeddings=teacher_embeddings,
-                )
+            student_embeddings = student_outputs["student_embeddings"]
+            teacher_embeddings = teacher_outputs["teacher_embeddings"]
+
+            student_embeddings = self.student_to_teacher_proj(
+                student_embeddings[per_token_loss_mask != 0]
+            )
+            teacher_embeddings = teacher_embeddings[per_token_loss_mask != 0]
+
+            per_token_loss = self._calculate_per_token_similarity_loss(
+                flat_student_embeddings=student_embeddings,
+                flat_teacher_embeddings=teacher_embeddings,
             )
         else:
-            flat_teacher_embeddings = None
-            flat_student_embeddings = None
-            per_token_loss = student_embeddings.new_tensor(0.0)
+            student_embeddings = None
+            teacher_embeddings = None
+            per_token_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
 
         if contrastive_weight > 0.0:
             temp = self.distill_method_cfg.temperature
@@ -624,10 +653,11 @@ class DistillationModule(KostylLightningModule):
                 sentence_embeddings=student_outputs["student_sentence_embeddings"],
                 queries_mask=batch["queries_mask"],
                 pos_mask=batch["positives_mask"],
+                neg_mask=batch["negatives_mask"],
                 temp=temp,
             )
         else:
-            contrastive_loss = student_embeddings.new_tensor(0.0)
+            contrastive_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
 
         loss = (
             contrastive_weight * contrastive_loss
@@ -638,8 +668,8 @@ class DistillationModule(KostylLightningModule):
             loss=loss,
             contrastive_loss=contrastive_loss,
             per_token_loss=per_token_loss,
-            teacher_embeddings=flat_teacher_embeddings,
-            student_embeddings=flat_student_embeddings,
+            teacher_embeddings=teacher_embeddings,
+            student_embeddings=student_embeddings,
             student_sentence_embeddings=student_outputs["student_sentence_embeddings"],
             teacher_sentence_embeddings=teacher_outputs["teacher_sentence_embeddings"],
         )
@@ -794,11 +824,11 @@ class DistillationModule(KostylLightningModule):
             contract = ValidationContract(
                 task_id=self.task.id,
                 current_step=self.global_step,
-                teacher_embeddings=teacher_embeddings.cpu(),
-                student_embeddings=student_embeddings.cpu(),
-                labels=labels.cpu(),
-                queries_mask=queries_mask.cpu(),
-                pos_mask=pos_mask.cpu(),
+                teacher_embeddings=teacher_embeddings,
+                student_embeddings=student_embeddings,
+                labels=labels,
+                queries_mask=queries_mask,
+                pos_mask=pos_mask,
                 num_classes=self.num_labels,
             )
             self.evaluation_dispatcher.dispatch(contract=contract)

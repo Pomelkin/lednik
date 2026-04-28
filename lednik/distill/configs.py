@@ -9,8 +9,6 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
 
-from lednik.distill.validation import RedisConfig
-
 
 logger = setup_logger(fmt="only_message")
 
@@ -50,4 +48,3 @@ class DistillationConfig(HyperparamsConfig):
     optimizer: OPTIMIZER_CONFIG
     lr: Lr
     weight_decay: WeightDecay
-    redis: RedisConfig | None = None

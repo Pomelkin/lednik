@@ -231,6 +231,7 @@ class GatherSentenceEmbeddings(torch.autograd.Function):
             "negatives": negatives,
         }
         global_embeddings: dict[str, torch.Tensor | None] = {}
+
         handlers: list[dist.Work] = []
         for name, local_emb in local_embeddings.items():
             if local_emb is None:
@@ -266,16 +267,17 @@ class GatherSentenceEmbeddings(torch.autograd.Function):
         group: dist.ProcessGroup | None = ctx.group  # type: ignore
         world_size: int = ctx.world_size  # type: ignore
 
-        global_grads = {
+        local_grads = {
             "anchors": danc,
             "positives": dpos,
             "negatives": dneg,
         }
-        local_grads: dict[str, torch.Tensor | None] = {}
+        rank_grads: dict[str, torch.Tensor | None] = {}
+
         handlers: list[dist.Work] = []
-        for name, global_grad in global_grads.items():
+        for name, global_grad in local_grads.items():
             if global_grad is None:
-                local_grads[name] = None
+                rank_grads[name] = None
                 continue
 
             bsz_world, *shapes = global_grad.shape
@@ -288,13 +290,13 @@ class GatherSentenceEmbeddings(torch.autograd.Function):
                 async_op=True,
             )
             handlers.append(handler)  # type: ignore
-            local_grads[name] = local_grad_buff
+            rank_grads[name] = local_grad_buff
 
         for handler in handlers:
             handler.wait()
         return (  # type: ignore
-            local_grads["anchors"],
-            local_grads["positives"],
-            local_grads["negatives"],
+            rank_grads["anchors"],
+            rank_grads["positives"],
+            rank_grads["negatives"],
             None,
         )
