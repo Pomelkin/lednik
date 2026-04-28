@@ -220,3 +220,5 @@ datasets/
 runs/
 checkpoints/
 redis_*
+/synthetic-checkpoints/
+/configs/worker_config.yaml

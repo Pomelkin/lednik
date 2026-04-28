@@ -42,12 +42,11 @@ distill = [
   "pacmap>=0.9.1",
   "plotly>=6.5.0",
   "qdrant-client>=1.17.1",
+  "redis>=7.4.0",
   "tensorboard>=2.20.0",
   "torchmetrics>=1.8.2",
 ]
-logprob-woker = [
-    "redis>=7.4.0",
-]
+logprob-woker = []
 serving = ["click>=8.3.1", "litserve>=0.2.16", "rich>=14.2.0"]
 validation = [
     "pydantic>=2.13.0",
