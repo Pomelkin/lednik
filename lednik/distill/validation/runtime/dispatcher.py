@@ -1,9 +1,9 @@
 from kostyl.utils import setup_logger
 from redis import Redis
 
-from .configs import RedisConfig
-from .contracts import ValidationContract
-from .runner import EvaluationRunner
+from lednik.distill.validation.structs import RedisConfig
+from lednik.distill.validation.structs import ValidationContract
+from lednik.distill.validation.runtime.runner import EvaluationRunner
 
 
 logger = setup_logger(fmt="only_message")
@@ -27,7 +27,10 @@ class EvaluationDispatcher:
             )
         if redis_config is not None:
             client = Redis(
-                host=redis_config.host, port=redis_config.port, decode_responses=False
+                host=redis_config.host,
+                port=redis_config.port,
+                decode_responses=False,
+                password=redis_config.password,
             )
             stream_name = redis_config.stream_name
 
@@ -67,7 +70,7 @@ class EvaluationDispatcher:
                 )
                 return
             except Exception as e:
-                logger.warning_once(
+                logger.warning(
                     f"Failed to dispatch validation contract to Redis: {e}"
                     "Evaluation will be executed locally."
                 )

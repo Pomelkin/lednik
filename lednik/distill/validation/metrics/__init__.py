@@ -1,6 +1,6 @@
 from .knn import calculate_self_exc_knn_metrics
 from .logreg import calculate_logreg_metrics
-from .mmr import calculate_mrr
+from .mrr import calculate_mrr
 
 
 __all__ = [

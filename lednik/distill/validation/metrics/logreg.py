@@ -14,8 +14,8 @@ from torch.utils.data import TensorDataset
 from torchmetrics.functional import accuracy
 from torchmetrics.functional import f1_score
 
-from lednik.distill.validation.configs import LogRegConfig
-from lednik.distill.validation.generic import stratified_split
+from lednik.distill.validation.structs import LogRegConfig
+from lednik.distill.validation.utils import stratified_split
 
 
 logger = setup_logger()
@@ -40,7 +40,7 @@ class LogisticRegression(nn.Module):
         weight_decay: float = 0.01,
         solver: Literal["LBFGS", "Muon", "Adam"] = "LBFGS",
         tol: float = 1e-4,
-        batch_size: int | None = None,
+        batch_size: int = -1,
         total_steps: int = 1000,
     ) -> None:
         """
@@ -53,7 +53,7 @@ class LogisticRegression(nn.Module):
             weight_decay (float, optional): L2 regularization penalty. Defaults to 0.01.
             solver (Literal["LBFGS", "Muon", "Adam"], optional): Optimizer to use. Defaults to "LBFGS".
             tol (float, optional): Tolerance for early stopping based on loss difference. Defaults to 1e-4.
-            batch_size (int | None, optional): Batch size for training. If None, uses full-batch training. Defaults to None.
+            batch_size (int, optional): Batch size for training. If -1, uses full-batch training. Defaults to -1.
             total_steps (int, optional): Maximum number of training steps. Defaults to 1000.
         """
         super().__init__()
@@ -63,11 +63,11 @@ class LogisticRegression(nn.Module):
         if num_classes == 2:
             num_classes = 1  # Binary classification can be handled with a single output
 
-        if batch_size is not None and solver == "LBFGS":
+        if batch_size not in (None, -1) and solver == "LBFGS":
             logger.warning(
                 "LBFGS solver does not support mini-batch training. Ignoring batch_size and using full-batch instead."
             )
-            batch_size = None
+            batch_size = -1
 
         self.weight = nn.Parameter(torch.empty(num_features, num_classes))
         self.bias = nn.Parameter(torch.empty(1, num_classes))
@@ -97,9 +97,12 @@ class LogisticRegression(nn.Module):
         """Returns the data type of the model parameters."""
         return next(self.parameters()).dtype
 
-    def _select_optimal_device_and_dtype(self) -> None:
+    def _select_optimal_device(self) -> torch.device:
         """Moves the model to the optimal device and data type for training."""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return device
+
+    def _select_dtype(self, device: torch.device) -> torch.dtype:
         dtype = (
             torch.bfloat16
             if device.type == "cuda"
@@ -107,8 +110,7 @@ class LogisticRegression(nn.Module):
             and self.solver != "LBFGS"
             else torch.float32
         )
-        self.to(device=device, dtype=dtype, non_blocking=True)
-        return
+        return dtype
 
     @torch.no_grad()
     def forward(  # noqa: D102
@@ -160,10 +162,25 @@ class LogisticRegression(nn.Module):
             loss = None
         return LogRegOutput(logits=logits, loss=loss)
 
-    def fit(self, inputs: Tensor, labels: Tensor, log_step: int | None = None) -> None:
+    def fit(  # noqa: C901
+        self,
+        inputs: Tensor,
+        labels: Tensor,
+        log_step: int | None = None,
+        device: str = "auto",
+    ) -> None:
         """Trains the logistic regression model using the specified optimization algorithm."""
-        self._select_optimal_device_and_dtype()
-        self.train()
+        if inputs.shape[0] != labels.shape[0]:
+            raise ValueError(
+                "Number of inputs must match number of labels."
+                f" Got {inputs.shape[0]} inputs and {labels.shape[0]} labels."
+            )
+
+        device = (
+            self._select_optimal_device() if device == "auto" else torch.device(device)  # type: ignore
+        )
+        dtype = self._select_dtype(device)  # type: ignore
+        self.to(device=device, dtype=dtype).train()
 
         match self.solver:
             case "LBFGS":
@@ -183,13 +200,8 @@ class LogisticRegression(nn.Module):
 
         loss_weights = loss_weights.to(dtype=self.dtype, device=self.device)
 
-        if self.batch_size is None or self.batch_size >= inputs.size(0):
-            dataloader = [
-                (
-                    inputs.to(self.device, self.dtype, non_blocking=True),
-                    labels.to(self.device, dtype=torch.long, non_blocking=True),
-                )
-            ]
+        if self.batch_size == -1 or self.batch_size >= inputs.size(0):
+            dataloader = [(inputs, labels)]
         else:
             dataset = TensorDataset(inputs, labels)
             dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
@@ -226,10 +238,16 @@ class LogisticRegression(nn.Module):
                 step += 1
         return
 
-    def score(self, inputs: Tensor, labels: Tensor) -> dict[str, float]:
+    def score(
+        self, inputs: Tensor, labels: Tensor, device: str = "auto"
+    ) -> dict[str, float]:
         """Evaluates the model on the given inputs and labels, returning F1 score and accuracy."""
-        self._select_optimal_device_and_dtype()
-        self.eval()
+        device = (
+            self._select_optimal_device() if device == "auto" else torch.device(device)  # type: ignore
+        )
+        dtype = self._select_dtype(device)  # type: ignore
+        self.to(device=device, dtype=dtype).eval()
+
         inputs = inputs.to(self.device, self.dtype, non_blocking=True)
         labels = labels.to(self.device, dtype=torch.long, non_blocking=True)
 
@@ -263,6 +281,7 @@ def calculate_logreg_metrics(
     logreg_config: LogRegConfig,
     num_classes: int,
     log_step: int | None = None,
+    device: str = "auto",
 ) -> dict[str, float]:
     """
     Train a logistic regression probe and compute classification metrics.
@@ -278,6 +297,7 @@ def calculate_logreg_metrics(
         num_classes: The number of classes for the classification task.
         log_step: Interval at which to log training progress.
             If ``None``, no intermediate logging is performed.
+        device (str, optional): Device to perform computation on; defaults to "auto" for optimal selection.
 
     Returns:
         A dictionary with metric values (currently ``{"F1": ..., "Accuracy": ...}``).
@@ -295,5 +315,5 @@ def calculate_logreg_metrics(
         batch_size=logreg_config.batch_size,
         total_steps=logreg_config.total_steps,
     )
-    logreg.fit(train_inputs, train_labels, log_step=log_step)
-    return logreg.score(test_inputs, test_labels)
+    logreg.fit(train_inputs, train_labels, log_step=log_step, device=device)
+    return logreg.score(test_inputs, test_labels, device=device)

@@ -3,10 +3,20 @@ from torch import Tensor
 from torchmetrics.functional import accuracy
 from torchmetrics.functional import f1_score
 
-from lednik.distill.validation.configs import KNNConfig
+from lednik.distill.validation.structs import KNNConfig
 
 
-@torch.compile(mode="reduce-overhead")
+def _select_knn_chunk_size(batch_size: int, max_buffer_mb: int = 64) -> int:
+    """Selects a row chunk size to cap temporary distance matrix memory usage."""
+    if batch_size <= 0:
+        return 1
+
+    # Assume float32 distance buffer for conservative sizing.
+    bytes_per_distance = torch.tensor([], dtype=torch.float32).element_size()
+    max_distances = (max_buffer_mb * 1024 * 1024) // bytes_per_distance
+    return max(1, min(batch_size, max_distances // batch_size))
+
+
 @torch.no_grad()
 def knn_predict(
     embeddings: torch.Tensor,
@@ -39,43 +49,69 @@ def knn_predict(
     if labels.dim() != 1:
         raise ValueError("Labels must be a 1D tensor.")
     if embeddings.shape[0] != labels.shape[0]:
-        raise ValueError("Number of embeddings must match number of labels.")
+        raise ValueError(
+            "Number of embeddings must match number of labels."
+            f" Got {embeddings.shape[0]} embeddings and {labels.shape[0]} labels."
+        )
 
     if num_labels == 1:
         num_labels = 2  # Ensure at least two labels for bincount
 
-    k_neighbors = min(k_neighbors, embeddings.shape[0] - 1)
     B, _ = embeddings.shape
     predicts = torch.zeros(B, dtype=labels.dtype, device=labels.device)
 
-    distances = (
-        (embeddings.unsqueeze(1) - embeddings.unsqueeze(0)).pow(2).sum(-1).sqrt()
-    )
-    distances.fill_diagonal_(float("inf"))
+    k_neighbors = min(k_neighbors, B - 1)
+    chunk_size = _select_knn_chunk_size(B)
 
-    top_k_neighbors = distances.topk(k_neighbors, largest=False).indices
-    neighbors_labels = labels[top_k_neighbors]
+    for start in range(0, B, chunk_size):
+        end = min(start + chunk_size, B)
+        chunk = embeddings[start:end]
 
-    for i in range(neighbors_labels.size(0)):
-        bincount = neighbors_labels[i].bincount(minlength=num_labels)
-        predicted_label = bincount.argmax()
-        predicts[i] = predicted_label
+        # Compute chunk-to-all distances to avoid materializing a full B x B matrix.
+        chunk_distances = torch.cdist(chunk, embeddings)
+
+        # Exclude self-neighbor only for rows represented in the current chunk.
+        local_rows = torch.arange(end - start, device=embeddings.device)
+        global_cols = torch.arange(start, end, device=embeddings.device)
+        chunk_distances[local_rows, global_cols] = float("inf")
+
+        top_k_neighbors = chunk_distances.topk(k_neighbors, largest=False).indices
+        neighbors_labels = labels[top_k_neighbors].long()
+
+        vote_counts = torch.zeros(
+            (end - start, num_labels), dtype=torch.int32, device=labels.device
+        )
+        vote_counts.scatter_add_(
+            1,
+            neighbors_labels,
+            torch.ones_like(neighbors_labels, dtype=vote_counts.dtype),
+        )
+        predicts[start:end] = vote_counts.argmax(dim=1).to(labels.dtype)
+
     return predicts
 
 
-def _select_optimal_device_and_dtype() -> tuple[torch.device, torch.dtype]:
+def _select_optimal_device() -> torch.device:
     """Moves the model to the optimal device and data type for training."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return device
+
+
+def _select_dtype(device: torch.device) -> torch.dtype:
     dtype = (
         torch.bfloat16
         if device.type == "cuda" and torch.cuda.is_bf16_supported()
         else torch.float32
     )
-    return device, dtype
+    return dtype
 
 
 def calculate_self_exc_knn_metrics(
-    inputs: Tensor, targets: Tensor, knn_config: KNNConfig, num_classes: int
+    inputs: Tensor,
+    targets: Tensor,
+    knn_config: KNNConfig,
+    num_classes: int,
+    device: str = "auto",
 ) -> dict[str, float]:
     """
     Computes self-excluding k-NN F1 and accuracy metrics.
@@ -85,15 +121,16 @@ def calculate_self_exc_knn_metrics(
         targets (Tensor): Ground-truth labels of shape ``(batch_size,)``.
         knn_config (KNNConfig): Configuration for k-NN evaluation.
         num_classes (int): The number of distinct classes in the dataset.
-
+        device (str, optional): Device to perform computation on; defaults to "auto" for optimal selection.
 
     Returns:
         A dictionary with metric values (currently ``{"F1": ..., "Accuracy": ...}``).
     """
-    device, dtype = _select_optimal_device_and_dtype()
+    device = _select_optimal_device() if device == "auto" else torch.device(device)  # type: ignore
+    dtype = _select_dtype(device)  # type: ignore
 
     inputs = inputs.to(device=device, dtype=dtype, non_blocking=True)
-    labels = targets.to(device=device, dtype=dtype, non_blocking=True)
+    labels = targets.to(device=device, non_blocking=True)
 
     predicted_labels = knn_predict(inputs, labels, num_classes, knn_config.k)
 

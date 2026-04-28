@@ -2,8 +2,8 @@ from dataclasses import dataclass
 
 from torch import Tensor
 
-from .generic import bytes_to_tensor
-from .generic import tensor_to_bytes
+from lednik.distill.validation.utils import bytes_to_tensor
+from lednik.distill.validation.utils import tensor_to_bytes
 
 
 @dataclass

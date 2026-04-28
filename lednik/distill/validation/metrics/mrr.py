@@ -9,10 +9,21 @@ from qdrant_client.http.models import QueryResponse
 from qdrant_client.http.models import VectorParams
 from torch import Tensor
 
-from lednik.distill.validation.configs import MRRConfig
+from lednik.distill.validation.structs import MRRConfig
 
 
 logger = setup_logger()
+
+client: QdrantClient | None = None
+
+_QDRANT_UPLOAD_BATCH_SIZE = 64
+_QDRANT_QUERY_BATCH_SIZE = 64
+
+
+def _batched(items: list, batch_size: int) -> list[list]:
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
+    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
 
 
 def _calculate_mrr_for_query(response_uuids: list[str], target_uuid: str) -> float:
@@ -35,7 +46,7 @@ def _extract_uuids_from_points(
     return results
 
 
-def calculate_mrr(
+def calculate_mrr(  # noqa: C901
     queries: Tensor,
     positives: Tensor,
     config: MRRConfig,
@@ -57,8 +68,11 @@ def calculate_mrr(
         Dictionary with a single key "MRR" and float value in range [0.0, 1.0].
         If Qdrant is unavailable, returns {"MRR": 0.0}.
     """
-    queries_list: list[list[float]] = queries.tolist()
-    positives_list: list[list[float]] = positives.tolist()
+    queries_list: list[list[float]] = queries.round(decimals=4).tolist()
+    positives_list: list[list[float]] = positives.round(decimals=4).tolist()
+
+    if len(queries_list) == 0 or len(positives_list) == 0:
+        return {"MRR": 0.0}
 
     id2query = {}
     id2pos = {}
@@ -67,17 +81,20 @@ def calculate_mrr(
         id2query[uuid_] = query_emb
         id2pos[uuid_] = pos_emb
 
-    client = QdrantClient(
-        host=config.qdrant_url,
-        port=config.qdrant_port,
-    )
-    try:
-        client.get_collections()
-    except Exception as e:
-        logger.warning(
-            f"Failed to get collections from Qdrant:\n{e}\nMake sure Qdrant is running and accessible at {config.qdrant_url}:{config.qdrant_port}.\nReturning MRR=0.0."
+    global client
+    if client is None:
+        temp_client = QdrantClient(
+            host=config.qdrant_host,
+            port=config.qdrant_port,
         )
-        return {"MRR": 0.0}
+        try:
+            temp_client.get_collections()
+            client = temp_client
+        except Exception as e:
+            logger.warning(
+                f"Failed to get collections from Qdrant:\n{e}\nMake sure Qdrant is running and accessible at {config.qdrant_host}:{config.qdrant_port}.\nReturning MRR=0.0."
+            )
+            return {"MRR": 0.0}
 
     VECTOR_TYPES = {"query", "pos"}
     VECTOR_SIMILARITY_MAPPING = {"query": "pos", "pos": "query"}
@@ -111,9 +128,14 @@ def calculate_mrr(
         for emb_id, emb in VECTOR_TYPE_TO_VECTOR_MAPPING[emb_type].items():
             point = PointStruct(id=emb_id, vector=emb)
             points.append(point)
-        client.upload_points(
-            collection_name=collection_name, points=points, wait=True, parallel=4
-        )
+
+        for points_batch in _batched(points, _QDRANT_UPLOAD_BATCH_SIZE):
+            client.upload_points(
+                collection_name=collection_name,
+                points=points_batch,
+                wait=True,
+                parallel=1,
+            )
 
     ### Calculate MRR ###
     mrr = 0.0
@@ -123,23 +145,27 @@ def calculate_mrr(
         query_requests = []
         target_ids = []
         for emb_id, emb in uuid_to_vectors.items():
-            request = QueryRequest(query=emb, limit=config.mmr_top_k)
+            request = QueryRequest(query=emb, limit=config.mrr_top_k)
             query_requests.append(request)
             target_ids.append(emb_id)
 
-        query_responses = client.query_batch_points(
-            collection_name=VECTOR_TYPE_TO_COLLECTION_NAME[
-                VECTOR_SIMILARITY_MAPPING[vec_type]
-            ],
-            requests=query_requests,
-        )
-        uuids = _extract_uuids_from_points(query_responses)
-
         mrr_sum = 0.0
 
-        for response_uuids, target_id in zip(uuids, target_ids, strict=True):
-            sample_mrr = _calculate_mrr_for_query(response_uuids, target_id)
-            mrr_sum += sample_mrr
+        for request_batch, target_ids_batch in zip(
+            _batched(query_requests, _QDRANT_QUERY_BATCH_SIZE),
+            _batched(target_ids, _QDRANT_QUERY_BATCH_SIZE),
+            strict=True,
+        ):
+            query_responses = client.query_batch_points(
+                collection_name=VECTOR_TYPE_TO_COLLECTION_NAME[
+                    VECTOR_SIMILARITY_MAPPING[vec_type]
+                ],
+                requests=request_batch,
+            )
+            uuids = _extract_uuids_from_points(query_responses)
+            for response_uuids, target_id in zip(uuids, target_ids_batch, strict=True):
+                sample_mrr = _calculate_mrr_for_query(response_uuids, target_id)
+                mrr_sum += sample_mrr
 
         mrr += mrr_sum / len(target_ids) / len(VECTOR_TYPES)
     return {"MRR": mrr}

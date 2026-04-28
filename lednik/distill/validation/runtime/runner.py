@@ -9,18 +9,20 @@ from kostyl.utils import setup_logger
 from plotly.subplots import make_subplots
 from torch import Tensor
 
-from lednik.distill.validation.configs import KNNConfig
-from lednik.distill.validation.configs import LogRegConfig
+from lednik.distill.validation.structs import KNNConfig
+from lednik.distill.validation.structs import LogRegConfig
 
-from .configs import EvaluationRunnerConfig
-from .configs import MRRConfig
-from .contracts import ValidationContract
-from .metrics import calculate_logreg_metrics
-from .metrics import calculate_mrr
-from .metrics import calculate_self_exc_knn_metrics
+from lednik.distill.validation.structs import EvaluationRunnerConfig
+from lednik.distill.validation.structs import MRRConfig
+from lednik.distill.validation.structs import ValidationContract
+from lednik.distill.validation.metrics import calculate_logreg_metrics
+from lednik.distill.validation.metrics import calculate_mrr
+from lednik.distill.validation.metrics import calculate_self_exc_knn_metrics
 
 
 logger = setup_logger(fmt="only_message")
+
+_MAX_PLOTLY_POINTS = 500
 
 
 class EvaluationRunner:
@@ -38,6 +40,7 @@ class EvaluationRunner:
 
         self.teacher_knn_results: dict[str, float] = {}
         self.teacher_logprob_results: dict[str, float] = {}
+        self.teacher_mrr_results: dict[str, float] = {}
         self.teacher_2d_embeddings: np.ndarray | None = None
         self.task: Task | None = None
         return
@@ -69,31 +72,30 @@ class EvaluationRunner:
         num_labels = validation_contract.num_classes
         labels = validation_contract.labels
 
+        student_queries = student_embeddings[queries_mask]
+        teacher_queries = teacher_embeddings[queries_mask]
         if self.config.mrr_config is not None:
-            queries_emb = student_embeddings[queries_mask]
-            pos_emb = student_embeddings[pos_mask]
+            student_positives = student_embeddings[pos_mask]
+            teacher_positives = teacher_embeddings[pos_mask]
             self._log_mrr(
                 task=task,
                 step=step,
-                queries=queries_emb,
-                positives=pos_emb,
+                student_queries=student_queries,
+                student_positives=student_positives,
+                teacher_queries=teacher_queries,
+                teacher_positives=teacher_positives,
                 mrr_config=self.config.mrr_config,
             )
 
         if num_labels > 0:
-            teacher_embeddings_np = (
-                teacher_embeddings[: self.config.scatter_num_points]
-                .float()
-                .cpu()
-                .numpy()
-            )
-            student_embeddings_np = (
-                student_embeddings[: self.config.scatter_num_points]
-                .float()
-                .cpu()
-                .numpy()
-            )
-            labels_np = labels[: self.config.scatter_num_points].float().cpu().numpy()
+            max_points = min(self.config.scatter_num_points, _MAX_PLOTLY_POINTS)
+            teacher_scatter = teacher_queries[:max_points]
+            student_scatter = student_queries[:max_points]
+            labels_scatter = labels[:max_points]
+
+            teacher_embeddings_np = teacher_scatter.cpu().float().numpy()
+            student_embeddings_np = student_scatter.cpu().float().numpy()
+            labels_np = labels_scatter.cpu().numpy()
             self._log_embeddings_scatter(
                 task=task,
                 step=step,
@@ -107,8 +109,8 @@ class EvaluationRunner:
                     task=task,
                     step=step,
                     num_labels=num_labels,
-                    teacher_embeddings=teacher_embeddings,
-                    student_embeddings=student_embeddings,
+                    teacher_embeddings=teacher_queries,
+                    student_embeddings=student_queries,
                     labels=labels,
                     knn_config=self.config.knn_config,
                 )
@@ -116,8 +118,8 @@ class EvaluationRunner:
                 self._log_logprob_metrics(
                     task=task,
                     step=step,
-                    teacher_embeddings=teacher_embeddings,
-                    student_embeddings=student_embeddings,
+                    teacher_embeddings=teacher_queries,
+                    student_embeddings=student_queries,
                     labels=labels,
                     num_classes=num_labels,
                     logreg_config=self.config.logreg_config,
@@ -145,6 +147,11 @@ class EvaluationRunner:
 
         teacher_2d_embeddings = cast(np.ndarray, teacher_2d_embeddings)
         student_2d_embeddings = cast(np.ndarray, student_2d_embeddings)
+
+        # Reduce float precision to keep Plotly JSON small enough for ClearML API limits.
+        teacher_2d_embeddings = np.round(teacher_2d_embeddings.astype(np.float32), 4)
+        student_2d_embeddings = np.round(student_2d_embeddings.astype(np.float32), 4)
+        labels = labels.astype(np.int32, copy=False)
 
         fig = make_subplots(
             rows=1,
@@ -190,12 +197,17 @@ class EvaluationRunner:
         fig.update_xaxes(title_text="dim0", row=1, col=2)
         fig.update_yaxes(title_text="dim1", row=1, col=2)
 
-        task.get_logger().report_plotly(
-            title="Scatter Plots of 2D Embeddings",
-            series="Embeddings Teacher vs Student Scatter",
-            figure=fig,
-            iteration=step,
-        )
+        try:
+            task.get_logger().report_plotly(
+                title="Scatter Plots of 2D Embeddings",
+                series="Embeddings Teacher vs Student Scatter",
+                figure=fig,
+                iteration=step,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to upload scatter plot to ClearML at step {step}: {e}"
+            )
         return
 
     def _log_knn_metrics(
@@ -214,6 +226,7 @@ class EvaluationRunner:
                 targets=labels,
                 knn_config=knn_config,
                 num_classes=num_labels,
+                device=self.config.device,
             )
         teacher_results = self.teacher_knn_results
         student_results = calculate_self_exc_knn_metrics(
@@ -221,6 +234,7 @@ class EvaluationRunner:
             targets=labels,
             knn_config=knn_config,
             num_classes=num_labels,
+            device=self.config.device,
         )
 
         metrics = {
@@ -254,6 +268,7 @@ class EvaluationRunner:
                 targets=labels,
                 logreg_config=logreg_config,
                 num_classes=num_classes,
+                device=self.config.device,
             )
         teacher_logprob_results = self.teacher_logprob_results
         student_logprob_results = calculate_logreg_metrics(
@@ -261,6 +276,7 @@ class EvaluationRunner:
             targets=labels,
             logreg_config=logreg_config,
             num_classes=num_classes,
+            device=self.config.device,
         )
 
         metrics = {
@@ -282,21 +298,33 @@ class EvaluationRunner:
         self,
         task: Task,
         step: int,
-        queries: Tensor,
-        positives: Tensor,
+        teacher_queries: Tensor,
+        teacher_positives: Tensor,
+        student_queries: Tensor,
+        student_positives: Tensor,
         mrr_config: MRRConfig,
     ) -> None:
-        mrr_results = calculate_mrr(
-            queries=queries,
-            positives=positives,
+        if len(self.teacher_mrr_results) == 0:
+            self.teacher_mrr_results = calculate_mrr(
+                queries=teacher_queries,
+                positives=teacher_positives,
+                config=mrr_config,
+            )
+        teacher_mrr = self.teacher_mrr_results["MRR"]
+        student_mrr = calculate_mrr(
+            queries=student_queries,
+            positives=student_positives,
             config=mrr_config,
-        )
-        mrr = mrr_results["MRR"]
+        )["MRR"]
 
-        task.get_logger().report_scalar(
-            title="Retrieval Evaluation",
-            series="MRR",
-            value=mrr,
-            iteration=step,
-        )
+        for key, value in {
+            "Teacher_MRR": teacher_mrr,
+            "Student_MRR": student_mrr,
+        }.items():
+            task.get_logger().report_scalar(
+                title="Retrieval Evaluation",
+                series=key,
+                value=value,
+                iteration=step,
+            )
         return

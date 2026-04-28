@@ -10,14 +10,15 @@ class RedisConfig(BaseModel, ConfigLoadingMixin["RedisConfig"]):
     host: str
     port: int
     stream_name: str
+    password: str
 
 
 class MRRConfig(BaseModel):
     """Configuration for retrieval evaluation."""
 
-    qdrant_url: str
+    qdrant_host: str
     qdrant_port: int
-    mmr_top_k: int
+    mrr_top_k: int
 
 
 class LogRegConfig(BaseModel):
@@ -44,6 +45,7 @@ class EvaluationRunnerConfig(BaseModel, ConfigLoadingMixin["EvaluationRunnerConf
     knn_config: KNNConfig | None = None
     logreg_config: LogRegConfig | None = None
     scatter_num_points: int
+    device: str = "auto"
 
 
 class EvaluationWorkerConfig(BaseModel, ConfigLoadingMixin["EvaluationWorkerConfig"]):
