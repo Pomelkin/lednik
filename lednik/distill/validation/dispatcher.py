@@ -3,7 +3,7 @@ from redis import Redis
 
 from lednik.distill.validation.structs import RedisConfig
 from lednik.distill.validation.structs import ValidationContract
-from lednik.distill.validation.runtime.runner import EvaluationRunner
+from lednik.distill.validation.runner import EvaluationRunner
 
 
 logger = setup_logger(fmt="only_message")
