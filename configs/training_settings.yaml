@@ -20,16 +20,15 @@ trainer:
   accelerator: "cuda"
   max_epochs: 2
   strategy:
-    type: "single_device"
-    # param_dtype: bfloat16
-    # reduce_dtype: float32
-    # buffer_dtype: float32
+    type: "fsdp1"
+    param_dtype: bfloat16
+    reduce_dtype: float32
+    buffer_dtype: bfloat16
   val_check_interval: 0.2
-  devices: 1
+  devices: 4
   precision: bf16-true
   log_every_n_steps: 25
-  limit_train_batches: 3000
-  limit_val_batches: 200
+  limit_val_batches: 1000
 
 early_stopping:
   monitor: "val_loss"
