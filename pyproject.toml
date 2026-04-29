@@ -47,12 +47,6 @@ distill = [
 flash-attn = [
     "flash-attn>=2.8.3",
 ]
-validation = [
-    "pydantic>=2.13.0",
-    "pydantic-settings>=2.13.1",
-    "qdrant-client>=1.17.1",
-    "redis>=7.4.0",
-]
 
 [tool.uv]
 default-groups = ["dev", "distill"]

@@ -1,6 +1,6 @@
 redis:
-  host: pomelka.pro
-  port: 12576
+  host: 127.0.0.1
+  port: 6379
   stream_name: validation_tasks
 
 data:
