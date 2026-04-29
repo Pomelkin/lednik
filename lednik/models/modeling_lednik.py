@@ -13,25 +13,31 @@ from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
 from torch import Tensor
 from torch import nn
+from torch.nn.attention import varlen
 from transformers import PreTrainedModel
 from transformers.integrations import use_kernel_func_from_hub
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutput
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_rope_utils import dynamic_rope_update
-from transformers.utils import is_flash_attn_2_available
+from transformers.utils import is_flash_attn_2_available, is_flash_attn_4_available
 from transformers.utils.generic import is_flash_attention_requested
 from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
 from transformers.modeling_rope_utils import RopeParameters
 
+
 from .configuration_lednik import LednikConfig
 
 
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_varlen_qkvpacked_func
-    from flash_attn.ops.triton.rotary import apply_rotary
+    from flash_attn import flash_attn_varlen_qkvpacked_func  # type: ignore[import]
+    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore[import]
+
+if is_flash_attn_4_available():
+    from flash_attn.cute import flash_attn_varlen_func  # type: ignore[import]
+    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore[import]
 
 logger = setup_logger()
 
@@ -65,6 +71,7 @@ class LednikRotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
         self.attention_scaling = scale
+        self.is_flash_attn = is_flash_attention_requested(config=config)
         return
 
     @staticmethod
@@ -130,10 +137,10 @@ class LednikRotaryEmbedding(nn.Module):
         )
         with maybe_autocast(device_type=device_type, enabled=False):
             pos_freq = position_ids_unsq.float() @ inv_freq_unsq.float()
-            if not is_flash_attention_requested(
-                config=self.config
-            ):  # for fa apply_rotary cos and sin must have last dim eq to head_dim / 2, not head_dim
+
+            if not self.is_flash_attn:  # for fa apply_rotary cos and sin must have last dim eq to head_dim / 2, not head_dim
                 pos_freq = torch.cat([pos_freq, pos_freq], dim=-1)
+
             cos = pos_freq.cos() * self.attention_scaling
             sin = pos_freq.sin() * self.attention_scaling
         return cos.to(x.dtype), sin.to(x.dtype)
@@ -282,7 +289,7 @@ def apply_rotary_pos_emb_unpadded(
         cos = cos.squeeze(0)
     if sin.ndim == 3:
         sin = sin.squeeze(0)
-    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)  # type: ignore
+    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)
 
 
 def eager_attention_forward(
@@ -297,10 +304,10 @@ def eager_attention_forward(
     q = q.transpose(1, 2)  # [b, num_heads, seq, dim]
     k = k.transpose(1, 2)  # [b, num_heads, seq, dim]
     v = v.transpose(1, 2)  # [b, num_heads, seq, dim]
-    raw_scores = q @ k.mT
+    raw_scores = (q @ k.mT).float()
     raw_scores = raw_scores * module.softmax_scale
     raw_scores = raw_scores + attention_mask
-    attention_scores = raw_scores.float().softmax(dim=-1).to(q.dtype)
+    attention_scores = raw_scores.softmax(dim=-1).to(q.dtype)
     attention_scores = F.dropout(
         attention_scores,
         p=module.config.attention_dropout,
@@ -311,10 +318,10 @@ def eager_attention_forward(
     attention_scores = attention_scores.transpose(
         1, 2
     ).contiguous()  # [b, seq, num_heads, seq]
-    return attn_output, attention_scores
+    return attn_output.to(q.dtype), attention_scores
 
 
-def flash_attention_forward(
+def flash_attention_2_forward(
     module: "LednikAttention",
     q: torch.Tensor,  # [b * seq, num_heads, dim]
     k: torch.Tensor,  # [b * seq, num_heads, dim]
@@ -344,9 +351,77 @@ def flash_attention_forward(
     return attn_output, torch.empty((1,))  # dummy attention weights
 
 
+def flash_attention_4_forward(
+    module: "LednikAttention",
+    q: torch.Tensor,  # [b * seq, num_heads, dim]
+    k: torch.Tensor,  # [b * seq, num_heads, dim]
+    v: torch.Tensor,  # [b * seq, num_heads, dim]
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
+    **_kwargs: Any,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flash attention forward function."""
+    qkv = torch.stack((q, k, v), dim=1)
+    original_dtype = qkv.dtype
+    if qkv.dtype != module.fa_target_dtype:
+        convert_dtype = True
+        qkv = qkv.to(module.fa_target_dtype)
+    else:
+        convert_dtype = False
+    attn_output, _ = flash_attn_varlen_func(
+        q=q,
+        k=k,
+        v=v,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_k=max_seqlen,  # type: ignore
+        max_seqlen_q=max_seqlen,  # type: ignore
+        softmax_scale=module.softmax_scale,
+    )
+    attn_output = cast(Tensor, attn_output)
+    if convert_dtype:
+        attn_output = attn_output.to(original_dtype)
+    return attn_output, torch.empty((1,))  # dummy attention weights
+
+
+def torch_varlen_attn_forward(
+    module: "LednikAttention",
+    q: torch.Tensor,  # [b * seq, num_heads, dim]
+    k: torch.Tensor,  # [b * seq, num_heads, dim]
+    v: torch.Tensor,  # [b * seq, num_heads, dim]
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
+    **_kwargs: Any,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flash attention forward function."""
+    qkv = torch.stack((q, k, v), dim=1)
+    original_dtype = qkv.dtype
+    if qkv.dtype != module.fa_target_dtype:
+        convert_dtype = True
+        qkv = qkv.to(module.fa_target_dtype)
+    else:
+        convert_dtype = False
+    attn_output = varlen.varlen_attn(
+        query=q,
+        key=k,
+        value=v,
+        cu_seq_q=cu_seqlens,
+        cu_seq_k=cu_seqlens,
+        max_q=max_seqlen,
+        max_k=max_seqlen,
+        scale=module.softmax_scale,
+    )
+    attn_output = cast(Tensor, attn_output)
+    if convert_dtype:
+        attn_output = attn_output.to(original_dtype)
+    return attn_output, torch.empty((1,))  # dummy attention weights
+
+
 LEDNIK_ATTENTION_FUNCTION = {
     "eager": eager_attention_forward,
-    "flash_attention_2": flash_attention_forward,
+    "flash_attention_2": flash_attention_2_forward,
+    "flash_attention_4": flash_attention_4_forward,
+    "sdpa": torch_varlen_attn_forward,
 }
 
 
@@ -385,7 +460,11 @@ class LednikAttention(nn.Module):
         )
         self.softmax_scale = self.head_dim**-0.5
 
-        self.is_unpadded_attn = is_flash_attention_requested(config=config)
+        self.is_varlen_attn = (
+            is_flash_attention_requested(config=config)
+            or config._attn_implementation == "sdpa"
+        )
+        self.is_flash_attention = is_flash_attention_requested(config=config)
         self.fa_target_dtype = (
             torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         )
@@ -400,6 +479,7 @@ class LednikAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        non_pad_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Perform the forward pass of the attention mechanism.
@@ -416,6 +496,7 @@ class LednikAttention(nn.Module):
                 of sequences in the flattened batch. Defaults to None.
             max_seqlen (int | None, optional): Maximum sequence length in the batch, required
                 for unpadded attention implementations. Defaults to None.
+            non_pad_indices (torch.Tensor | None, optional): Indices of non-padding tokens in the flattened batch.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: A tuple containing:
@@ -431,7 +512,7 @@ class LednikAttention(nn.Module):
         k: torch.Tensor = self.k_proj(hidden_state)
         v: torch.Tensor = self.v_proj(hidden_state)
 
-        if self.is_unpadded_attn:
+        if self.is_varlen_attn:
             if cu_seqlens is None or max_seqlen is None:
                 raise ValueError(
                     f"cu_seqlens and max_seqlen must be provided for {self.config._attn_implementation}."
@@ -439,28 +520,16 @@ class LednikAttention(nn.Module):
             q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))
             k = self.k_norm(k.view(-1, self.num_heads, self.head_dim))
             v = v.view(-1, self.num_heads, self.head_dim)
-            q, k = apply_rotary_pos_emb_unpadded(
-                q=q,
-                k=k,
-                cos=cos,
-                sin=sin,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-            )
         else:
             bs, seq_len, _ = hidden_state.size()
             q = self.q_norm(q.view(bs, seq_len, self.num_heads, self.head_dim))
             k = self.k_norm(k.view(bs, seq_len, self.num_heads, self.head_dim))
             v = v.view(bs, seq_len, self.num_heads, self.head_dim)
-            q, k = apply_rotary_pos_emb(
-                q=q,
-                k=k,
-                cos=cos,
-                sin=sin,
-                unsqueeze_dim=2,
-            )
+
+        q, k = self._apply_rope(q, k, cos, sin, non_pad_indices, cu_seqlens, max_seqlen)
+
         attn_output, attention_weights = LEDNIK_ATTENTION_FUNCTION[
-            self.config._attn_implementation  # type: ignore
+            self.config._attn_implementation  # pyrefly: ignore
         ](
             q=q,
             k=k,
@@ -473,6 +542,68 @@ class LednikAttention(nn.Module):
         hidden_state = attn_output.view_as(hidden_state)
         hidden_state = self.out_dropout(self.out_proj(hidden_state))
         return (hidden_state, attention_weights)
+
+    def _apply_rope(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        non_pad_indices: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.is_varlen_attn:
+            if cu_seqlens is None or max_seqlen is None:
+                raise ValueError(
+                    f"cu_seqlens and max_seqlen must be provided for {self.config._attn_implementation}."
+                )
+            if self.is_flash_attention:
+                q, k = apply_rotary_pos_emb_unpadded(
+                    q=q,
+                    k=k,
+                    cos=cos,
+                    sin=sin,
+                    cu_seqlens=cu_seqlens,
+                    max_seqlen=max_seqlen,
+                )
+            else:
+                if non_pad_indices is None:
+                    raise ValueError(
+                        "non_pad_indices must be provided for torch varlen attention"
+                    )
+                buf_q = q.new_zeros(
+                    ((cu_seqlens.size(0) - 1) * max_seqlen, *q.shape[-2:])
+                )
+                buf_k = k.new_zeros(
+                    ((cu_seqlens.size(0) - 1) * max_seqlen, *k.shape[-2:])
+                )
+                buf_q[non_pad_indices] = q
+                buf_k[non_pad_indices] = k
+                buf_q = buf_q.view(
+                    cu_seqlens.size(0) - 1, max_seqlen, self.num_heads, self.head_dim
+                )
+                buf_k = buf_k.view(
+                    cu_seqlens.size(0) - 1, max_seqlen, self.num_heads, self.head_dim
+                )
+                buf_q, buf_k = apply_rotary_pos_emb(
+                    q=buf_q,
+                    k=buf_k,
+                    cos=cos,
+                    sin=sin,
+                    unsqueeze_dim=2,
+                )
+                q = buf_q.view(-1, self.num_heads, self.head_dim)[non_pad_indices]
+                k = buf_k.view(-1, self.num_heads, self.head_dim)[non_pad_indices]
+        else:
+            q, k = apply_rotary_pos_emb(
+                q=q,
+                k=k,
+                cos=cos,
+                sin=sin,
+                unsqueeze_dim=2,
+            )
+        return q, k
 
 
 ACT2MLP = {"silu": LigerSwiGLUMLP, "gelu": LigerGEGLUMLP}
@@ -495,6 +626,11 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
         )
         return
 
+    @property
+    def attention_implementation(self) -> str:
+        """Returns the attention implementation used in this layer."""
+        return self.attention.config._attn_implementation  # pyrefly: ignore
+
     def forward(
         self,
         hidden_state: torch.Tensor,
@@ -503,6 +639,7 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
         attention_mask: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        non_pad_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor]:
         """Performs the forward pass of the Lednik Encoder Layer."""
         attn_output, _ = self.attention(
@@ -512,6 +649,7 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
             attention_mask,
             cu_seqlens,
             max_seqlen,
+            non_pad_indices,
         )
         hidden_state = hidden_state + attn_output
         mlp_output = self.mlp(self.mlp_norm(hidden_state))
@@ -562,6 +700,7 @@ class LednikPreTrainedModel(
     _supports_flash_attn = True
     _supports_sdpa = False
     _supports_flex_attn = False
+    _supports_sdpa = True
 
     _can_record_outputs = {  # noqa: RUF012
         "hidden_states": LednikEncoderLayer,
@@ -576,11 +715,12 @@ class LednikPreTrainedModel(
     ) -> str:
         if attn_implementation is None:
             with contextlib.suppress(ValueError, ImportError):
-                attn_implementation = (
-                    "flash_attention_2"
-                    if self._flash_attn_can_dispatch(2, is_init_check=True)
-                    else None
-                )
+                if is_flash_attn_4_available():
+                    attn_implementation = "flash_attention_4"
+                elif is_flash_attn_2_available():
+                    attn_implementation = "flash_attention_2"
+                else:
+                    attn_implementation = None
         return super()._check_and_adjust_attn_implementation(
             attn_implementation, is_init_check, allow_all_kernels
         )
@@ -773,6 +913,10 @@ class LednikModel(LednikPreTrainedModel):
         )
         self.final_norm = LigerRMSNorm(config.output_hidden_size or config.hidden_size)
         self.config = config
+        self.is_varlen_attn = (
+            is_flash_attention_requested(config=config)
+            or config._attn_implementation == "sdpa"
+        )
         self.post_init()
         return
 
@@ -854,7 +998,7 @@ class LednikModel(LednikPreTrainedModel):
             (cu_seqlens is not None)
             and (max_seqlen is not None)
             and (non_pad_indices is not None)
-            and not is_flash_attention_requested(self.config)
+            and not self.is_varlen_attn
         ):
             logger.warning(
                 "cu_seqlens, max_seqlen and non_pad_indices are used only "
@@ -868,7 +1012,7 @@ class LednikModel(LednikPreTrainedModel):
         REPAD = False
         batch_size = None
         seqlen = None
-        if is_flash_attention_requested(self.config):
+        if self.is_varlen_attn:
             # unpad inputs
             if (
                 (cu_seqlens is None)
@@ -952,6 +1096,7 @@ class LednikModel(LednikPreTrainedModel):
                 attention_mask=mask,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                non_pad_indices=non_pad_indices,
             )
         hidden_state = self.output_projection(hidden_state)
         hidden_state = self.final_norm(hidden_state)
