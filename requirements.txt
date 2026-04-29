@@ -530,7 +530,6 @@ furl==2.1.4 \
     --hash=sha256:877657501266c929269739fb5f5980534a41abd6bbabcb367c136d1d3b2a6015 \
     --hash=sha256:da34d0b34e53ffe2d2e6851a7085a05d96922b5b578620a37377ff1dbeeb11c8
     # via clearml
-geracl @ git+https://github.com/deepvk/geracl@c3ab268050790a44080bffd3856f77e2f5b4abd7
 grpcio==1.80.0 \
     --hash=sha256:29aca15edd0688c22ba01d7cc01cb000d72b2033f4a3c72a81a19b56fd143257 \
     --hash=sha256:2bea16af2750fd0a899bf1abd9022244418b55d1f37da2202249ba4ba673838d \

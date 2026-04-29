@@ -21,7 +21,6 @@ dependencies = [
 [dependency-groups]
 dev = [
   "filelock>=3.25.2",
-  "geracl",
   "ipywidgets>=8.1.8",
   "jupyter>=1.1.1",
   "ninja>=1.13.0",
@@ -48,8 +47,6 @@ distill = [
 flash-attn = [
     "flash-attn>=2.8.3",
 ]
-logprob-woker = []
-serving = ["click>=8.3.1", "litserve>=0.2.16", "rich>=14.2.0"]
 validation = [
     "pydantic>=2.13.0",
     "pydantic-settings>=2.13.1",
@@ -60,9 +57,6 @@ validation = [
 [tool.uv]
 default-groups = ["dev", "distill"]
 no-build-isolation-package = ["flash-attn"]
-
-[tool.uv.sources]
-geracl = { git = "https://github.com/deepvk/geracl" }
 
 [tool.pyright]
 typeCheckingMode = "off"                                                  # "off" | "basic" | "standard" | "strict"
