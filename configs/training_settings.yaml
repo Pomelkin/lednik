@@ -1,8 +1,7 @@
 redis:
-  host: localhost
-  port: 6379
+  host: pomelka.pro
+  port: 12576
   stream_name: validation_tasks
-  password: 387811863bae48398d241934e61980c2
 
 data:
   datasets:
