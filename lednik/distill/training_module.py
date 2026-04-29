@@ -240,7 +240,7 @@ class DistillationModule(KostylLightningModule):
                     )
                 ddp_module = DDP(
                     module=module,
-                    device_ids=strategy.root_device,
+                    device_ids=[strategy.root_device.index],
                     mixed_precision=mixed_precision,
                 )
                 setattr(self, name, ddp_module)
