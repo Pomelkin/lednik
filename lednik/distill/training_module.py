@@ -28,7 +28,6 @@ from torch import nn
 from torch.distributed._composable.replicate_with_fsdp import replicate
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import ShardingStrategy
 from torch.distributed.fsdp import fully_shard
 from torch.nn.modules.loss import _Loss
 from torchmetrics.functional import cosine_similarity
@@ -52,6 +51,10 @@ from lednik.distill.validation import RedisConfig
 from lednik.distill.validation import ValidationContract
 from lednik.emb_utils import get_sentence_embedding
 from lednik.models import LednikModel
+from torch.nn.parallel.distributed import (
+    DistributedDataParallel as DDP,
+    _MixedPrecision,
+)
 from lednik.models import StaticEmbeddingsModel
 from lednik.models.outputs import StaticEmbeddingsOutput
 
@@ -228,14 +231,19 @@ class DistillationModule(KostylLightningModule):
             for name, module in no_shard_modules.items():
                 if (module is None) or isinstance(module, nn.Identity):
                     continue
-                fsdp_module = FSDP(
+
+                if policies["mixed_precision"] is not None:
+                    mixed_precision = _MixedPrecision(
+                        param_dtype=policies["mixed_precision"].param_dtype,
+                        reduce_dtype=policies["mixed_precision"].reduce_dtype,
+                        buffer_dtype=policies["mixed_precision"].buffer_dtype,
+                    )
+                ddp_module = DDP(
                     module=module,
-                    use_orig_params=True,
-                    device_id=strategy.root_device.index,
-                    sharding_strategy=ShardingStrategy.NO_SHARD,
-                    **policies,
+                    device_ids=strategy.root_device,
+                    mixed_precision=mixed_precision,
                 )
-                setattr(self, name, fsdp_module)
+                setattr(self, name, ddp_module)
 
             self_fsdp_wrapped = FSDP(
                 module=self,

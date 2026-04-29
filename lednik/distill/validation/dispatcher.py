@@ -34,10 +34,9 @@ class EvaluationDispatcher:
             stream_name = redis_config.stream_name
 
             if not client.ping():
-                client = None
-                logger.warning(
-                    f"Could not connect to Redis server at {redis_config.host}:{redis_config.port}. "
-                    "Evaluation tasks will be executed locally."
+                raise ValueError(
+                    f"Failed to connect to Redis server at {redis_config.host}:{redis_config.port}."
+                    " Please check your Redis configuration and ensure the Redis server is running and accessible."
                 )
         else:
             client = None
