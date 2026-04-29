@@ -30,7 +30,6 @@ class EvaluationWorker:
         self.redis_client = Redis(
             host=config.redis.host,
             port=config.redis.port,
-            password=config.redis.password,
             decode_responses=False,
         )
 

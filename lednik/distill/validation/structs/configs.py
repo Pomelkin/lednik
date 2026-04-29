@@ -1,8 +1,7 @@
 from typing import Literal
 
 from kostyl.ml.configs.mixins import ConfigLoadingMixin
-from pydantic import BaseModel, Field
-import os
+from pydantic import BaseModel
 
 
 class RedisConfig(BaseModel, ConfigLoadingMixin["RedisConfig"]):
@@ -11,7 +10,6 @@ class RedisConfig(BaseModel, ConfigLoadingMixin["RedisConfig"]):
     host: str
     port: int
     stream_name: str
-    password: str = Field(default_factory=lambda: os.getenv("REDIS_PASSWORD", ""))
 
 
 class MRRConfig(BaseModel):

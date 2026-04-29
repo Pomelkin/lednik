@@ -30,7 +30,6 @@ class EvaluationDispatcher:
                 host=redis_config.host,
                 port=redis_config.port,
                 decode_responses=False,
-                password=redis_config.password,
             )
             stream_name = redis_config.stream_name
 
