@@ -8,7 +8,7 @@ data:
     RuBQ-Reranking: a1c152d6491e43959cd8da88658e2e05
     Mixed-Summarization-Dataset: 2ef9572e96d94bc69ace31aa2de05387
     ru-HNP: 4cafe217d08242dc858ecf5e3347683e
-  batch_size: 32
+  batch_size: 64
   num_workers: 5
   query_colname: query-tokens
   pos_colname: pos-tokens
@@ -21,6 +21,7 @@ trainer:
   max_epochs: 12
   strategy:
     type: "ddp"
+    find_unused_parameters: true
   val_check_interval: 0.2
   devices: 8
   precision: bf16-true
