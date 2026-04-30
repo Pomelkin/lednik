@@ -20,11 +20,13 @@ trainer:
   accelerator: "cuda"
   max_epochs: 6
   strategy:
-    type: "ddp"
-    find_unused_parameters: true
+    type: "fsdp1"
+    param_dtype: bfloat16
+    reduce_dtype: float32
+    buffer_dtype: float32
   val_check_interval: 0.2
-  devices: 4
-  precision: bf16-mixed
+  devices: 8
+  precision: bf16-true
   log_every_n_steps: 25
 
 early_stopping:
@@ -37,12 +39,14 @@ checkpoint:
   save_top_k: 3
   mode: "min"
   monitor: "val_loss"
-  filename: "ep|{epoch}-step|{step}-loss|{val_loss:.5f}"
+  filename: "|{epoch}|-|{step}|-|{val_loss:.5f}|"
 
 teacher_model_id: af954495ff03440abc58790c4e41ff22
-student_model_id: 749be3f1fd7341e09d33911c633c7c0a
+student_model_id: 5621a1d159754611b72c638d27810fb9
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
 
 model_cfg:
-  model_type: static_embeddings
-  embeddings_dropout: 0.2
+  model_type: lednik
+  embeddings_dropout: 0.25
+  out_attn_dropout: 0.15
+  mlp_dropout: 0.25
