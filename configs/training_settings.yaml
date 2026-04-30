@@ -8,7 +8,7 @@ data:
     RuBQ-Reranking: c049af4036604631b3c9329d89ec42d9
     Mixed-Summarization-Dataset: 0f220e334eed4e39b74839c1ec8d0587
     ru-HNP: e43f250d4b4a4fccad0bd4aa30b9a5f3
-  batch_size: 64
+  batch_size: 32
   num_workers: 5
   query_colname: query-tokens
   pos_colname: pos-tokens
