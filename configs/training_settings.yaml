@@ -42,12 +42,9 @@ checkpoint:
   filename: "{epoch:02d}-{val_loss:.4f}"
 
 teacher_model_id: af954495ff03440abc58790c4e41ff22
-student_model_id: 5621a1d159754611b72c638d27810fb9
+student_model_id: 749be3f1fd7341e09d33911c633c7c0a
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
 
 model_cfg:
-  model_type: lednik
-  embeddings_dropout: 0.15
-  attention_dropout: 0.0
-  out_attn_dropout: 0.1
-  mlp_dropout: 0.2
+  model_type: static_embeddings
+  embeddings_dropout: 0.2
