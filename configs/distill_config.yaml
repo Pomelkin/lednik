@@ -7,14 +7,16 @@ distillation_method:
   contrastive_loss_weight: 0.7
   temperature: 0.07
 optimizer:
-  type: AdamW
+  type: Adam8bit
   betas: [ 0.9, 0.98 ]
+  block_size: 64
+  bf16_stochastic_round: true
 lr:
   scheduler_type: plateau-with-cosine-annealing
   warmup_ratio: 0.2
-  warmup_value: 2e-5
+  warmup_value: 4e-5
   base_value: 9e-5
-  final_value: 8e-6
+  final_value: 9e-6
   plateau_ratio: 0.7
 weight_decay:
-  base_value: 0.005
+  base_value: 0.001
