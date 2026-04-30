@@ -361,7 +361,7 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
         sentence_embeddings = masked_embeddings.sum(dim=1) / attention_mask.sum(
             dim=-1, keepdim=True
-        )
+        ).clamp(min=1e-9)
         output = StaticEmbeddingsOutput(
             token_embeddings=embeddings,
             pos_weights=token_weights,
