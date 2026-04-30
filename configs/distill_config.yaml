@@ -4,7 +4,7 @@ student_pooling_method: mean
 distillation_method:
   type: direct-distillation
   loss_type: cosine
-  contrastive_loss_weight: 0.7
+  contrastive_loss_weight: 0.8
   temperature: 0.07
 optimizer:
   type: Adam8bit
