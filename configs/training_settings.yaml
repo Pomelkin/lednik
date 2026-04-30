@@ -20,10 +20,7 @@ trainer:
   accelerator: "cuda"
   max_epochs: 12
   strategy:
-    type: "fsdp1"
-    param_dtype: bfloat16
-    reduce_dtype: float32
-    buffer_dtype: float32
+    type: "ddp"
   val_check_interval: 0.2
   devices: 8
   precision: bf16-true
