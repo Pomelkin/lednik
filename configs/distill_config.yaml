@@ -19,4 +19,4 @@ lr:
   final_value: 9e-6
   plateau_ratio: 0.7
 weight_decay:
-  base_value: 0.001
+  base_value: 0.002
