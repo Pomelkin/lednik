@@ -47,7 +47,7 @@ tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
 
 model_cfg:
   model_type: lednik
-  embeddings_dropout: 0.1
+  embeddings_dropout: 0.15
   attention_dropout: 0.0
   out_attn_dropout: 0.1
-  mlp_dropout: 0.1
+  mlp_dropout: 0.2
