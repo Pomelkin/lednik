@@ -24,7 +24,7 @@ trainer:
     find_unused_parameters: true
   val_check_interval: 0.2
   devices: 8
-  precision: bf16-true
+  precision: bf16-mixed
   log_every_n_steps: 25
 
 early_stopping:
