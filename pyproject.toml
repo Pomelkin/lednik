@@ -12,7 +12,7 @@ dependencies = [
   "matplotlib>=3.10.8",
   "pydantic>=2.12.3",
   "scikit-learn>=1.7.2",
-  "torch>=2.11",
+  "torch==2.10.0",
   "torchao>=0.15.0",
   "tqdm>=4.67.1",
   "transformers>=4.57.1",

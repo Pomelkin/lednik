@@ -555,8 +555,8 @@ class DistillationModule(KostylLightningModule):
 
         if dist.is_initialized():
             rank = dist.get_rank(group=self._data_parallel_group)
-            global_anchors, global_positives, global_negatives = (
-                GatherSentenceEmbeddings.apply(  #  type: ignore
+            global_anchors, global_positives, global_negatives = (  # type: ignore
+                GatherSentenceEmbeddings.apply(
                     queries_emb,
                     pos_emb,
                     neg_emb,

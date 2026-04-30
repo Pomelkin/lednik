@@ -289,7 +289,7 @@ def apply_rotary_pos_emb_unpadded(
         cos = cos.squeeze(0)
     if sin.ndim == 3:
         sin = sin.squeeze(0)
-    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)
+    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)  # type: ignore
 
 
 def eager_attention_forward(
@@ -409,7 +409,6 @@ def torch_varlen_attn_forward(
         cu_seq_k=cu_seqlens,
         max_q=max_seqlen,
         max_k=max_seqlen,
-        scale=module.softmax_scale,
     )
     attn_output = cast(Tensor, attn_output)
     if convert_dtype:
@@ -480,6 +479,7 @@ class LednikAttention(nn.Module):
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
         non_pad_indices: torch.Tensor | None = None,
+        seqlen: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Perform the forward pass of the attention mechanism.
@@ -496,7 +496,11 @@ class LednikAttention(nn.Module):
                 of sequences in the flattened batch. Defaults to None.
             max_seqlen (int | None, optional): Maximum sequence length in the batch, required
                 for unpadded attention implementations. Defaults to None.
+
+            Required for non-Flash Attention unpadded implementations to correctly apply RoPE:
+
             non_pad_indices (torch.Tensor | None, optional): Indices of non-padding tokens in the flattened batch.
+            seqlen (int | None, optional): Sequence length of the input (can be greater than max_seqlen in case of `pad_multiple_of` in collator).
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: A tuple containing:
@@ -526,7 +530,16 @@ class LednikAttention(nn.Module):
             k = self.k_norm(k.view(bs, seq_len, self.num_heads, self.head_dim))
             v = v.view(bs, seq_len, self.num_heads, self.head_dim)
 
-        q, k = self._apply_rope(q, k, cos, sin, non_pad_indices, cu_seqlens, max_seqlen)
+        q, k = self._apply_rope(
+            q,
+            k,
+            cos,
+            sin,
+            non_pad_indices,
+            cu_seqlens,
+            max_seqlen,
+            seqlen,
+        )
 
         attn_output, attention_weights = LEDNIK_ATTENTION_FUNCTION[
             self.config._attn_implementation  # pyrefly: ignore
@@ -552,13 +565,18 @@ class LednikAttention(nn.Module):
         non_pad_indices: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
+        seqlen: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.is_varlen_attn:
-            if cu_seqlens is None or max_seqlen is None:
+            if cu_seqlens is None:
                 raise ValueError(
                     f"cu_seqlens and max_seqlen must be provided for {self.config._attn_implementation}."
                 )
             if self.is_flash_attention:
+                if max_seqlen is None:
+                    raise ValueError(
+                        f"cu_seqlens and max_seqlen must be provided for {self.config._attn_implementation}."
+                    )
                 q, k = apply_rotary_pos_emb_unpadded(
                     q=q,
                     k=k,
@@ -568,23 +586,23 @@ class LednikAttention(nn.Module):
                     max_seqlen=max_seqlen,
                 )
             else:
-                if non_pad_indices is None:
+                if non_pad_indices is None or seqlen is None:
                     raise ValueError(
-                        "non_pad_indices must be provided for torch varlen attention"
+                        "non_pad_indices and seqlen must be provided for torch varlen attention"
                     )
                 buf_q = q.new_zeros(
-                    ((cu_seqlens.size(0) - 1) * max_seqlen, *q.shape[-2:])
+                    ((cu_seqlens.size(0) - 1) * seqlen, self.num_heads, self.head_dim)
                 )
                 buf_k = k.new_zeros(
-                    ((cu_seqlens.size(0) - 1) * max_seqlen, *k.shape[-2:])
+                    ((cu_seqlens.size(0) - 1) * seqlen, self.num_heads, self.head_dim)
                 )
                 buf_q[non_pad_indices] = q
                 buf_k[non_pad_indices] = k
                 buf_q = buf_q.view(
-                    cu_seqlens.size(0) - 1, max_seqlen, self.num_heads, self.head_dim
+                    cu_seqlens.size(0) - 1, seqlen, self.num_heads, self.head_dim
                 )
                 buf_k = buf_k.view(
-                    cu_seqlens.size(0) - 1, max_seqlen, self.num_heads, self.head_dim
+                    cu_seqlens.size(0) - 1, seqlen, self.num_heads, self.head_dim
                 )
                 buf_q, buf_k = apply_rotary_pos_emb(
                     q=buf_q,
@@ -640,8 +658,16 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
         non_pad_indices: torch.Tensor | None = None,
+        seqlen: int | None = None,
     ) -> tuple[torch.Tensor]:
-        """Performs the forward pass of the Lednik Encoder Layer."""
+        """
+        Performs the forward pass of the Lednik Encoder Layer.
+
+        Required for non-Flash Attention unpadded implementations to correctly apply RoPE:
+        Args:
+            non_pad_indices (torch.Tensor | None, optional): Indices of non-padding tokens in the flattened batch.
+            seqlen (int | None, optional): Sequence length of the input (can be greater than max_seqlen in case of `pad_multiple_of` in collator).
+        """
         attn_output, _ = self.attention(
             self.atten_norm(hidden_state),
             cos,
@@ -650,6 +676,7 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
             cu_seqlens,
             max_seqlen,
             non_pad_indices,
+            seqlen,
         )
         hidden_state = hidden_state + attn_output
         mlp_output = self.mlp(self.mlp_norm(hidden_state))
@@ -917,6 +944,7 @@ class LednikModel(LednikPreTrainedModel):
             is_flash_attention_requested(config=config)
             or config._attn_implementation == "sdpa"
         )
+        self.is_flash_attn = is_flash_attention_requested(config=config)
         self.post_init()
         return
 
@@ -950,6 +978,7 @@ class LednikModel(LednikPreTrainedModel):
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
         non_pad_indices: torch.Tensor | None = None,
+        seqlen: int | None = None,
         output_attentions: bool | None = None,
         **_kwargs: Any,
     ) -> BaseModelOutput:
@@ -980,6 +1009,7 @@ class LednikModel(LednikPreTrainedModel):
             non_pad_indices (`torch.Tensor` of shape `(num_non_pad_tokens,)`, *optional*):
                 Indices of non-pad tokens in the flattened input tensor.
                 Used to index the unpadded tensors and to pad the output tensors back to the original shape.
+            seqlen (`int`, *optional*): The length of each sequence in the batch. Used for correct RoPE application in non-Flash Attention unpadded implementations when `pad_multiple_of` is used in the collator.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers.
 
@@ -992,7 +1022,7 @@ class LednikModel(LednikPreTrainedModel):
             (cu_seqlens is None) == (max_seqlen is None) == (non_pad_indices is None)
         ):
             raise ValueError(
-                "cu_seqlens, max_seqlen and non_pad_indices must be provided together for unpadded attention."
+                "cu_seqlens, max_seqlen and non_pad_indices either must be provided together or all be None."
             )
         if (
             (cu_seqlens is not None)
@@ -1008,11 +1038,8 @@ class LednikModel(LednikPreTrainedModel):
         if (input_ids is not None) and (cu_seqlens is None):
             self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask)
         self._warn_if_output_attentions_and_flash_attn(output_attentions)
-
         REPAD = False
-        batch_size = None
-        seqlen = None
-        if self.is_varlen_attn:
+        if self.is_varlen_attn:  ### VARLEN BRANCH
             # unpad inputs
             if (
                 (cu_seqlens is None)
@@ -1025,11 +1052,21 @@ class LednikModel(LednikPreTrainedModel):
                         "when cu_seqlens, max_seqlen and non_pad_indices are not specified "
                         f"and `attn_implementation` is {self.config._attn_implementation}."
                     )
-                REPAD = True
 
+                if seqlen is None:
+                    seqlen = (
+                        input_ids.size(1)
+                        if input_ids is not None
+                        else cast(torch.Tensor, inputs_embeds).size(1)
+                    )
+
+                REPAD = True
                 if inputs_embeds is None:
                     input_ids = cast(torch.LongTensor, input_ids)
-                    batch_size, seqlen = input_ids.shape
+                    if input_ids.ndim != 2:
+                        raise ValueError(
+                            f"input_ids must be 2D when unpadding, got {input_ids.ndim}D"
+                        )
                     with torch.no_grad():
                         output = unpad_inputs(
                             input_ids,
@@ -1045,7 +1082,10 @@ class LednikModel(LednikPreTrainedModel):
                             _,
                         ) = output.as_tuple()
                 else:
-                    batch_size, seqlen, *_ = inputs_embeds.shape
+                    if inputs_embeds.ndim < 3:
+                        raise ValueError(
+                            f"inputs_embeds must be at least 3D when unpadding, got {inputs_embeds.ndim}D"
+                        )
                     output = unpad_inputs(
                         inputs_embeds,
                         attention_mask,
@@ -1059,27 +1099,32 @@ class LednikModel(LednikPreTrainedModel):
                         position_ids,
                         _,
                     ) = output.as_tuple()
-            if cu_seqlens.dtype != torch.int32:
-                cu_seqlens = cu_seqlens.to(torch.int32)
+            elif seqlen is None:
+                seqlen = max_seqlen
 
-            if position_ids is None:
-                position_ids = torch.arange(max_seqlen, device=self.device).unsqueeze(0)
-        else:
-            if position_ids is None:
-                if input_ids is None:
-                    inputs_embeds = cast(torch.Tensor, inputs_embeds)
-                    _, seqlen, *_ = inputs_embeds.shape
-                else:
-                    _, seqlen = input_ids.shape
+            cu_seqlens = cu_seqlens.to(torch.int32)
+        else:  ### PADDED BRANCH
+            seqlen = (
+                inputs_embeds.size(1)
+                if inputs_embeds is not None
+                else cast(torch.Tensor, input_ids).size(1)
+            )
+
+        if position_ids is None:
+            if self.is_flash_attn:
+                max_len = cast(int, max_seqlen)
+                position_ids = torch.arange(max_len, device=self.device).unsqueeze(0)
+            else:
                 position_ids = torch.arange(seqlen, device=self.device).unsqueeze(0)
 
-        if inputs_embeds is None:
-            hidden_state = self.embeddings(input_ids=input_ids)
-        else:
-            hidden_state = self.embeddings(inputs_embeds=inputs_embeds)
+        hidden_state: torch.Tensor = (
+            self.embeddings(input_ids=input_ids)
+            if inputs_embeds is None
+            else self.embeddings(inputs_embeds=inputs_embeds)
+        )
 
         if attention_mask is not None:
-            mask = self._prepare_mask(
+            mask = self._prepare_4d_mask(
                 hidden_state,
                 attention_mask=attention_mask,
             )
@@ -1097,12 +1142,13 @@ class LednikModel(LednikPreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 non_pad_indices=non_pad_indices,
+                seqlen=seqlen,
             )
         hidden_state = self.output_projection(hidden_state)
         hidden_state = self.final_norm(hidden_state)
 
         if REPAD:
-            if (batch_size is None) or (seqlen is None) or (non_pad_indices is None):
+            if (cu_seqlens is None) or (seqlen is None) or (non_pad_indices is None):
                 raise ValueError(
                     "batch_size, seqlen, and non_pad_indices must be defined for repadding."
                 )
@@ -1110,10 +1156,10 @@ class LednikModel(LednikPreTrainedModel):
                 hidden_state,
                 non_pad_indices,
                 seqlen,
-                batch_size,
+                batch_size=cu_seqlens.size(0) - 1,
                 padding_value=0,
             )
-        return BaseModelOutput(last_hidden_state=hidden_state)  # ty:ignore[invalid-argument-type]
+        return BaseModelOutput(last_hidden_state=hidden_state)
 
     def _warn_if_output_attentions_and_flash_attn(
         self,
@@ -1128,12 +1174,12 @@ class LednikModel(LednikPreTrainedModel):
             )
         return
 
-    def _prepare_mask(
+    def _prepare_4d_mask(
         self,
         hidden_state: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> None | torch.Tensor:
         bsz, seqlen = attention_mask.shape
         expanded_mask = attention_mask.reshape(bsz, 1, 1, seqlen).to(hidden_state.dtype)
-        bidirectional_mask = (1 - expanded_mask) * torch.finfo(hidden_state.dtype).min
+        bidirectional_mask = (1 - expanded_mask) * float("-inf")
         return bidirectional_mask

@@ -8,7 +8,7 @@ data:
     RuBQ-Reranking: a1c152d6491e43959cd8da88658e2e05
     Mixed-Summarization-Dataset: 2ef9572e96d94bc69ace31aa2de05387
     ru-HNP: 4cafe217d08242dc858ecf5e3347683e
-  batch_size: 28
+  batch_size: 32
   num_workers: 5
   query_colname: query-tokens
   pos_colname: pos-tokens
@@ -18,17 +18,16 @@ data:
 
 trainer:
   accelerator: "cuda"
-  max_epochs: 6
+  max_epochs: 12
   strategy:
-    type: "fsdp1"
+    type: "fsdp-1"
     param_dtype: bfloat16
     reduce_dtype: float32
     buffer_dtype: float32
   val_check_interval: 0.2
-  devices: 4
+  devices: 8
   precision: bf16-true
   log_every_n_steps: 25
-  limit_val_batches: 1000
 
 early_stopping:
   monitor: "val_loss"
