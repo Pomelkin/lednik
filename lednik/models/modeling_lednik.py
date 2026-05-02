@@ -305,8 +305,8 @@ def eager_attention_forward(
     k = k.transpose(1, 2)  # [b, num_heads, seq, dim]
     v = v.transpose(1, 2)  # [b, num_heads, seq, dim]
     raw_scores = (q @ k.mT).float()
-    raw_scores = raw_scores * module.softmax_scale
-    raw_scores = raw_scores + attention_mask
+    raw_scores: Tensor = raw_scores * module.softmax_scale
+    raw_scores = raw_scores.masked_fill(attention_mask, float("-inf"))
     attention_scores = raw_scores.softmax(dim=-1).to(q.dtype)
     attention_scores = F.dropout(
         attention_scores,
@@ -695,8 +695,8 @@ class LednikEmbeddings(nn.Module):
             config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id
         )
         self.dropout = (
-            nn.Dropout(p=config.embeddings_dropout)
-            if config.embeddings_dropout > 0.0
+            nn.Dropout(p=config.embedding_dropout)
+            if config.embedding_dropout > 0.0
             else nn.Identity()
         )
         self.emb_norm = LigerRMSNorm(config.hidden_size)
@@ -1125,7 +1125,6 @@ class LednikModel(LednikPreTrainedModel):
 
         if attention_mask is not None:
             mask = self._prepare_4d_mask(
-                hidden_state,
                 attention_mask=attention_mask,
             )
         else:
@@ -1176,10 +1175,9 @@ class LednikModel(LednikPreTrainedModel):
 
     def _prepare_4d_mask(
         self,
-        hidden_state: torch.Tensor,
         attention_mask: torch.Tensor,
-    ) -> None | torch.Tensor:
+    ) -> torch.Tensor:
         bsz, seqlen = attention_mask.shape
-        expanded_mask = attention_mask.reshape(bsz, 1, 1, seqlen).to(hidden_state.dtype)
-        bidirectional_mask = (1 - expanded_mask) * float("-inf")
+        expanded_mask = attention_mask.reshape(bsz, 1, 1, seqlen)
+        bidirectional_mask = (1 - expanded_mask).bool()
         return bidirectional_mask

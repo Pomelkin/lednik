@@ -23,7 +23,7 @@ class LednikModelTrainConfig(BaseModel):
     """Configuration for training a Lednik model."""
 
     model_type: Literal["lednik"]
-    embeddings_dropout: float = 0.0
+    embedding_dropout: float = 0.0
     attention_dropout: float = 0.0
     out_attn_dropout: float = 0.0
     mlp_dropout: float = 0.0

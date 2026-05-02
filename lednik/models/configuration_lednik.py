@@ -19,7 +19,7 @@ class LednikConfig(PreTrainedConfig):
     # Output embedding size produced by model.
     output_hidden_size: int | None = None
     # Dropout applied on input embeddings.
-    embeddings_dropout: float = 0.0
+    embedding_dropout: float = 0.0
     # Number of attention heads.
     num_attention_heads: int = 6
     # Number of transformer layers.
