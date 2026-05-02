@@ -132,7 +132,6 @@ def create_static_embeddings_model(
 
         if modify_tokenizer:
             customize_tokenizer(static_model.config, tokenizer)
-        static_model.add_tokenizer(tokenizer)
     return static_model
 
 
