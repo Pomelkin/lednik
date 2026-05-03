@@ -174,6 +174,7 @@ class DistillationModule(KostylLightningModule):
         )
 
         self.eval_outputs: list[_EvalResult] = []
+        self.cpu_group: dist.ProcessGroup | None = None
         self._model_configured = False
         return
 
@@ -811,6 +812,12 @@ class DistillationModule(KostylLightningModule):
         return output.loss
 
     @override
+    def on_fit_end(self) -> None:
+        if self.cpu_group is not None:
+            dist.destroy_process_group(self.cpu_group)
+        return
+
+    @override
     @torch.inference_mode()
     def on_validation_epoch_end(self) -> None:  # type: ignore
         if (
@@ -840,15 +847,24 @@ class DistillationModule(KostylLightningModule):
         pos_mask = torch.cat(pos_mask_list, dim=0)
 
         if dist.is_initialized():
-            teacher_embeddings = teacher_embeddings.to(device=self.device).contiguous()
-            student_embeddings = student_embeddings.to(device=self.device).contiguous()
-            labels = labels.to(device=self.device).contiguous()
-            queries_mask = queries_mask.to(device=self.device).contiguous()
-            pos_mask = pos_mask.to(device=self.device).contiguous()
+            # Оставляем тензоры на CPU, чтобы точно не было OOM на видеокартах
+            teacher_embeddings = teacher_embeddings.contiguous()
+            student_embeddings = student_embeddings.contiguous()
+            labels = labels.contiguous()
+            queries_mask = queries_mask.contiguous()
+            pos_mask = pos_mask.contiguous()
 
             group = self._data_parallel_group
             world_size = dist.get_world_size(group)
             rank = dist.get_rank(group)
+
+            # Для общения по CPU создаем gloo-группу, соответствующую нашей группе data_parallel
+            if self.cpu_group is None:
+                global_ranks = dist.get_process_group_ranks(group)
+                self.cpu_group = cast(
+                    dist.ProcessGroup,
+                    dist.new_group(ranks=global_ranks, backend="gloo"),
+                )
 
             def _gather_to_rank0(tensor: torch.Tensor) -> list[torch.Tensor] | None:
                 if rank == 0:
@@ -859,7 +875,7 @@ class DistillationModule(KostylLightningModule):
                     tensor,
                     gather_list=gather_list,
                     group_dst=0,
-                    group=group,
+                    group=self.cpu_group,
                 )
                 return gather_list  # unused on non-zero
 
@@ -872,17 +888,15 @@ class DistillationModule(KostylLightningModule):
             if self.trainer.is_global_zero:
                 teacher_embeddings = torch.cat(
                     cast(list[torch.Tensor], teacher_embeddings_list), dim=0
-                ).cpu()
+                )
                 student_embeddings = torch.cat(
                     cast(list[torch.Tensor], student_embeddings_list), dim=0
-                ).cpu()
-                labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0).cpu()
+                )
+                labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0)
                 queries_mask = torch.cat(
                     cast(list[torch.Tensor], queries_mask_list), dim=0
-                ).cpu()
-                pos_mask = torch.cat(
-                    cast(list[torch.Tensor], pos_mask_list), dim=0
-                ).cpu()
+                )
+                pos_mask = torch.cat(cast(list[torch.Tensor], pos_mask_list), dim=0)
 
         if self.trainer.is_global_zero:
             contract = ValidationContract(
