@@ -368,7 +368,7 @@ def flash_attention_4_forward(
         qkv = qkv.to(module.fa_target_dtype)
     else:
         convert_dtype = False
-    attn_output, _ = flash_attn_varlen_func(
+    attn_output, _ = flash_attn_varlen_func(  # type: ignore
         q=q,
         k=k,
         v=v,
