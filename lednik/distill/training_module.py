@@ -85,6 +85,24 @@ class _EvalResult:
         return
 
 
+def is_fp8_supported() -> bool:
+    """Check if the current environment supports FP8 training."""
+    if not torch.cuda.is_available():
+        return False
+    major, minor = torch.cuda.get_device_capability()
+    return (major, minor) >= (8, 9)
+
+
+def is_torchao_available() -> bool:
+    """Check if torchao library is available for advanced optimizers and schedulers."""
+    try:
+        import torchao  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _get_special_tokens_ids(
     tokenizer: SentencePieceBackend | TokenizersBackend,
 ) -> list[int]:
@@ -290,6 +308,18 @@ class DistillationModule(KostylLightningModule):
                     mesh=dp_mesh,
                     mp_policy=policies["mp_policy"],
                 )
+
+        if is_fp8_supported() and is_torchao_available():
+            from torchao.float8 import convert_to_float8_training
+
+            convert_to_float8_training(self)
+            self.teacher = torch.compile(self.teacher)  # type: ignore
+            self.student = torch.compile(self.student)  # type: ignore
+            if not isinstance(self.student_to_teacher_proj, nn.Identity):
+                self.student_to_teacher_proj = torch.compile(  # type: ignore
+                    self.student_to_teacher_proj
+                )
+
         self._model_configured = True
         return
 
