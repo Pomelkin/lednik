@@ -840,30 +840,27 @@ class DistillationModule(KostylLightningModule):
         pos_mask = torch.cat(pos_mask_list, dim=0)
 
         if dist.is_initialized():
-            teacher_embeddings = teacher_embeddings.to(device=self.device)
-            student_embeddings = student_embeddings.to(device=self.device)
-            labels = labels.to(device=self.device)
-            queries_mask = queries_mask.to(device=self.device)
-            pos_mask = pos_mask.to(device=self.device)
+            teacher_embeddings = teacher_embeddings.to(device=self.device).contiguous()
+            student_embeddings = student_embeddings.to(device=self.device).contiguous()
+            labels = labels.to(device=self.device).contiguous()
+            queries_mask = queries_mask.to(device=self.device).contiguous()
+            pos_mask = pos_mask.to(device=self.device).contiguous()
 
             group = self._data_parallel_group
             world_size = dist.get_world_size(group)
             rank = dist.get_rank(group)
-            works = []
 
             def _gather_to_rank0(tensor: torch.Tensor) -> list[torch.Tensor] | None:
                 if rank == 0:
                     gather_list = [torch.empty_like(tensor) for _ in range(world_size)]
                 else:
                     gather_list = None
-                work = dist.gather(
+                dist.gather(
                     tensor,
                     gather_list=gather_list,
-                    dst=0,
+                    group_dst=0,
                     group=group,
-                    async_op=True,
                 )
-                works.append(cast(dist.Work, work))
                 return gather_list  # unused on non-zero
 
             teacher_embeddings_list = _gather_to_rank0(teacher_embeddings)
@@ -871,9 +868,6 @@ class DistillationModule(KostylLightningModule):
             labels_list = _gather_to_rank0(labels)
             queries_mask_list = _gather_to_rank0(queries_mask)
             pos_mask_list = _gather_to_rank0(pos_mask)
-
-            for work in works:
-                work.wait()
 
             if self.trainer.is_global_zero:
                 teacher_embeddings = torch.cat(
