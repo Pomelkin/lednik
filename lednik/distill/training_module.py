@@ -910,8 +910,8 @@ class DistillationModule(KostylLightningModule):
                 num_classes=self.num_labels,
             )
             self.evaluation_dispatcher.dispatch(contract=contract)
-            self.eval_outputs = []
 
+        self.eval_outputs = []
         if dist.is_initialized():
             dist.barrier()
         return
