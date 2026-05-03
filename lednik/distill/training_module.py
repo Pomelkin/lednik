@@ -840,6 +840,12 @@ class DistillationModule(KostylLightningModule):
         pos_mask = torch.cat(pos_mask_list, dim=0)
 
         if dist.is_initialized():
+            teacher_embeddings = teacher_embeddings.to(device=self.device)
+            student_embeddings = student_embeddings.to(device=self.device)
+            labels = labels.to(device=self.device)
+            queries_mask = queries_mask.to(device=self.device)
+            pos_mask = pos_mask.to(device=self.device)
+
             group = self._data_parallel_group
             world_size = dist.get_world_size(group)
             rank = dist.get_rank(group)
@@ -872,15 +878,17 @@ class DistillationModule(KostylLightningModule):
             if self.trainer.is_global_zero:
                 teacher_embeddings = torch.cat(
                     cast(list[torch.Tensor], teacher_embeddings_list), dim=0
-                )
+                ).cpu()
                 student_embeddings = torch.cat(
                     cast(list[torch.Tensor], student_embeddings_list), dim=0
-                )
-                labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0)
+                ).cpu()
+                labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0).cpu()
                 queries_mask = torch.cat(
                     cast(list[torch.Tensor], queries_mask_list), dim=0
-                )
-                pos_mask = torch.cat(cast(list[torch.Tensor], pos_mask_list), dim=0)
+                ).cpu()
+                pos_mask = torch.cat(
+                    cast(list[torch.Tensor], pos_mask_list), dim=0
+                ).cpu()
 
         if self.trainer.is_global_zero:
             contract = ValidationContract(
