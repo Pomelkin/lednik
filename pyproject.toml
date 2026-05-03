@@ -19,6 +19,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+bench = [
+    "mteb[faiss-cpu]>=2.12.30",
+]
 dev = [
   "filelock>=3.25.2",
   "ipywidgets>=8.1.8",
