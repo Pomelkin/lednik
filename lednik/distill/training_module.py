@@ -319,6 +319,7 @@ class DistillationModule(KostylLightningModule):
                 self.student_to_teacher_proj = torch.compile(  # type: ignore
                     self.student_to_teacher_proj
                 )
+            logger.info("Training will be performed in FP8 precision.")
 
         self._model_configured = True
         return
