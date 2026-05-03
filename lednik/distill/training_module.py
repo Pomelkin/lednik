@@ -308,19 +308,6 @@ class DistillationModule(KostylLightningModule):
                     mesh=dp_mesh,
                     mp_policy=policies["mp_policy"],
                 )
-
-        if is_fp8_supported() and is_torchao_available():
-            from torchao.float8 import convert_to_float8_training
-
-            convert_to_float8_training(self)
-            self.teacher = torch.compile(self.teacher)  # type: ignore
-            self.student = torch.compile(self.student)  # type: ignore
-            if not isinstance(self.student_to_teacher_proj, nn.Identity):
-                self.student_to_teacher_proj = torch.compile(  # type: ignore
-                    self.student_to_teacher_proj
-                )
-            logger.info("Training will be performed in FP8 precision.")
-
         self._model_configured = True
         return
 
