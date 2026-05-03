@@ -846,57 +846,57 @@ class DistillationModule(KostylLightningModule):
         queries_mask = torch.cat(queries_mask_list, dim=0)
         pos_mask = torch.cat(pos_mask_list, dim=0)
 
-        if dist.is_initialized():
-            # Оставляем тензоры на CPU, чтобы точно не было OOM на видеокартах
-            teacher_embeddings = teacher_embeddings.contiguous()
-            student_embeddings = student_embeddings.contiguous()
-            labels = labels.contiguous()
-            queries_mask = queries_mask.contiguous()
-            pos_mask = pos_mask.contiguous()
+        # if dist.is_initialized():
+        #     # Оставляем тензоры на CPU, чтобы точно не было OOM на видеокартах
+        #     teacher_embeddings = teacher_embeddings.contiguous()
+        #     student_embeddings = student_embeddings.contiguous()
+        #     labels = labels.contiguous()
+        #     queries_mask = queries_mask.contiguous()
+        #     pos_mask = pos_mask.contiguous()
 
-            group = self._data_parallel_group
-            world_size = dist.get_world_size(group)
-            rank = dist.get_rank(group)
+        #     group = self._data_parallel_group
+        #     world_size = dist.get_world_size(group)
+        #     rank = dist.get_rank(group)
 
-            # Для общения по CPU создаем gloo-группу, соответствующую нашей группе data_parallel
-            if self.cpu_group is None:
-                global_ranks = dist.get_process_group_ranks(group)
-                self.cpu_group = cast(
-                    dist.ProcessGroup,
-                    dist.new_group(ranks=global_ranks, backend="gloo"),
-                )
+        #     # Для общения по CPU создаем gloo-группу, соответствующую нашей группе data_parallel
+        #     if self.cpu_group is None:
+        #         global_ranks = dist.get_process_group_ranks(group)
+        #         self.cpu_group = cast(
+        #             dist.ProcessGroup,
+        #             dist.new_group(ranks=global_ranks, backend="gloo"),
+        #         )
 
-            def _gather_to_rank0(tensor: torch.Tensor) -> list[torch.Tensor] | None:
-                if rank == 0:
-                    gather_list = [torch.empty_like(tensor) for _ in range(world_size)]
-                else:
-                    gather_list = None
-                dist.gather(
-                    tensor,
-                    gather_list=gather_list,
-                    group_dst=0,
-                    group=self.cpu_group,
-                )
-                return gather_list  # unused on non-zero
+        #     def _gather_to_rank0(tensor: torch.Tensor) -> list[torch.Tensor] | None:
+        #         if rank == 0:
+        #             gather_list = [torch.empty_like(tensor) for _ in range(world_size)]
+        #         else:
+        #             gather_list = None
+        #         dist.gather(
+        #             tensor,
+        #             gather_list=gather_list,
+        #             group_dst=0,
+        #             group=self.cpu_group,
+        #         )
+        #         return gather_list  # unused on non-zero
 
-            teacher_embeddings_list = _gather_to_rank0(teacher_embeddings)
-            student_embeddings_list = _gather_to_rank0(student_embeddings)
-            labels_list = _gather_to_rank0(labels)
-            queries_mask_list = _gather_to_rank0(queries_mask)
-            pos_mask_list = _gather_to_rank0(pos_mask)
+        #     teacher_embeddings_list = _gather_to_rank0(teacher_embeddings)
+        #     student_embeddings_list = _gather_to_rank0(student_embeddings)
+        #     labels_list = _gather_to_rank0(labels)
+        #     queries_mask_list = _gather_to_rank0(queries_mask)
+        #     pos_mask_list = _gather_to_rank0(pos_mask)
 
-            if self.trainer.is_global_zero:
-                teacher_embeddings = torch.cat(
-                    cast(list[torch.Tensor], teacher_embeddings_list), dim=0
-                )
-                student_embeddings = torch.cat(
-                    cast(list[torch.Tensor], student_embeddings_list), dim=0
-                )
-                labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0)
-                queries_mask = torch.cat(
-                    cast(list[torch.Tensor], queries_mask_list), dim=0
-                )
-                pos_mask = torch.cat(cast(list[torch.Tensor], pos_mask_list), dim=0)
+        #     if self.trainer.is_global_zero:
+        #         teacher_embeddings = torch.cat(
+        #             cast(list[torch.Tensor], teacher_embeddings_list), dim=0
+        #         )
+        #         student_embeddings = torch.cat(
+        #             cast(list[torch.Tensor], student_embeddings_list), dim=0
+        #         )
+        #         labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0)
+        #         queries_mask = torch.cat(
+        #             cast(list[torch.Tensor], queries_mask_list), dim=0
+        #         )
+        #         pos_mask = torch.cat(cast(list[torch.Tensor], pos_mask_list), dim=0)
 
         if self.trainer.is_global_zero:
             contract = ValidationContract(

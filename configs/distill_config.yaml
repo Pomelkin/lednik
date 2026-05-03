@@ -4,7 +4,7 @@ student_pooling_method: mean
 distillation_method:
   type: direct-distillation
   loss_type: cosine
-  contrastive_loss_weight: 0.8
+  contrastive_loss_weight: 0.75
   temperature: 0.07
 optimizer:
   type: AdamW8bit
@@ -14,9 +14,9 @@ optimizer:
 lr:
   scheduler_type: plateau-with-cosine-annealing
   warmup_ratio: 0.2
-  warmup_value: 6e-5
-  base_value: 2e-4
+  warmup_value: 7e-5
+  base_value: 3e-4
   final_value: 4e-5
   plateau_ratio: 0.7
 weight_decay:
-  base_value: 0.001
+  base_value: 0.0005
