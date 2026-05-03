@@ -775,7 +775,7 @@ class DistillationModule(KostylLightningModule):
         if output.per_token_loss.item() > 0.0:
             metrics["PerTokenLoss"] = output.per_token_loss.detach()
 
-        if self.trainer.is_global_zero:
+        if self.task is not None and self.evaluation_dispatcher is not None:
             self.eval_outputs.append(
                 _EvalResult(
                     teacher_sentence_embeddings=output.teacher_sentence_embeddings,
@@ -793,8 +793,9 @@ class DistillationModule(KostylLightningModule):
             on_step=False,
             on_epoch=True,
             logger=True,
-            sync_dist=False,
+            sync_dist=True,
             stage="val",
+            sync_dist_group=self._data_parallel_group,
         )
         self.log(
             "val_loss",
@@ -812,33 +813,76 @@ class DistillationModule(KostylLightningModule):
     @override
     @torch.inference_mode()
     def on_validation_epoch_end(self) -> None:  # type: ignore
-        if self.trainer.sanity_checking:
+        if (
+            self.trainer.sanity_checking
+            or self.task is None
+            or self.evaluation_dispatcher is None
+        ):
             return
 
-        if (
-            self.trainer.is_global_zero
-            and self.task is not None
-            and self.evaluation_dispatcher is not None
-        ):
-            teacher_embeddings_list = []
-            student_embeddings_list = []
-            labels_list = []
-            queries_mask_list = []
-            pos_mask_list = []
-            for output in self.eval_outputs:
-                teacher_embeddings_list.append(output.teacher_sentence_embeddings)
-                student_embeddings_list.append(output.student_sentence_embeddings)
-                labels_list.append(output.labels)
-                queries_mask_list.append(output.queries_mask)
-                pos_mask_list.append(output.positives_mask)
+        teacher_embeddings_list = []
+        student_embeddings_list = []
+        labels_list = []
+        queries_mask_list = []
+        pos_mask_list = []
+        for output in self.eval_outputs:
+            teacher_embeddings_list.append(output.teacher_sentence_embeddings)
+            student_embeddings_list.append(output.student_sentence_embeddings)
+            labels_list.append(output.labels)
+            queries_mask_list.append(output.queries_mask)
+            pos_mask_list.append(output.positives_mask)
 
-            ### TORCH TENSORS ###
-            teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0)
-            student_embeddings = torch.cat(student_embeddings_list, dim=0)
-            labels = torch.cat(labels_list, dim=0)
-            queries_mask = torch.cat(queries_mask_list, dim=0)
-            pos_mask = torch.cat(pos_mask_list, dim=0)
+        ### TORCH TENSORS ###
+        teacher_embeddings = torch.cat(teacher_embeddings_list, dim=0)
+        student_embeddings = torch.cat(student_embeddings_list, dim=0)
+        labels = torch.cat(labels_list, dim=0)
+        queries_mask = torch.cat(queries_mask_list, dim=0)
+        pos_mask = torch.cat(pos_mask_list, dim=0)
 
+        if dist.is_initialized():
+            group = self._data_parallel_group
+            world_size = dist.get_world_size(group)
+            rank = dist.get_rank(group)
+            works = []
+
+            def _gather_to_rank0(tensor: torch.Tensor) -> list[torch.Tensor] | None:
+                if rank == 0:
+                    gather_list = [torch.empty_like(tensor) for _ in range(world_size)]
+                else:
+                    gather_list = None
+                work = dist.gather(
+                    tensor,
+                    gather_list=gather_list,
+                    dst=0,
+                    group=group,
+                    async_op=True,
+                )
+                works.append(cast(dist.Work, work))
+                return gather_list  # unused on non-zero
+
+            teacher_embeddings_list = _gather_to_rank0(teacher_embeddings)
+            student_embeddings_list = _gather_to_rank0(student_embeddings)
+            labels_list = _gather_to_rank0(labels)
+            queries_mask_list = _gather_to_rank0(queries_mask)
+            pos_mask_list = _gather_to_rank0(pos_mask)
+
+            for work in works:
+                work.wait()
+
+            if self.trainer.is_global_zero:
+                teacher_embeddings = torch.cat(
+                    cast(list[torch.Tensor], teacher_embeddings_list), dim=0
+                )
+                student_embeddings = torch.cat(
+                    cast(list[torch.Tensor], student_embeddings_list), dim=0
+                )
+                labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0)
+                queries_mask = torch.cat(
+                    cast(list[torch.Tensor], queries_mask_list), dim=0
+                )
+                pos_mask = torch.cat(cast(list[torch.Tensor], pos_mask_list), dim=0)
+
+        if self.trainer.is_global_zero:
             contract = ValidationContract(
                 task_id=self.task.id,
                 current_step=self.global_step,
