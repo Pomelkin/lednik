@@ -7,7 +7,7 @@ distillation_method:
   contrastive_loss_weight: 0.8
   temperature: 0.07
 optimizer:
-  type: Adam8bit
+  type: AdamW8bit
   betas: [ 0.9, 0.98 ]
   block_size: 64
   bf16_stochastic_round: true
