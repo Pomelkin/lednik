@@ -42,8 +42,11 @@ checkpoint:
   filename: "|{epoch}|-|{step}|-|{val_loss:.5f}|"
 
 teacher_model_id: af954495ff03440abc58790c4e41ff22
-student_model_id: c9aae989f5b54f29b2b7540bd8508d3e
+student_model_id: b4174b24758d41faa9c2cb3842a62fb7
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
+
+is_student_lightning_checkpoint: true
+checkpoint_weight_prefix: "student."
 
 model_cfg:
   model_type: lednik
