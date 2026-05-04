@@ -43,7 +43,17 @@ class DistillationConfig(HyperparamsConfig):
 
     distillation_method: AVAILABLE_DISTILLATION_METHODS
     teacher_pooling_method: Literal["cls", "mean", "last"]
-    student_pooling_method: Literal["cls", "mean", "last"] | None = None
+
+    freeze_student_emb_steps_ratio: float | None = Field(
+        default=None, ge=0.0, le=1.0, validate_default=False
+    )
+
+    embeddings_lr_multiplier: float | None = Field(
+        default=None, gt=0.0, validate_default=False
+    )
+    attn_proj_wd_multiplier: float | None = Field(
+        default=None, gt=0.0, validate_default=False
+    )
     grad_clip_val: float | None = Field(default=None, gt=0, validate_default=False)
     optimizer: OPTIMIZER_CONFIG
     lr: Lr

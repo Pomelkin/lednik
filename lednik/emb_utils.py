@@ -64,7 +64,7 @@ def extract_embeddings(
 
 
 def get_sentence_embedding(
-    input_ids: torch.Tensor,
+    hidden_states: torch.Tensor,
     attention_mask: torch.Tensor,
     pooling_method: Literal["cls", "mean", "last"],
 ) -> torch.Tensor:
@@ -72,7 +72,7 @@ def get_sentence_embedding(
     Compute sentence embeddings from token embeddings using the specified pooling method.
 
     Args:
-        input_ids: Tensor of shape (batch_size, seq_length) containing token IDs.
+        hidden_states: Tensor of shape (batch_size, seq_length, embedding_dim) containing token embeddings.
         attention_mask: Tensor of shape (batch_size, seq_length) indicating valid tokens.
         pooling_method: The pooling strategy to use. Must be one of "cls", "mean", or "last".
 
@@ -81,14 +81,14 @@ def get_sentence_embedding(
 
     """
     if pooling_method == "cls":
-        return input_ids[:, 0, :]
+        return hidden_states[:, 0, :]
     elif pooling_method == "mean":
-        masked_embeddings = input_ids * attention_mask.unsqueeze(-1)
+        masked_embeddings = hidden_states * attention_mask.unsqueeze(-1)
         sum_embeddings = masked_embeddings.sum(dim=1)
         lengths = attention_mask.sum(dim=1, keepdim=True).clamp(min=1)
         return sum_embeddings / lengths
     elif pooling_method == "last":
         lengths = (attention_mask.cumsum(dim=-1) - 1).amax(dim=-1)
-        return input_ids[torch.arange(input_ids.size(0)), lengths]
+        return hidden_states[torch.arange(hidden_states.size(0)), lengths]
     else:
         raise ValueError(f"Unsupported pooling method: {pooling_method}")

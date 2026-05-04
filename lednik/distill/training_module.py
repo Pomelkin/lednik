@@ -1,3 +1,4 @@
+from lednik.models.outputs import LednikModelOutput
 from dataclasses import dataclass
 from typing import Any
 from typing import Literal
@@ -18,7 +19,6 @@ from kostyl.ml.optim.factory import create_optimizer
 from kostyl.ml.optim.factory import create_scheduler
 from kostyl.ml.optim.schedulers import BaseScheduler
 from kostyl.ml.optim.schedulers import CompositeScheduler
-from kostyl.ml.params_groups import create_params_groups
 from kostyl.utils.logging import setup_logger
 from lightning.pytorch.strategies import FSDPStrategy
 from lightning.pytorch.strategies import ModelParallelStrategy
@@ -53,6 +53,7 @@ from lednik.emb_utils import get_sentence_embedding
 from lednik.models import LednikModel
 from lednik.models import StaticEmbeddingsModel
 from lednik.models.outputs import StaticEmbeddingsOutput
+from .param_groups import create_param_groups
 
 
 logger = setup_logger()
@@ -420,12 +421,18 @@ class DistillationModule(KostylLightningModule):
             trainer=self.trainer,
             dp_process_group=self._data_parallel_group,
         )
+        freeze_student_embeddings = (
+            self.train_cfg.freeze_student_emb_steps_ratio is not None
+        ) and self.train_cfg.freeze_student_emb_steps_ratio > 0.0
 
-        params = create_params_groups(
+        params = create_param_groups(
             model=self,
             lr=self.train_cfg.lr.base_value,
             weight_decay=self.train_cfg.weight_decay.base_value,
             no_decay_keywords={"emb", "token_pos_weights"},
+            freeze_student_embeddings=freeze_student_embeddings,
+            embeddings_lr_multiplier=self.train_cfg.embeddings_lr_multiplier,
+            attn_proj_wd_multiplier=self.train_cfg.attn_proj_wd_multiplier,
         )
 
         optim = create_optimizer(
@@ -437,13 +444,35 @@ class DistillationModule(KostylLightningModule):
 
         schedulers: dict[str, BaseScheduler] = {}
         if self.train_cfg.lr.scheduler_type is not None:
-            scheduler = create_scheduler(
-                config=self.train_cfg.lr,
-                optim=optim,
-                num_iters=total_steps,
-                param_group_field="lr",
-            )
-            schedulers[scheduler.param_name] = scheduler
+            if freeze_student_embeddings:
+                emb_scheduler = create_scheduler(
+                    config=self.train_cfg.lr,
+                    optim=optim,
+                    num_iters=total_steps,
+                    param_group_field="lr",
+                    apply_if_field="is_embedding",
+                    multiplier_field="lr_multiplier",
+                    freeze_ratio=self.train_cfg.freeze_student_emb_steps_ratio,
+                )
+                schedulers["embedding_lr"] = emb_scheduler
+                model_scheduler = create_scheduler(
+                    config=self.train_cfg.lr,
+                    optim=optim,
+                    num_iters=total_steps,
+                    param_group_field="lr",
+                    ignore_if_field="is_embedding",
+                    multiplier_field=None,
+                )
+                schedulers["model_lr"] = model_scheduler
+            else:
+                scheduler = create_scheduler(
+                    config=self.train_cfg.lr,
+                    optim=optim,
+                    num_iters=total_steps,
+                    param_group_field="lr",
+                    multiplier_field="lr_multiplier",
+                )
+                schedulers[scheduler.param_name] = scheduler
         if self.train_cfg.weight_decay.scheduler_type is not None:
             scheduler = create_scheduler(
                 config=self.train_cfg.weight_decay,
@@ -508,23 +537,12 @@ class DistillationModule(KostylLightningModule):
             student_embeddings = student_output.token_embeddings
             student_sentence_embeddings = student_output.sentence_embeddings
         else:
-            outputs = self.student(
+            outputs: LednikModelOutput = self.student(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
             )
-            student_embeddings = outputs[0]
-
-            pooling_method = (
-                self.train_cfg.student_pooling_method
-                if self.train_cfg.student_pooling_method is not None
-                else self.train_cfg.teacher_pooling_method
-            )
-
-            student_sentence_embeddings = get_sentence_embedding(
-                student_embeddings,
-                attention_mask,
-                pooling_method=pooling_method,
-            )
+            student_embeddings = outputs.last_hidden_state
+            student_sentence_embeddings = outputs.sentence_embeddings
         return {
             "student_embeddings": student_embeddings,
             "student_sentence_embeddings": student_sentence_embeddings,
