@@ -9,7 +9,7 @@ distillation_method:
 optimizer:
   type: AdamW8bit
   betas: [ 0.9, 0.98 ]
-  block_size: 64
+  block_size: 128
   bf16_stochastic_round: true
 lr:
   scheduler_type: plateau-with-cosine-annealing
@@ -21,6 +21,4 @@ lr:
 weight_decay:
   base_value: 0.001
 
-freeze_student_emb_steps_ratio: 0.15
-embeddings_lr_multiplier: 0.01
-attn_proj_wd_multiplier: 0.01
+freeze_student_emb_steps_ratio: 0.1
