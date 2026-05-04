@@ -25,13 +25,13 @@ def create_param_groups(
     if no_decay_keywords is not None:
         no_decay_keywords_ = no_decay_keywords_.union(no_decay_keywords)
 
-    if freeze_student_embeddings and not isinstance(model.student_model, LednikModel):
+    if freeze_student_embeddings and not isinstance(model.student, LednikModel):
         raise ValueError(
             "freeze_student_embeddings is only supported for LednikModel student models."
         )
 
     if attn_proj_wd_multiplier is not None and not isinstance(
-        model.student_model, LednikModel
+        model.student, LednikModel
     ):
         raise ValueError(
             "attn_proj_wd_multiplier is only supported for LednikModel student models."
