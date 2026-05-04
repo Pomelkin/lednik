@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Any, TYPE_CHECKING
-from lednik.models import LednikModel
 
 if TYPE_CHECKING:
     from .training_module import DistillationModule
@@ -25,17 +24,18 @@ def create_param_groups(
     if no_decay_keywords is not None:
         no_decay_keywords_ = no_decay_keywords_.union(no_decay_keywords)
 
-    if freeze_student_embeddings and not isinstance(model.student, LednikModel):
-        raise ValueError(
-            "freeze_student_embeddings is only supported for LednikModel student models."
-        )
+    # TODO: Make if-checks FSDP/DDP Aware
+    # if freeze_student_embeddings and not isinstance(model.student, LednikModel):
+    #     raise ValueError(
+    #         "freeze_student_embeddings is only supported for LednikModel student models."
+    #     )
 
-    if attn_proj_wd_multiplier is not None and not isinstance(
-        model.student, LednikModel
-    ):
-        raise ValueError(
-            "attn_proj_wd_multiplier is only supported for LednikModel student models."
-        )
+    # if attn_proj_wd_multiplier is not None and not isinstance(
+    #     model.student, LednikModel
+    # ):
+    #     raise ValueError(
+    #         "attn_proj_wd_multiplier is only supported for LednikModel student models."
+    #     )
 
     param_groups = []
     for name, param in model.named_parameters():
