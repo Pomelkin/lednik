@@ -1,6 +1,8 @@
-from typing import Any
-from .training_module import DistillationModule
+from typing import Any, TYPE_CHECKING
 from lednik.models import LednikModel
+
+if TYPE_CHECKING:
+    from .training_module import DistillationModule
 
 
 def create_param_groups(
