@@ -17,7 +17,6 @@ from torch.nn.attention import varlen
 from transformers import PreTrainedModel
 from transformers.integrations import use_kernel_func_from_hub
 from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutput
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_rope_utils import dynamic_rope_update
 from transformers.utils import is_flash_attn_2_available, is_flash_attn_4_available
@@ -29,6 +28,7 @@ from transformers.modeling_rope_utils import RopeParameters
 
 
 from .configuration_lednik import LednikConfig
+from .outputs import LednikModelOutput
 
 
 if is_flash_attn_2_available():
@@ -725,7 +725,6 @@ class LednikPreTrainedModel(
     config_class = LednikConfig
     base_model_prefix = "model"
     _supports_flash_attn = True
-    _supports_sdpa = False
     _supports_flex_attn = False
     _supports_sdpa = True
 
@@ -981,7 +980,7 @@ class LednikModel(LednikPreTrainedModel):
         seqlen: int | None = None,
         output_attentions: bool | None = None,
         **_kwargs: Any,
-    ) -> BaseModelOutput:
+    ) -> LednikModelOutput:
         """
         Forward pass of the Lednik Model.
 
@@ -1144,7 +1143,12 @@ class LednikModel(LednikPreTrainedModel):
                 seqlen=seqlen,
             )
         hidden_state = self.output_projection(hidden_state)
-        hidden_state = self.final_norm(hidden_state)
+        sentence_embeddings = self._mean_pool(
+            hidden_state=hidden_state,
+            attention_mask=attention_mask,
+            cu_seqlens=cu_seqlens,
+        )
+        sentence_embeddings = self.final_norm(sentence_embeddings)
 
         if REPAD:
             if (cu_seqlens is None) or (seqlen is None) or (non_pad_indices is None):
@@ -1158,7 +1162,47 @@ class LednikModel(LednikPreTrainedModel):
                 batch_size=cu_seqlens.size(0) - 1,
                 padding_value=0,
             )
-        return BaseModelOutput(last_hidden_state=hidden_state)
+        return LednikModelOutput(
+            last_hidden_state=hidden_state, sentence_embeddings=sentence_embeddings
+        )
+
+    def _mean_pool(
+        self,
+        hidden_state: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if attention_mask is None:
+            raise NotImplementedError(
+                "for mean pooling, attention_mask must be provided."
+            )
+        if cu_seqlens is not None:
+            if hidden_state.ndim != 2:
+                raise ValueError(
+                    f"When cu_seqlens is provided, hidden_state must be 2D, got {hidden_state.ndim}D"
+                )
+            sentence_embeddings = [
+                hidden_state[cu_seqlens[i] : cu_seqlens[i + 1]].mean(
+                    dim=0, keepdim=True
+                )
+                for i in range(cu_seqlens.size(0) - 1)
+            ]
+            sentence_embeddings = torch.cat(sentence_embeddings, dim=0)
+        else:
+            if hidden_state.ndim != 3:
+                raise ValueError(
+                    f"When cu_seqlens is not provided, hidden_state must be 3D, got {hidden_state.ndim}D"
+                )
+            if attention_mask.ndim != 2:
+                raise ValueError(
+                    f"attention_mask must be 2D, got {attention_mask.ndim}D"
+                )
+            expanded_mask = attention_mask.unsqueeze(-1)
+            masked_hidden_state = hidden_state * expanded_mask
+            sentence_embeddings = masked_hidden_state.sum(dim=1) / attention_mask.sum(
+                dim=1, keepdim=True
+            )
+        return sentence_embeddings
 
     def _warn_if_output_attentions_and_flash_attn(
         self,

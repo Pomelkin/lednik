@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 
 
-@dataclass(slots=True)
+@dataclass
 class StaticEmbeddingsOutput:
     """Output class for static embeddings models."""
 
@@ -16,7 +16,19 @@ class StaticEmbeddingsOutput:
         return (self.token_embeddings, self.sentence_embeddings)[item]
 
 
-@dataclass(slots=True)
+@dataclass
+class LednikModelOutput:
+    """Output class for static embeddings models."""
+
+    last_hidden_state: torch.Tensor
+    sentence_embeddings: torch.Tensor
+
+    def __getitem__(self, item: int) -> torch.Tensor:
+        """Enable indexing into the output object. 0: embeddings, 1: sentence_embeddings."""
+        return (self.last_hidden_state, self.sentence_embeddings)[item]
+
+
+@dataclass
 class StaticEmbeddingsSequenceClassifierOutput:
     """Output class for static embeddings sequence classifier models."""
 
