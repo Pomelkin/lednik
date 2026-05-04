@@ -453,6 +453,8 @@ class DistillationModule(KostylLightningModule):
                     apply_if_field="is_embedding",
                     multiplier_field="lr_multiplier",
                     freeze_ratio=self.train_cfg.freeze_student_emb_steps_ratio,
+                    plateau_ratio=self.train_cfg.lr.plateau_ratio  # type: ignore
+                    - self.train_cfg.freeze_student_emb_steps_ratio,
                 )
                 schedulers["embedding_lr"] = emb_scheduler
                 model_scheduler = create_scheduler(
