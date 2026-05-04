@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Literal
 from collections import defaultdict
 from typing import Any
@@ -42,6 +43,13 @@ too_big_bench = {
 }
 
 
+@dataclass
+class MTEBRunScores:  # noqa: D101
+    scores: dict[str, float]
+    avg_score_per_task: dict[str, float]
+    avg_score: float
+
+
 def _determine_lednik_model_type(
     model_id: str,
 ) -> type[LednikModel] | type[StaticEmbeddingsModel] | type[AutoModel]:
@@ -68,92 +76,75 @@ def _setup_output_file(path: Path) -> None:
     return
 
 
-def _dump_result(
-    result: ModelResult, output_file: Path, task_id: str, num_parameters: int | None
-) -> None:
-    data2log: dict[str, Any] = {
-        "TaskID": task_id,
-        "ModelName": result.model_name,
-        "ModelRevision": result.model_revision,
-        "NumParameters": f"{num_parameters / 1_000_000:.2f}M"
-        if num_parameters is not None
-        else None,
-    }
+def _calculate_scores(result: ModelResult) -> MTEBRunScores:
     task_type2metric: dict[str, dict[str, float]] = defaultdict(dict)
-    score_sum = 0.0
     task_type2sum: dict[str, float] = defaultdict(float)
     for task_result in result.task_results:
         task_type2metric[task_result.task_type][task_result.task_name] = (
             task_result.main_score
         )
-        score_sum += task_result.main_score
         task_type2sum[task_result.task_type] += task_result.main_score
 
-    avg_per_task = {
+    avg_score_per_task = {
         f"Avg{task_type}": task_type2sum[task_type] / len(metrics)
         for task_type, metrics in task_type2metric.items()
     }
-    avg_per_task.update(
-        {
-            "AvgScore": score_sum / len(result.task_results)
-            if result.task_results
-            else 0.0,
-        }
-    )
-    data2log.update(avg_per_task)
-    data2log.update(
-        {
-            f"{task_type}/{task_name}": score
-            for task_type, metrics in task_type2metric.items()
-            for task_name, score in metrics.items()
-        }
+    scores = {
+        f"{task_type}/{task_name}": score
+        for task_type, metrics in task_type2metric.items()
+        for task_name, score in metrics.items()
+    }
+    return MTEBRunScores(
+        scores=scores,
+        avg_score_per_task=avg_score_per_task,
+        avg_score=sum(avg_score_per_task.values()) / len(avg_score_per_task),
     )
 
+
+def _dump_result(
+    scores: dict[str, float],
+    avg_score_per_task: dict[str, float],
+    avg_score: float,
+    model_name: str,
+    model_revision: str | None,
+    output_file: Path,
+    task_id: str,
+    num_parameters: int | None,
+) -> None:
+    data2log: dict[str, Any] = {
+        "TaskID": task_id,
+        "ModelName": model_name,
+        "ModelRevision": model_revision,
+        "NumParameters": f"{num_parameters / 1_000_000:.2f}M"
+        if num_parameters is not None
+        else None,
+        "AvgScore": avg_score,
+    }
+    data2log.update(avg_score_per_task)
+    data2log.update(scores)
     with output_file.open("a", encoding="utf-8") as f:
         f.write(f"{data2log}\n")
     return
 
 
 def _log_result(
-    task: Task, result: ModelResult, clearml_model: InputModel | None = None
+    avg_score: float,
+    avg_score_per_task: dict[str, float],
+    task: Task,
+    clearml_model: InputModel | None = None,
 ) -> None:
-    task_type2metric: dict[str, dict[str, float]] = defaultdict(dict)
-    score_sum = 0.0
-    task_type2sum: dict[str, float] = defaultdict(float)
-    for task_result in result.task_results:
-        task_type2metric[task_result.task_type][task_result.task_name] = (
-            task_result.main_score
-        )
-        score_sum += task_result.main_score
-        task_type2sum[task_result.task_type] += task_result.main_score
-
-    avg_per_task = {
-        f"Avg{task_type}": task_type2sum[task_type] / len(metrics)
-        for task_type, metrics in task_type2metric.items()
-    }
-    avg_per_task.update(
-        {
-            "AvgScore": score_sum / len(result.task_results)
-            if result.task_results
-            else 0.0,
-        }
-    )
-
     task_logger = task.get_logger()
-    for task_type, avg in avg_per_task.items():
-        task_logger.report_single_value(name=task_type, value=avg)
+    task_logger.report_single_value(name="AvgScore", value=avg_score)
 
-    for task_type, metrics in task_type2metric.items():
-        for task_name, score in metrics.items():
-            task_logger.report_single_value(
-                name=f"{task_type}/{task_name}", value=score
-            )
+    for name, score in avg_score_per_task.items():
+        task_logger.report_single_value(name=name, value=score)
 
     if clearml_model is not None and not clearml_model.published:
-        for task_type, avg in avg_per_task.items():
-            clearml_model.report_single_value(name=task_type, value=avg)
+        clearml_model.report_single_value(name="AvgScore", value=avg_score)
+        for name, score in avg_score_per_task.items():
+            clearml_model.report_single_value(name=name, value=score)
 
-    logger.info(f"Avg Score: {avg_per_task['AvgScore']:.4f}")
+    logger.info(f"Avg Score: {avg_score:.4f}")
     return
 
 
@@ -228,16 +219,22 @@ def main(
             and task.__class__.__name__ not in too_big_bench
         ]
     )
-
     run_result = mteb.evaluate(
         model_wrapper,  # type: ignore
         tasks2run,
         encode_kwargs={"batch_size": batch_size},
     )
+    run_scores = _calculate_scores(run_result)
 
-    _log_result(task, run_result, clearml_model)
+    _log_result(
+        run_scores.avg_score, run_scores.avg_score_per_task, task, clearml_model
+    )
     _dump_result(
-        run_result,
+        run_scores.scores,
+        run_scores.avg_score_per_task,
+        run_scores.avg_score,
+        run_result.model_name,
+        run_result.model_revision,
         output_file,
         task_id=task.task_id,
         num_parameters=model_wrapper.mteb_model_meta.n_parameters
