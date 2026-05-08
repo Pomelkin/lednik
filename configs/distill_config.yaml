@@ -20,4 +20,4 @@ lr:
 weight_decay:
   base_value: 0.001
 
-freeze_student_emb_steps_ratio: 0.05
+#freeze_student_emb_steps_ratio: 0.05
