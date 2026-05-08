@@ -1,6 +1,5 @@
 grad_clip_val: 2.0
-teacher_pooling_method: cls
-student_pooling_method: mean
+teacher_pooling_method: last
 distillation_method:
   type: direct-distillation
   loss_type: cosine
@@ -21,4 +20,4 @@ lr:
 weight_decay:
   base_value: 0.001
 
-freeze_student_emb_steps_ratio: 0.1
+freeze_student_emb_steps_ratio: 0.05
