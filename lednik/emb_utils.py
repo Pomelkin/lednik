@@ -88,7 +88,7 @@ def get_sentence_embedding(
         lengths = attention_mask.sum(dim=1, keepdim=True).clamp(min=1)
         return sum_embeddings / lengths
     elif pooling_method == "last":
-        lengths = (attention_mask.cumsum(dim=-1) - 1).amax(dim=-1)
+        lengths = attention_mask.sum(dim=-1) - 1
         return hidden_states[torch.arange(hidden_states.size(0)), lengths]
     else:
         raise ValueError(f"Unsupported pooling method: {pooling_method}")

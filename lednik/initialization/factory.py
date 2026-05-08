@@ -94,6 +94,11 @@ def create_static_embeddings_model(
             pooling=pooling,
             batch_size=embedding_extraction_batch_size,
         )
+
+        model_device = model.device
+        model.to(device="cpu")
+        embeddings_t = embeddings_t.cpu()
+
         pca = PCA(n_components=embedding_dim)
         output = pca.transform(embeddings_t)
         embeddings_t = output.reduced_data
@@ -115,7 +120,7 @@ def create_static_embeddings_model(
         static_model_cfg = StaticEmbeddingsConfig.from_dict(config_dict)
         static_model = StaticEmbeddingsModel.initialize(
             static_model_cfg, embeddings_t
-        ).to(device=output_device)
+        ).to(device=output_device, dtype=dtype)
 
         if sif_coefficient is not None:
             token_pos_weights = calculate_token_weights(
@@ -126,12 +131,14 @@ def create_static_embeddings_model(
             token_pos_weights = torch.ones(static_model.config.vocab_size)
 
         token_pos_weights = token_pos_weights.unsqueeze(-1).to(
-            device=static_model.device, dtype=static_model.dtype
+            device=output_device, dtype=dtype
         )
         static_model.replace_pos_weights(token_pos_weights)
 
         if modify_tokenizer:
             customize_tokenizer(static_model.config, tokenizer)
+
+        model.to(device=model_device)
     return static_model
 
 
@@ -206,13 +213,20 @@ def create_lednik_transformer(
             pooling=pooling,
             batch_size=embedding_extraction_batch_size,
         )
+
+        model_device = model.device
+        model.to(device="cpu")
+        embeddings_t = embeddings_t.cpu()
+
         pca = PCA(n_components=model_config.hidden_size)
         output = pca.transform(embeddings_t)
-        embeddings_t = output.reduced_data
-        embeddings_t = embeddings_t.to(output_device)
+        embeddings_t = output.reduced_data.to(dtype=dtype, device=output_device)
+
         with torch.device("meta"):
-            model = LednikModel(config=model_config)
-        model.to_empty(device=output_device)
-        model.init_weights()
-        model.replace_embeddings(embeddings_t)
-    return model
+            lednik = LednikModel(config=model_config)
+        lednik.to_empty(device=output_device)
+        lednik.init_weights()
+        lednik.replace_embeddings(embeddings_t)
+
+        model.to(device=model_device)
+    return lednik
