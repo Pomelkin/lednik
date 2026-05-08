@@ -145,7 +145,7 @@ class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
         token_weights = self.token_pos_weights(input_ids)
         embeddings = self.norm(embeddings)
 
-        masked_embeddings = embeddings * attention_mask.unsqueeze(-1)
+        masked_embeddings = embeddings * token_weights * attention_mask.unsqueeze(-1)
         sentence_embeddings = masked_embeddings.sum(dim=1) / attention_mask.sum(
             dim=-1, keepdim=True
         ).clamp(min=1e-9)

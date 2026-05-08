@@ -1143,12 +1143,12 @@ class LednikModel(LednikPreTrainedModel):
                 seqlen=seqlen,
             )
         hidden_state = self.output_projection(hidden_state)
+        hidden_state = self.final_norm(hidden_state)
         sentence_embeddings = self._mean_pool(
             hidden_state=hidden_state,
             attention_mask=attention_mask,
             cu_seqlens=cu_seqlens,
         )
-        sentence_embeddings = self.final_norm(sentence_embeddings)
 
         if REPAD:
             if (cu_seqlens is None) or (seqlen is None) or (non_pad_indices is None):
