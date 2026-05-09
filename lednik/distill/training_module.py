@@ -28,6 +28,7 @@ from torch import nn
 from torch.distributed._composable.replicate_with_fsdp import replicate
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed.fsdp import fully_shard
 from torch.nn.modules.loss import _Loss
 from torchmetrics.functional import cosine_similarity
@@ -109,6 +110,20 @@ def _get_special_tokens_ids(
 ) -> list[int]:
     special_tokens = tokenizer.special_tokens_map.values()
     return [tokenizer.convert_tokens_to_ids(token) for token in special_tokens]  # type: ignore
+
+
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    while True:
+        if isinstance(model, (FSDP, DDP)):
+            model = model.module
+            continue
+
+        # для некоторых wrappers / accelerate-like объектов
+        if hasattr(model, "_orig_mod"):
+            model = model._orig_mod  # type: ignore
+            continue
+
+        return model
 
 
 class DistillationModule(KostylLightningModule):
@@ -531,7 +546,7 @@ class DistillationModule(KostylLightningModule):
     def _get_student_outputs(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        if isinstance(self.student, StaticEmbeddingsModel):
+        if isinstance(_unwrap_model(self.student), StaticEmbeddingsModel):
             student_output: StaticEmbeddingsOutput = self.student(
                 input_ids,
                 attention_mask,
@@ -650,7 +665,7 @@ class DistillationModule(KostylLightningModule):
         # because they are static (cannot be sentence-dependent) and would degrade the quality of sentence embeddings.
         student_attention_mask = (
             attention_mask
-            if not isinstance(self.student, StaticEmbeddingsModel)
+            if not isinstance(_unwrap_model(self.student), StaticEmbeddingsModel)
             else per_token_loss_mask
         )
         teacher_attention_mask = attention_mask
