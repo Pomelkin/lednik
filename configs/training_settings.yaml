@@ -5,7 +5,8 @@ redis:
 
 data:
   datasets:
-    ru-HNP: e43f250d4b4a4fccad0bd4aa30b9a5f3
+    ru-HNP: b5bed59771fc4bf78084ce666ba95adb
+    Mixed-Summarization: 0752e238d3634f83b865f7d9bf8ba97c
   batch_size: 32
   num_workers: 4
   query_colname: query-tokens
