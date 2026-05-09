@@ -7,7 +7,7 @@ data:
   datasets:
     ru-HNP: b5bed59771fc4bf78084ce666ba95adb
     Mixed-Summarization: 0752e238d3634f83b865f7d9bf8ba97c
-  batch_size: 32
+  batch_size: 16
   num_workers: 4
   query_colname: query-tokens
   pos_colname: pos-tokens
