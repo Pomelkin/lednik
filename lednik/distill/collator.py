@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from random import randint
 from typing import Any
@@ -10,6 +11,28 @@ from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 
 
+def _get_postprocessor(
+    tokenizer: TokenizersBackend | SentencePieceBackend, max_len: int
+) -> Callable[[list[int]], list[int]]:
+    if tokenizer.cls_token_id is not None and tokenizer.sep_token_id is not None:
+        cls_id = tokenizer.cls_token_id
+        sep_id = tokenizer.sep_token_id
+
+        def postprocessor(tokens: list[int]) -> list[int]:
+            return [cls_id, *tokens[: max_len - 2], sep_id]
+
+    elif tokenizer.eos_token_id is not None:
+        eos_id = tokenizer.eos_token_id
+
+        def postprocessor(tokens: list[int]) -> list[int]:
+            return [*tokens[: max_len - 1], eos_id]
+    else:
+        raise ValueError(
+            "Tokenizer must have either cls and sep tokens or an eos token."
+        )
+    return postprocessor
+
+
 @dataclass
 class ContrastiveCollator:  # noqa: D101
     tokenizer: TokenizersBackend | SentencePieceBackend
@@ -19,12 +42,12 @@ class ContrastiveCollator:  # noqa: D101
     label_colname: str | None = None
     pad_to_multiple_of: int | None = 8
     max_len: int | None = None
+    postprocessor: Callable[[list[int]], list[int]] | None = None
 
     def __post_init__(self):  # noqa: ANN204, D105
         if self.max_len is None:
             self.max_len = int(self.tokenizer.model_max_length)
-        # We need to reserve 2 tokens for CLS and SEP, so we subtract 2 from the max_len
-        self.max_len = self.max_len - 2
+        self.postprocessor = _get_postprocessor(self.tokenizer, self.max_len)
         return
 
     @staticmethod
@@ -35,12 +58,11 @@ class ContrastiveCollator:  # noqa: D101
         return sentences[index]
 
     def _preprocess_token_ids(self, token_ids: list[int]) -> Tensor:
-        token_ids = token_ids[: self.max_len]
-        token_ids = [
-            self.tokenizer.cls_token_id,
-            *token_ids,
-            self.tokenizer.sep_token_id,
-        ]
+        if self.postprocessor is None:
+            raise ValueError(
+                "Postprocessor must be defined before preprocessing token ids."
+            )
+        token_ids = self.postprocessor(token_ids)
         return torch.tensor(token_ids, dtype=torch.long)
 
     def _pad_to_multiple_of(self, tensor: Tensor) -> Tensor:
