@@ -20,7 +20,7 @@ data:
 
 trainer:
   accelerator: "cuda"
-  max_epochs: 10
+  max_epochs: 15
   strategy:
     type: "fsdp1"
     param_dtype: bfloat16
