@@ -11,10 +11,10 @@ data:
   num_workers: 4
   query_tok_colname: query-tokens
   pos_tok_colname: pos-tokens
-  neg_tok_colname: neg-tokens
+  #neg_tok_colname: neg-tokens
   query_teacher_embedding_colname: query-embedding
   pos_teacher_embedding_colname: pos-embedding
-  neg_teacher_embedding_colname: neg-embedding
+  #neg_teacher_embedding_colname: neg-embedding
   val_label_colname: label
   val_num_labels: 6
 
@@ -45,8 +45,8 @@ student_model_id: 749be3f1fd7341e09d33911c633c7c0a
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
 
 model_cfg:
-  model_type: static_embeddings
+  model_type: lednik
   embeddings_dropout: 0.2
-  # attention_dropout: 0.0
-  # out_attn_dropout: 0.15
-  # mlp_dropout: 0.15
+  attention_dropout: 0.0
+  out_attn_dropout: 0.15
+  mlp_dropout: 0.15

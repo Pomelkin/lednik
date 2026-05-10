@@ -53,6 +53,7 @@ from lednik.models import LednikModel
 from lednik.models import StaticEmbeddingsModel
 from lednik.models.outputs import StaticEmbeddingsOutput
 from .param_groups import create_param_groups
+from .collator import CollatorOutput
 
 
 logger = setup_logger()
@@ -545,7 +546,7 @@ class DistillationModule(KostylLightningModule):
         temp: float,
         queries_mask: torch.Tensor,
         pos_mask: torch.Tensor,
-        neg_mask: torch.Tensor,
+        neg_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         sentence_embeddings = sentence_embeddings / sentence_embeddings.norm(
             p=2, dim=-1, keepdim=True
@@ -553,7 +554,12 @@ class DistillationModule(KostylLightningModule):
 
         queries_emb = sentence_embeddings[queries_mask]
         pos_emb = sentence_embeddings[pos_mask]
-        neg_emb = sentence_embeddings[neg_mask]
+        if neg_mask is None:
+            neg_emb = None
+        else:
+            neg_emb = sentence_embeddings[neg_mask]
+            if neg_emb.numel() == 0:
+                neg_emb = None
         if queries_emb.size() != pos_emb.size():
             raise ValueError(
                 f"Anchors and positives have different sizes. Found {queries_emb.size()} and {pos_emb.size()} respectively."
@@ -588,11 +594,14 @@ class DistillationModule(KostylLightningModule):
             device=local_anchors.device,
         )
 
-        anchor2pos_sim = (
-            local_anchors
-            @ torch.cat((global_positives, global_negatives), dim=0).T
-            / temp
-        )
+        if global_negatives is None:
+            candidate_embeddings = global_positives
+        else:
+            candidate_embeddings = torch.cat(
+                (global_positives, global_negatives), dim=0
+            )
+
+        anchor2pos_sim = local_anchors @ candidate_embeddings.T / temp
         pos2achors_sim = local_positives @ global_anchors.T / temp
 
         anchor2pos_loss = F.cross_entropy(anchor2pos_sim, targets, reduction="mean")
@@ -600,7 +609,7 @@ class DistillationModule(KostylLightningModule):
         loss = (anchor2pos_loss + pos2achors_loss) / 2
         return loss
 
-    def _base_step(self, batch: dict[str, torch.Tensor]) -> _BaseStepOutput:
+    def _base_step(self, batch: CollatorOutput) -> _BaseStepOutput:
         """Performs a single training step for knowledge distillation."""
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
@@ -674,7 +683,7 @@ class DistillationModule(KostylLightningModule):
 
     @override
     def training_step(  # type: ignore
-        self, batch: dict[str, torch.Tensor], batch_idx: int
+        self, batch: CollatorOutput, batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
         metrics = {
@@ -727,7 +736,7 @@ class DistillationModule(KostylLightningModule):
 
     @override
     def validation_step(  # type: ignore
-        self, batch: dict[str, torch.Tensor], batch_idx: int
+        self, batch: CollatorOutput, batch_idx: int
     ) -> torch.Tensor:
         output = self._base_step(batch)
         metrics = {

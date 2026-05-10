@@ -135,11 +135,15 @@ class DataModule(LightningDataModule):
         data_columns = {
             self.config.query_tok_colname,
             self.config.pos_tok_colname,
-            self.config.neg_tok_colname,
             self.config.query_teacher_embedding_colname,
             self.config.pos_teacher_embedding_colname,
-            self.config.neg_teacher_embedding_colname,
         }
+        if (
+            self.config.neg_tok_colname is not None
+            and self.config.neg_teacher_embedding_colname is not None
+        ):
+            data_columns.add(self.config.neg_tok_colname)
+            data_columns.add(self.config.neg_teacher_embedding_colname)
         if subset == "val" and self.config.val_label_colname is not None:
             data_columns.add(self.config.val_label_colname)
 

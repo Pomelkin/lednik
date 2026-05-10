@@ -46,11 +46,11 @@ class DataConfig(BaseModel):
 
     query_tok_colname: str
     pos_tok_colname: str
-    neg_tok_colname: str
+    neg_tok_colname: str | None = None
 
     query_teacher_embedding_colname: str
     pos_teacher_embedding_colname: str
-    neg_teacher_embedding_colname: str
+    neg_teacher_embedding_colname: str | None = None
 
     val_label_colname: str | None = None
     val_num_labels: int | None = Field(
@@ -59,6 +59,16 @@ class DataConfig(BaseModel):
         validate_default=False,
     )
     max_length: int | None = Field(default=None, gt=0, validate_default=False)
+
+    @model_validator(mode="after")
+    def _validate_negative_columns(self) -> "DataConfig":
+        if (self.neg_tok_colname is None) != (
+            self.neg_teacher_embedding_colname is None
+        ):
+            raise ValueError(
+                "neg_tok_colname and neg_teacher_embedding_colname must be provided together or omitted."
+            )
+        return self
 
 
 class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin):
