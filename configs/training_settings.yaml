@@ -20,7 +20,7 @@ data:
 
 trainer:
   accelerator: "cuda"
-  max_epochs: 15
+  max_epochs: 20
   strategy:
     type: "ddp"
   val_check_interval: 0.3
