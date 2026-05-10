@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from typing import Literal
 from collections import defaultdict
@@ -48,6 +49,7 @@ class MTEBRunScores:  # noqa: D101
     scores: dict[str, float]
     avg_score_per_task: dict[str, float]
     avg_score: float
+    avg_score_task: float
 
 
 def _determine_lednik_model_type(
@@ -86,9 +88,12 @@ def _calculate_scores(result: ModelResult) -> MTEBRunScores:
         task_type2sum[task_result.task_type] += task_result.main_score
 
     avg_score_per_task = {
-        f"Avg{task_type}": task_type2sum[task_type] / len(metrics)
+        task_type: task_type2sum[task_type] / len(metrics)
         for task_type, metrics in task_type2metric.items()
     }
+    avg_score = sum(task_type2sum.values()) / sum(
+        len(metrics) for metrics in task_type2metric.values()
+    )
     scores = {
         f"{task_type}/{task_name}": score
         for task_type, metrics in task_type2metric.items()
@@ -97,14 +102,15 @@ def _calculate_scores(result: ModelResult) -> MTEBRunScores:
     return MTEBRunScores(
         scores=scores,
         avg_score_per_task=avg_score_per_task,
-        avg_score=sum(avg_score_per_task.values()) / len(avg_score_per_task),
+        avg_score_task=sum(avg_score_per_task.values()) / len(avg_score_per_task),
+        avg_score=avg_score,
     )
 
 
 def _dump_result(
-    scores: dict[str, float],
     avg_score_per_task: dict[str, float],
     avg_score: float,
+    avg_score_task: float,
     model_name: str,
     model_revision: str | None,
     output_file: Path,
@@ -119,9 +125,9 @@ def _dump_result(
         if num_parameters is not None
         else None,
         "AvgScore": avg_score,
+        "AvgScoreTask": avg_score_task,
     }
     data2log.update(avg_score_per_task)
-    data2log.update(scores)
     with output_file.open("a", encoding="utf-8") as f:
         f.write(f"{data2log}\n")
     return
@@ -129,19 +135,18 @@ def _dump_result(
 
 def _log_result(
     avg_score: float,
+    avg_score_task: float,
     avg_score_per_task: dict[str, float],
     task: Task,
     clearml_model: InputModel | None = None,
 ) -> None:
     task_logger = task.get_logger()
-    task_logger.report_single_value(name="AvgScore", value=avg_score)
+    scores2report = copy.deepcopy(avg_score_per_task)
+    scores2report.update({"AvgScore": avg_score, "AvgScoreTask": avg_score_task})
 
-    for name, score in avg_score_per_task.items():
+    for name, score in scores2report.items():
         task_logger.report_single_value(name=name, value=score)
-
-    if clearml_model is not None and not clearml_model.published:
-        clearml_model.report_single_value(name="AvgScore", value=avg_score)
-        for name, score in avg_score_per_task.items():
+        if clearml_model is not None and not clearml_model.published:
             clearml_model.report_single_value(name=name, value=score)
 
     logger.info(f"Avg Score: {avg_score:.4f}")
@@ -227,15 +232,19 @@ def main(
     run_scores = _calculate_scores(run_result)
 
     _log_result(
-        run_scores.avg_score, run_scores.avg_score_per_task, task, clearml_model
+        avg_score=run_scores.avg_score,
+        avg_score_task=run_scores.avg_score_task,
+        avg_score_per_task=run_scores.avg_score_per_task,
+        task=task,
+        clearml_model=clearml_model,
     )
     _dump_result(
-        run_scores.scores,
-        run_scores.avg_score_per_task,
-        run_scores.avg_score,
-        run_result.model_name,
-        run_result.model_revision,
-        output_file,
+        avg_score_per_task=run_scores.avg_score_per_task,
+        avg_score=run_scores.avg_score,
+        avg_score_task=run_scores.avg_score_task,
+        model_name=run_result.model_name,
+        model_revision=run_result.model_revision,
+        output_file=output_file,
         task_id=task.task_id,
         num_parameters=model_wrapper.mteb_model_meta.n_parameters
         if getattr(model_wrapper, "mteb_model_meta", None)
