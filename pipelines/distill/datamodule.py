@@ -57,9 +57,12 @@ class DataModule(LightningDataModule):
         self.collator = ContrastiveCollator(
             tokenizer=tokenizer,  # type: ignore
             pad_to_multiple_of=8,
-            query_colname=config.query_colname,
-            pos_colname=config.pos_colname,
-            neg_colname=config.neg_colname,
+            query_tok_colname=config.query_tok_colname,
+            pos_tok_colname=config.pos_tok_colname,
+            neg_tok_colname=config.neg_tok_colname,
+            query_teacher_embedding_colname=config.query_teacher_embedding_colname,
+            pos_teacher_embedding_colname=config.pos_teacher_embedding_colname,
+            neg_teacher_embedding_colname=config.neg_teacher_embedding_colname,
             label_colname=config.val_label_colname,
         )
         self.config = config
@@ -130,9 +133,12 @@ class DataModule(LightningDataModule):
         if self.datasets_paths is None:
             self.datasets_paths = get_datasets_paths(self.clearml_datasets)
         data_columns = {
-            self.config.query_colname,
-            self.config.pos_colname,
-            self.config.neg_colname,
+            self.config.query_tok_colname,
+            self.config.pos_tok_colname,
+            self.config.neg_tok_colname,
+            self.config.query_teacher_embedding_colname,
+            self.config.pos_teacher_embedding_colname,
+            self.config.neg_teacher_embedding_colname,
         }
         if subset == "val" and self.config.val_label_colname is not None:
             data_columns.add(self.config.val_label_colname)

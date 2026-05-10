@@ -38,7 +38,6 @@ from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
-from transformers.modeling_outputs import BaseModelOutput
 
 from lednik.dist_utils import GatherSentenceEmbeddings
 from lednik.dist_utils import get_fsdp1_policies
@@ -50,7 +49,6 @@ from lednik.distill.configs import DistillationConfig
 from lednik.distill.validation import EvaluationDispatcher
 from lednik.distill.validation import RedisConfig
 from lednik.distill.validation import ValidationContract
-from lednik.emb_utils import get_sentence_embedding
 from lednik.models import LednikModel
 from lednik.models import StaticEmbeddingsModel
 from lednik.models.outputs import StaticEmbeddingsOutput
@@ -64,11 +62,10 @@ logger = setup_logger()
 class _BaseStepOutput:
     loss: torch.Tensor
     contrastive_loss: torch.Tensor
-    per_token_loss: torch.Tensor
+    distill_loss: torch.Tensor
     student_sentence_embeddings: torch.Tensor
     teacher_sentence_embeddings: torch.Tensor
-    teacher_embeddings: torch.Tensor | None = None
-    student_embeddings: torch.Tensor | None = None
+    student_sentence_embeddings_proj: torch.Tensor | None = None
 
 
 @dataclass
@@ -131,9 +128,9 @@ class DistillationModule(KostylLightningModule):
 
     def __init__(
         self,
-        teacher: PreTrainedModel,
         student: StaticEmbeddingsModel | LednikModel,
         tokenizer: SentencePieceBackend | TokenizersBackend | PreTrainedTokenizerBase,
+        teacher_hidden_size: int,
         train_cfg: DistillationConfig,
         strategy_config: SUPPORTED_STRATEGIES,
         redis_config: RedisConfig | None = None,
@@ -144,10 +141,10 @@ class DistillationModule(KostylLightningModule):
         Initialize Fine-Tuning Lightning Module.
 
         Args:
-            teacher : The pre-trained teacher hf model.
             student : The static embeddings model to be trained.
             train_cfg : Training configuration.
             strategy_config : Configuration for the training strategy.
+            teacher_hidden_size : The hidden size of the teacher model.
             tokenizer : The tokenizer corresponding to the teacher model.
             task : ClearML Task for logging (optional).
             num_labels : Number of classification labels for KNN evaluation metrics.
@@ -157,7 +154,6 @@ class DistillationModule(KostylLightningModule):
 
         """
         super().__init__()
-        self.teacher = teacher
         self.student = student
         self.register_buffer(
             "spec_tok_buff",
@@ -170,7 +166,7 @@ class DistillationModule(KostylLightningModule):
             self.direct_loss,
         ) = self._init_direct(
             train_cfg.distillation_method,
-            teacher_hidden_size=teacher.config.hidden_size,
+            teacher_hidden_size=teacher_hidden_size,
             student_hidden_size=student.config.hidden_size,
             device=student.device,
             dtype=student.dtype,
@@ -213,14 +209,14 @@ class DistillationModule(KostylLightningModule):
                 student_to_teacher_proj.bias._is_hf_initialized = True  # type: ignore
         else:
             student_to_teacher_proj = nn.Identity()
-        match config.per_token_loss_type:
+        match config.distill_loss_type:
             case "cosine":
                 loss = nn.CosineEmbeddingLoss()
             case "mse":
                 loss = nn.MSELoss()
             case _:
                 raise ValueError(
-                    f"Unsupported loss type: {config.per_token_loss_type} "
+                    f"Unsupported loss type: {config.distill_loss_type} "
                     f"Supported types: 'cosine', 'mse'"
                 )
         return student_to_teacher_proj, loss
@@ -230,7 +226,7 @@ class DistillationModule(KostylLightningModule):
         if self._model_configured:
             return
 
-        shard_modules = {"teacher": self.teacher, "student": self.student}
+        shard_modules = {"student": self.student}
         no_shard_modules = {
             "student_to_teacher_proj": self.student_to_teacher_proj,
         }
@@ -375,45 +371,20 @@ class DistillationModule(KostylLightningModule):
                 state_dict.pop(key)
         return
 
-    def _set_freeze_state(
-        self, target_model: Literal["teacher", "student"], freeze: bool
-    ) -> None:
-        match target_model:
-            case "teacher":
-                for param in self.teacher.parameters():
-                    param.requires_grad_(not freeze)
-            case "student":
-                for param in self.student.parameters():
-                    param.requires_grad_(not freeze)
-            case _:
-                raise ValueError(
-                    f"Unknown model to set freeze state: {target_model}. "
-                    "Supported models: 'teacher', 'student'"
-                )
+    def _set_freeze_state(self, freeze: bool) -> None:
+        for param in self.student.parameters():
+            param.requires_grad_(not freeze)
         return
 
     def is_frozen(self, target_model: Literal["teacher", "student"]) -> bool:
         """Return True if all parameters of the specified model are frozen."""
-        match target_model:
-            case "teacher":
-                frozen_flag = all(
-                    not param.requires_grad for param in self.teacher.parameters()
-                )
-            case "student":
-                frozen_flag = all(
-                    not param.requires_grad for param in self.student.parameters()
-                )
-            case _:
-                raise ValueError(
-                    f"Unknown model to check freeze status: {target_model}. "
-                    "Supported models: 'teacher', 'student'"
-                )
+        frozen_flag = all(
+            not param.requires_grad for param in self.student.parameters()
+        )
         return frozen_flag
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        self._set_freeze_state("teacher", freeze=True)
-        self.teacher.eval()  # set teacher to eval mode to disable dropout if any, just in case
         self.student.train()  # ensure student is in train mode for optimization
 
         if dist.is_initialized():
@@ -524,25 +495,6 @@ class DistillationModule(KostylLightningModule):
         scheduler.step(self.global_step)
         return
 
-    @torch.no_grad()
-    def _get_teacher_outputs(
-        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
-        teacher_outputs: BaseModelOutput = self.teacher(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        teacher_embeddings: torch.Tensor = teacher_outputs[0]
-        teacher_sentence_embeddings = get_sentence_embedding(
-            teacher_embeddings,
-            attention_mask,
-            pooling_method=self.train_cfg.teacher_pooling_method,
-        )
-        return {
-            "teacher_embeddings": teacher_embeddings,
-            "teacher_sentence_embeddings": teacher_sentence_embeddings,
-        }
-
     def _get_student_outputs(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> dict[str, torch.Tensor]:
@@ -565,21 +517,21 @@ class DistillationModule(KostylLightningModule):
             "student_sentence_embeddings": student_sentence_embeddings,
         }
 
-    def _calculate_per_token_similarity_loss(
+    def _calculate_distill_loss(
         self,
-        flat_student_embeddings: torch.Tensor,  # [b*seq_len, dim]
-        flat_teacher_embeddings: torch.Tensor,  # [b*seq_len, dim]
+        student_embeddings: torch.Tensor,  # [b*seq_len, dim]
+        teacher_embeddings: torch.Tensor,  # [b*seq_len, dim]
     ) -> torch.Tensor:
         if isinstance(self.direct_loss, nn.CosineEmbeddingLoss):
             loss = self.direct_loss(
-                flat_student_embeddings,
-                flat_teacher_embeddings,
-                torch.ones(flat_student_embeddings.size(0), device=self.device),
+                student_embeddings,
+                teacher_embeddings,
+                torch.ones(student_embeddings.size(0), device=self.device),
             )
         elif isinstance(self.direct_loss, nn.MSELoss):
             loss = self.direct_loss(
-                flat_student_embeddings,
-                flat_teacher_embeddings,
+                student_embeddings,
+                teacher_embeddings,
             )
         else:
             raise ValueError(
@@ -668,35 +620,27 @@ class DistillationModule(KostylLightningModule):
             if not isinstance(_unwrap_model(self.student), StaticEmbeddingsModel)
             else per_token_loss_mask
         )
-        teacher_attention_mask = attention_mask
 
         student_outputs = self._get_student_outputs(
             input_ids=input_ids,
             attention_mask=student_attention_mask,
         )
-        teacher_outputs = self._get_teacher_outputs(
-            input_ids=input_ids,
-            attention_mask=teacher_attention_mask,
-        )
+        teacher_sentence_embeddings = batch["teacher_sentence_embeddings"]
+        student_sentence_embeddings = student_outputs["student_sentence_embeddings"]
 
         contrastive_weight = self.distill_method_cfg.contrastive_loss_weight
         if contrastive_weight < 1.0:
-            student_embeddings = student_outputs["student_embeddings"]
-            teacher_embeddings = teacher_outputs["teacher_embeddings"]
-
-            student_embeddings = self.student_to_teacher_proj(
-                student_embeddings[per_token_loss_mask != 0]
+            student_sentence_embeddings_proj = self.student_to_teacher_proj(
+                student_sentence_embeddings
             )
-            teacher_embeddings = teacher_embeddings[per_token_loss_mask != 0]
 
-            per_token_loss = self._calculate_per_token_similarity_loss(
-                flat_student_embeddings=student_embeddings,
-                flat_teacher_embeddings=teacher_embeddings,
+            distill_loss = self._calculate_distill_loss(
+                student_embeddings=student_sentence_embeddings_proj,
+                teacher_embeddings=teacher_sentence_embeddings,
             )
         else:
-            student_embeddings = None
-            teacher_embeddings = None
-            per_token_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
+            distill_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
+            student_sentence_embeddings_proj = student_sentence_embeddings.clone()
 
         if contrastive_weight > 0.0:
             temp = self.distill_method_cfg.temperature
@@ -704,7 +648,7 @@ class DistillationModule(KostylLightningModule):
                 raise ValueError("Temperature must be specified for contrastive loss.")
 
             contrastive_loss = self._calculate_contrastive_loss(
-                sentence_embeddings=student_outputs["student_sentence_embeddings"],
+                sentence_embeddings=student_sentence_embeddings,
                 queries_mask=batch["queries_mask"],
                 pos_mask=batch["positives_mask"],
                 neg_mask=batch["negatives_mask"],
@@ -715,17 +659,16 @@ class DistillationModule(KostylLightningModule):
 
         loss = (
             contrastive_weight * contrastive_loss
-            + (1 - contrastive_weight) * per_token_loss
+            + (1 - contrastive_weight) * distill_loss
         )
 
         output = _BaseStepOutput(
             loss=loss,
             contrastive_loss=contrastive_loss,
-            per_token_loss=per_token_loss,
-            teacher_embeddings=teacher_embeddings,
-            student_embeddings=student_embeddings,
-            student_sentence_embeddings=student_outputs["student_sentence_embeddings"],
-            teacher_sentence_embeddings=teacher_outputs["teacher_sentence_embeddings"],
+            distill_loss=distill_loss,
+            student_sentence_embeddings=student_sentence_embeddings,
+            teacher_sentence_embeddings=teacher_sentence_embeddings,
+            student_sentence_embeddings_proj=student_sentence_embeddings_proj,
         )
         return output
 
@@ -737,26 +680,27 @@ class DistillationModule(KostylLightningModule):
         metrics = {
             "loss": output.loss.detach(),
         }
-        if (
-            output.student_embeddings is not None
-            and output.teacher_embeddings is not None
-        ):
+        teacher_embeddings = output.teacher_sentence_embeddings
+        student_embeddings_proj = output.student_sentence_embeddings_proj
+
+        if student_embeddings_proj is not None:
             cosine_similarity_value = cosine_similarity(
-                output.student_embeddings.detach(),
-                output.teacher_embeddings.detach(),
+                student_embeddings_proj.detach(),
+                teacher_embeddings.detach(),
                 reduction="mean",
             )
             rmse_value = mean_squared_error(
-                output.student_embeddings.detach(),
-                output.teacher_embeddings.detach(),
+                student_embeddings_proj.detach(),
+                teacher_embeddings.detach(),
                 squared=False,
             )
             metrics["CosineSimilarity"] = cosine_similarity_value
             metrics["RMSE"] = rmse_value
+
         if output.contrastive_loss.item() > 0.0:
             metrics["ContrastiveLoss"] = output.contrastive_loss.detach()
-        if output.per_token_loss.item() > 0.0:
-            metrics["PerTokenLoss"] = output.per_token_loss.detach()
+        if output.distill_loss.item() > 0.0:
+            metrics["DistillLoss"] = output.distill_loss.detach()
 
         self.log_dict(
             metrics,
@@ -789,18 +733,19 @@ class DistillationModule(KostylLightningModule):
         metrics = {
             "loss": output.loss.detach(),
         }
-        if (
-            output.student_embeddings is not None
-            and output.teacher_embeddings is not None
-        ):
+        student_embeddings = output.student_sentence_embeddings
+        teacher_embeddings = output.teacher_sentence_embeddings
+        student_embeddings_proj = output.student_sentence_embeddings_proj
+
+        if student_embeddings_proj is not None:
             cosine_similarity_value = cosine_similarity(
-                output.student_embeddings.detach(),
-                output.teacher_embeddings.detach(),
+                student_embeddings_proj.detach(),
+                teacher_embeddings.detach(),
                 reduction="mean",
             )
             rmse_value = mean_squared_error(
-                output.student_embeddings.detach(),
-                output.teacher_embeddings.detach(),
+                student_embeddings_proj.detach(),
+                teacher_embeddings.detach(),
                 squared=False,
             )
             metrics["CosineSimilarity"] = cosine_similarity_value
@@ -808,14 +753,14 @@ class DistillationModule(KostylLightningModule):
 
         if output.contrastive_loss.item() > 0.0:
             metrics["ContrastiveLoss"] = output.contrastive_loss.detach()
-        if output.per_token_loss.item() > 0.0:
-            metrics["PerTokenLoss"] = output.per_token_loss.detach()
+        if output.distill_loss.item() > 0.0:
+            metrics["DistillLoss"] = output.distill_loss.detach()
 
         if self.task is not None and self.evaluation_dispatcher is not None:
             self.eval_outputs.append(
                 _EvalResult(
-                    teacher_sentence_embeddings=output.teacher_sentence_embeddings,
-                    student_sentence_embeddings=output.student_sentence_embeddings,
+                    teacher_sentence_embeddings=teacher_embeddings,
+                    student_sentence_embeddings=student_embeddings,
                     labels=batch["labels"],
                     queries_mask=batch["queries_mask"],
                     positives_mask=batch["positives_mask"],
@@ -880,58 +825,6 @@ class DistillationModule(KostylLightningModule):
         labels = torch.cat(labels_list, dim=0)
         queries_mask = torch.cat(queries_mask_list, dim=0)
         pos_mask = torch.cat(pos_mask_list, dim=0)
-
-        # if dist.is_initialized():
-        #     # Оставляем тензоры на CPU, чтобы точно не было OOM на видеокартах
-        #     teacher_embeddings = teacher_embeddings.contiguous()
-        #     student_embeddings = student_embeddings.contiguous()
-        #     labels = labels.contiguous()
-        #     queries_mask = queries_mask.contiguous()
-        #     pos_mask = pos_mask.contiguous()
-
-        #     group = self._data_parallel_group
-        #     world_size = dist.get_world_size(group)
-        #     rank = dist.get_rank(group)
-
-        #     # Для общения по CPU создаем gloo-группу, соответствующую нашей группе data_parallel
-        #     if self.cpu_group is None:
-        #         global_ranks = dist.get_process_group_ranks(group)
-        #         self.cpu_group = cast(
-        #             dist.ProcessGroup,
-        #             dist.new_group(ranks=global_ranks, backend="gloo"),
-        #         )
-
-        #     def _gather_to_rank0(tensor: torch.Tensor) -> list[torch.Tensor] | None:
-        #         if rank == 0:
-        #             gather_list = [torch.empty_like(tensor) for _ in range(world_size)]
-        #         else:
-        #             gather_list = None
-        #         dist.gather(
-        #             tensor,
-        #             gather_list=gather_list,
-        #             group_dst=0,
-        #             group=self.cpu_group,
-        #         )
-        #         return gather_list  # unused on non-zero
-
-        #     teacher_embeddings_list = _gather_to_rank0(teacher_embeddings)
-        #     student_embeddings_list = _gather_to_rank0(student_embeddings)
-        #     labels_list = _gather_to_rank0(labels)
-        #     queries_mask_list = _gather_to_rank0(queries_mask)
-        #     pos_mask_list = _gather_to_rank0(pos_mask)
-
-        #     if self.trainer.is_global_zero:
-        #         teacher_embeddings = torch.cat(
-        #             cast(list[torch.Tensor], teacher_embeddings_list), dim=0
-        #         )
-        #         student_embeddings = torch.cat(
-        #             cast(list[torch.Tensor], student_embeddings_list), dim=0
-        #         )
-        #         labels = torch.cat(cast(list[torch.Tensor], labels_list), dim=0)
-        #         queries_mask = torch.cat(
-        #             cast(list[torch.Tensor], queries_mask_list), dim=0
-        #         )
-        #         pos_mask = torch.cat(cast(list[torch.Tensor], pos_mask_list), dim=0)
 
         if self.trainer.is_global_zero:
             contract = ValidationContract(

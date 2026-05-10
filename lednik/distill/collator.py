@@ -36,9 +36,15 @@ def _get_postprocessor(
 @dataclass
 class ContrastiveCollator:  # noqa: D101
     tokenizer: TokenizersBackend | SentencePieceBackend
-    query_colname: str
-    pos_colname: str
-    neg_colname: str
+
+    query_tok_colname: str
+    pos_tok_colname: str
+    neg_tok_colname: str
+
+    query_teacher_embedding_colname: str
+    pos_teacher_embedding_colname: str
+    neg_teacher_embedding_colname: str
+
     label_colname: str | None = None
     pad_to_multiple_of: int | None = 8
     max_len: int | None = None
@@ -73,22 +79,55 @@ class ContrastiveCollator:  # noqa: D101
             return tensor
         return F.pad(tensor, (0, pad_len), value=self.tokenizer.pad_token_id)
 
+    def _get_embedding_and_coresponding_tokens(
+        self, item: dict[str, Any], tok_colname: str, teacher_emb_colname: str
+    ) -> tuple[Tensor, Tensor]:
+        tokens = item[tok_colname]
+        embedding = item[teacher_emb_colname]
+        if isinstance(tokens[0], list):
+            index = randint(0, len(tokens) - 1)  # noqa: S311
+            tokens = tokens[index]
+            embedding = embedding[index]
+
+        tokens = self._preprocess_token_ids(tokens)
+        embedding = torch.tensor(embedding)
+        if embedding.ndim == 1:
+            embedding = embedding.unsqueeze(0)
+        return tokens, embedding
+
     def __call__(self, batch: list[dict[str, Any]]) -> dict[str, Tensor]:  # noqa: D102
-        queries_list = []
-        positives_list = []
-        negatives_list = []
+        query_tok_list = []
+        pos_tok_list = []
+        neg_tok_list = []
+
+        query_embeddings = []
+        pos_embeddings = []
+        neg_embeddings = []
+
         labels_list = []
         for item in batch:
-            query = self._preprocess_token_ids(item[self.query_colname])
-            pos = self._preprocess_token_ids(
-                self._select_sentence(item[self.pos_colname])
+            query_tok, query_emb = self._get_embedding_and_coresponding_tokens(
+                item,
+                self.query_tok_colname,
+                self.query_teacher_embedding_colname,
             )
-            neg = self._preprocess_token_ids(
-                self._select_sentence(item[self.neg_colname])
+            pos_tok, pos_emb = self._get_embedding_and_coresponding_tokens(
+                item,
+                self.pos_tok_colname,
+                self.pos_teacher_embedding_colname,
             )
-            queries_list.append(query)
-            positives_list.append(pos)
-            negatives_list.append(neg)
+            neg_tok, neg_emb = self._get_embedding_and_coresponding_tokens(
+                item,
+                self.neg_tok_colname,
+                self.neg_teacher_embedding_colname,
+            )
+            query_tok_list.append(query_tok)
+            pos_tok_list.append(pos_tok)
+            neg_tok_list.append(neg_tok)
+
+            query_embeddings.append(query_emb)
+            pos_embeddings.append(pos_emb)
+            neg_embeddings.append(neg_emb)
 
             label = (
                 item.get(self.label_colname, None)
@@ -101,15 +140,15 @@ class ContrastiveCollator:  # noqa: D101
                 labels_list.append(torch.tensor(label, dtype=torch.long).reshape(-1))
 
         inputs = pad_sequence(
-            queries_list + positives_list + negatives_list,
+            query_tok_list + pos_tok_list + neg_tok_list,
             padding_value=self.tokenizer.pad_token_id,
             batch_first=True,
         )
         inputs = self._pad_to_multiple_of(inputs)
 
         mask = torch.zeros(inputs.size(0), dtype=torch.long)
-        mask[len(queries_list) : len(queries_list) + len(positives_list)] = 1
-        mask[len(queries_list) + len(positives_list) :] = 2
+        mask[len(query_tok_list) : len(query_tok_list) + len(pos_tok_list)] = 1
+        mask[len(query_tok_list) + len(pos_tok_list) :] = 2
         queries_mask = mask == 0
         positives_mask = mask == 1
         negatives_mask = mask == 2
@@ -117,9 +156,13 @@ class ContrastiveCollator:  # noqa: D101
         if len(labels_list) > 0:
             labels = torch.cat(labels_list)
         else:
-            labels = torch.full((len(queries_list),), -1, dtype=torch.long)
+            labels = torch.full((len(query_tok_list),), -1, dtype=torch.long)
 
         attention_mask = (inputs != self.tokenizer.pad_token_id).long()
+
+        teacher_sentence_embeddings = torch.cat(
+            query_embeddings + pos_embeddings + neg_embeddings
+        )
         return {
             "input_ids": inputs,
             "attention_mask": attention_mask,
@@ -127,4 +170,5 @@ class ContrastiveCollator:  # noqa: D101
             "positives_mask": positives_mask,
             "negatives_mask": negatives_mask,
             "labels": labels,
+            "teacher_sentence_embeddings": teacher_sentence_embeddings,
         }

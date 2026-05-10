@@ -44,9 +44,13 @@ class DataConfig(BaseModel):
     batch_size: int
     num_workers: int = Field(ge=1)
 
-    query_colname: str
-    pos_colname: str
-    neg_colname: str
+    query_tok_colname: str
+    pos_tok_colname: str
+    neg_tok_colname: str
+
+    query_teacher_embedding_colname: str
+    pos_teacher_embedding_colname: str
+    neg_teacher_embedding_colname: str
 
     val_label_colname: str | None = None
     val_num_labels: int | None = Field(
