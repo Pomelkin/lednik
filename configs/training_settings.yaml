@@ -41,7 +41,7 @@ checkpoint:
   filename: "|{epoch}|-|{step}|-|{val_loss:.5f}|"
 
 teacher_model_id: af954495ff03440abc58790c4e41ff22
-student_model_id: 749be3f1fd7341e09d33911c633c7c0a
+student_model_id: 2064bdd9dda642e0bcf05ef10cc7595a
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
 
 model_cfg:
