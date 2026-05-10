@@ -1,5 +1,5 @@
+from clearml import InputModel
 from pathlib import Path
-from typing import cast
 
 import click
 import lightning as L
@@ -8,8 +8,6 @@ from clearml import Task
 from kostyl.ml.integrations.clearml import load_model_from_clearml
 from kostyl.ml.integrations.clearml import load_tokenizer_from_clearml
 from kostyl.utils.logging import setup_logger
-from transformers import AutoModel
-from transformers import PreTrainedModel
 
 from lednik.distill.training_module import DistillationModule
 from lednik.models import MODEL_MAPPING
@@ -79,13 +77,7 @@ def _distill_model(
         task.execute_remotely(queue_name=remote_execution_queue, exit_process=True)
 
     ### Teacher Model Loading ###
-    teacher, clearml_teacher = load_model_from_clearml(
-        model_id=training_settings.teacher_model_id,
-        model=AutoModel,  # pyright: ignore[reportArgumentType]
-        name="Teacher Model",
-        task=task,
-    )
-    teacher = cast(PreTrainedModel, teacher)
+    clearml_teacher = InputModel(model_id=training_settings.teacher_model_id)
 
     ### Student Model Loading ###
     model_cls = MODEL_MAPPING[training_settings.model_cfg.model_type]
@@ -113,7 +105,7 @@ def _distill_model(
 
     ### Distillation Module Setup ###
     distillation_module = DistillationModule(
-        teacher=teacher,
+        teacher_hidden_size=clearml_teacher.config_dict["hidden_size"],
         student=student,
         tokenizer=tokenizer,
         train_cfg=distill_config,
@@ -128,7 +120,7 @@ def _distill_model(
         model_name=clearml_student.name,
         config_dict=student.config.to_diff_dict(),
         upload_as_new_model=False,
-        tags=[*clearml_student.tags],
+        tags=[tag for tag in clearml_student.tags if tag != "Not Distilled"],
         framework="PyTorch",
         comment=f"Model distilled from {clearml_teacher.id}.",
     )
