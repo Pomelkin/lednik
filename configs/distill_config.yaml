@@ -3,7 +3,7 @@ teacher_pooling_method: last
 distillation_method:
   type: direct-distillation
   loss_type: cosine
-  contrastive_loss_weight: 0.7
+  contrastive_loss_weight: 1.0
   temperature: 0.07
 optimizer:
   type: AdamW8bit
@@ -20,4 +20,4 @@ lr:
 weight_decay:
   base_value: 0.001
 
-freeze_student_emb_steps_ratio: 0.05
+freeze_student_emb_steps_ratio: 0.1
