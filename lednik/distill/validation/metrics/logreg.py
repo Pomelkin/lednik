@@ -177,8 +177,8 @@ class LogisticRegression(nn.Module):
             )
 
         device = (
-            self._select_optimal_device() if device == "auto" else torch.device(device)  # type: ignore
-        )
+            self._select_optimal_device() if device == "auto" else torch.device(device)
+        )  # ty:ignore[invalid-assignment]
         dtype = self._select_dtype(device)  # type: ignore
         self.to(device=device, dtype=dtype).train()
 
@@ -243,8 +243,8 @@ class LogisticRegression(nn.Module):
     ) -> dict[str, float]:
         """Evaluates the model on the given inputs and labels, returning F1 score and accuracy."""
         device = (
-            self._select_optimal_device() if device == "auto" else torch.device(device)  # type: ignore
-        )
+            self._select_optimal_device() if device == "auto" else torch.device(device)
+        )  # ty:ignore[invalid-assignment]
         dtype = self._select_dtype(device)  # type: ignore
         self.to(device=device, dtype=dtype).eval()
 

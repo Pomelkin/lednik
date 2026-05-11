@@ -90,7 +90,9 @@ class LLMTextGenerator:
             top_p=top_p,
         )
         result = GenerationResult(
-            data_id=data_id, prompt=prompt, response=response.choices[0].message.content
+            data_id=data_id,
+            prompt=prompt,
+            response=response.choices[0].message.content,  # ty:ignore[invalid-argument-type]
         )
         return result
 

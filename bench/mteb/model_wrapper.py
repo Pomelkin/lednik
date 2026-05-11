@@ -112,7 +112,7 @@ class MTEBModelWrapper:
         if dtype is None:
             dtype = _select_dtype(device)
 
-        self.model.to(device=device, dtype=dtype, non_blocking=True)
+        self.model.to(device=device, dtype=dtype, non_blocking=True)  # ty:ignore[missing-argument]
         self.model.eval()
 
         if (
@@ -328,7 +328,7 @@ class MTEBModelWrapper:
 
         # legacy: encode(["a", "b"])
         if isinstance(inputs, list) and (not inputs or isinstance(inputs[0], str)):
-            return inputs  # type: ignore[return-value]
+            return inputs  # type: ignore[return-value]  # ty:ignore[invalid-return-type]
 
         texts: list[str] = []
 
@@ -342,7 +342,7 @@ class MTEBModelWrapper:
                 elif isinstance(value, list):
                     texts.extend(value)
                 elif isinstance(value, tuple):
-                    texts.extend(list(value))
+                    texts.extend(list(value))  # ty:ignore[invalid-argument-type]
                 else:
                     raise TypeError(f"Unsupported batch['text'] type: {type(value)}")
             elif isinstance(batch, str):
@@ -382,7 +382,7 @@ class MTEBModelWrapper:
             public_training_code=None,
             public_training_data=True,
             framework=["PyTorch"],
-            similarity_fn_name="cosine",
+            similarity_fn_name="cosine",  # ty:ignore[invalid-argument-type]
             use_instructions=False,
             training_datasets=None,
         )

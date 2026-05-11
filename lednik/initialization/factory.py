@@ -96,7 +96,7 @@ def create_static_embeddings_model(
         )
 
         model_device = model.device
-        model.to(device="cpu")
+        model.to(device="cpu")  # ty:ignore[missing-argument]
         embeddings_t = embeddings_t.cpu()
 
         pca = PCA(n_components=embedding_dim)
@@ -138,7 +138,7 @@ def create_static_embeddings_model(
         if modify_tokenizer:
             customize_tokenizer(static_model.config, tokenizer)
 
-        model.to(device=model_device)
+        model.to(device=model_device)  # ty:ignore[missing-argument]
     return static_model
 
 
@@ -215,7 +215,7 @@ def create_lednik_transformer(
         )
 
         model_device = model.device
-        model.to(device="cpu")
+        model.to(device="cpu")  # ty:ignore[missing-argument]
         embeddings_t = embeddings_t.cpu()
 
         pca = PCA(n_components=model_config.hidden_size)
@@ -228,5 +228,5 @@ def create_lednik_transformer(
         lednik.init_weights()
         lednik.replace_embeddings(embeddings_t)
 
-        model.to(device=model_device)
+        model.to(device=model_device)  # ty:ignore[missing-argument]
     return lednik

@@ -72,6 +72,11 @@ project-excludes = [
 python-platform = "linux"
 python-interpreter-path = ".venv/bin/python3"
 
+
+[tool.ty.environment]
+python = ".venv"
+
+
 [tool.ruff]
 [tool.ruff.lint]
 exclude = [

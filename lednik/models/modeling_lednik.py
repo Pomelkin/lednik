@@ -32,12 +32,12 @@ from .outputs import LednikModelOutput
 
 
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_varlen_qkvpacked_func  # type: ignore[import]
-    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore[import]
+    from flash_attn import flash_attn_varlen_qkvpacked_func  # type: ignore
+    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore
 
 if is_flash_attn_4_available():
-    from flash_attn.cute import flash_attn_varlen_func  # type: ignore[import]
-    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore[import]
+    from flash_attn.cute import flash_attn_varlen_func  # type: ignore
+    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore
 
 logger = setup_logger()
 

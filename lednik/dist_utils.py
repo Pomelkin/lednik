@@ -258,7 +258,7 @@ class GatherSentenceEmbeddings(torch.autograd.Function):
         )
 
     @staticmethod
-    def backward(  # type: ignore[override] # noqa: D102
+    def backward(  # type: ignore # noqa: D102
         ctx: torch.autograd.Function,
         danc: torch.Tensor,
         dpos: torch.Tensor,

@@ -1,3 +1,4 @@
+from torch.optim import Optimizer
 from lednik.models.outputs import LednikModelOutput
 from dataclasses import dataclass
 from typing import Any
@@ -23,7 +24,6 @@ from kostyl.utils.logging import setup_logger
 from lightning.pytorch.strategies import FSDPStrategy
 from lightning.pytorch.strategies import ModelParallelStrategy
 from lightning.pytorch.strategies import ParallelStrategy
-from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 from torch.distributed._composable.replicate_with_fsdp import replicate
 from torch.distributed.device_mesh import DeviceMesh
@@ -312,7 +312,7 @@ class DistillationModule(KostylLightningModule):
                     for child_module in module.modules():
                         if isinstance(child_module, modules_to_shard):
                             fully_shard(child_module, mesh=dp_mesh, **policies)
-                fully_shard(module=module, mesh=dp_mesh, **policies)
+                fully_shard(module=module, mesh=dp_mesh, **policies)  # ty:ignore[missing-argument]
 
             for module in no_shard_modules.values():
                 if (module is None) or isinstance(module, nn.Identity):
@@ -385,7 +385,7 @@ class DistillationModule(KostylLightningModule):
         return frozen_flag
 
     @override
-    def configure_optimizers(self) -> OptimizerLRScheduler:
+    def configure_optimizers(self) -> dict[str, Any] | Optimizer:  # ty:ignore[invalid-method-override]
         self.student.train()  # ensure student is in train mode for optimization
 
         if dist.is_initialized():
@@ -478,7 +478,7 @@ class DistillationModule(KostylLightningModule):
         else:
             scheduler = CompositeScheduler(optimizer=optim, **schedulers)
 
-        return {  # pyrefly: ignore
+        return {
             "optimizer": optim,
             "lr_scheduler": {
                 "scheduler": scheduler,
@@ -488,11 +488,11 @@ class DistillationModule(KostylLightningModule):
         }
 
     @override
-    def lr_scheduler_step(  # pyrefly: ignore
+    def lr_scheduler_step(
         self,
         scheduler: BaseScheduler,
         metric: Any | None,
-    ) -> None:
+    ) -> None:  # ty:ignore[invalid-method-override]
         scheduler.step(self.global_step)
         return
 
@@ -567,7 +567,7 @@ class DistillationModule(KostylLightningModule):
 
         if dist.is_initialized():
             rank = dist.get_rank(group=self._data_parallel_group)
-            global_anchors, global_positives, global_negatives = (  # type: ignore
+            global_anchors, global_positives, global_negatives = (
                 GatherSentenceEmbeddings.apply(
                     queries_emb,
                     pos_emb,

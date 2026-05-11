@@ -222,7 +222,7 @@ def main(
             if len(task.languages) == 1
             and task.modalities == ["text"]
             and task.__class__.__name__ not in too_big_bench
-        ]
+        ]  # ty:ignore[invalid-argument-type]
     )
     run_result = mteb.evaluate(
         model_wrapper,  # type: ignore
