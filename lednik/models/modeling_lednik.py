@@ -361,13 +361,13 @@ def flash_attention_4_forward(
     **_kwargs: Any,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Flash attention forward function."""
-    qkv = torch.stack((q, k, v), dim=1)
-    original_dtype = qkv.dtype
-    if qkv.dtype != module.fa_target_dtype:
-        convert_dtype = True
-        qkv = qkv.to(module.fa_target_dtype)
-    else:
-        convert_dtype = False
+    # qkv = torch.stack((q, k, v), dim=1)
+    # original_dtype = qkv.dtype
+    # if qkv.dtype != module.fa_target_dtype:
+    #     convert_dtype = True
+    #     qkv = qkv.to(module.fa_target_dtype)
+    # else:
+    #     convert_dtype = False
     attn_output, _ = flash_attn_varlen_func(
         q=q,
         k=k,
@@ -379,8 +379,8 @@ def flash_attention_4_forward(
         softmax_scale=module.softmax_scale,
     )
     attn_output = cast(Tensor, attn_output)
-    if convert_dtype:
-        attn_output = attn_output.to(original_dtype)
+    # if convert_dtype:
+    #     attn_output = attn_output.to(original_dtype)
     return attn_output, torch.empty((1,))  # dummy attention weights
 
 
