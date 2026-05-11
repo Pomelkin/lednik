@@ -1,3 +1,4 @@
+import json
 import copy
 from dataclasses import dataclass
 from typing import Literal
@@ -129,7 +130,8 @@ def _dump_result(
     }
     data2log.update(avg_score_per_task)
     with output_file.open("a", encoding="utf-8") as f:
-        f.write(f"{data2log}\n")
+        json_data = json.dumps(data2log, ensure_ascii=False)
+        f.write(f"{json_data}\n")
     return
 
 
