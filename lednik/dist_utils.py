@@ -243,7 +243,7 @@ class GatherSentenceEmbeddings(torch.autograd.Function):
             handler = dist.all_gather_into_tensor(
                 buff, local_emb, group=group, async_op=True
             )
-            handlers.append(handler)  # type: ignore
+            handlers.append(handler)
             global_embeddings[name] = buff
 
         for handler in handlers:
@@ -279,7 +279,6 @@ class GatherSentenceEmbeddings(torch.autograd.Function):
             if global_grad is None:
                 rank_grads[name] = None
                 continue
-
             bsz_world, *shapes = global_grad.shape
             bsz = bsz_world // world_size
             local_grad_buff = global_grad.new_empty((bsz, *shapes))
@@ -289,7 +288,7 @@ class GatherSentenceEmbeddings(torch.autograd.Function):
                 group=group,
                 async_op=True,
             )
-            handlers.append(handler)  # type: ignore
+            handlers.append(handler)
             rank_grads[name] = local_grad_buff
 
         for handler in handlers:

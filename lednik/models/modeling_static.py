@@ -28,7 +28,7 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrained
     overridden methods for loading and saving pretrained models that include tokenizer handling.
     """
 
-    config: StaticEmbeddingsConfig  # type: ignore
+    config: StaticEmbeddingsConfig
     base_model_prefix = "model"
 
     @override
@@ -214,9 +214,9 @@ class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel)
             input_ids = input_ids.long()
         embeddings_output = self.model(input_ids, attention_mask)
         logits = self.classifier(embeddings_output.sentence_embeddings)
-        loss = self.loss_function(logits, labels) if labels is not None else None  #  type: ignore
+        loss = self.loss_function(logits, labels) if labels is not None else None
         output = StaticEmbeddingsSequenceClassifierOutput(
             logits=logits,
-            loss=loss,  # type: ignore
+            loss=loss,
         )
         return output

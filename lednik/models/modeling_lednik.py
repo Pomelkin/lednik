@@ -289,7 +289,7 @@ def apply_rotary_pos_emb_unpadded(
         cos = cos.squeeze(0)
     if sin.ndim == 3:
         sin = sin.squeeze(0)
-    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)  # type: ignore
+    return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)
 
 
 def eager_attention_forward(
@@ -368,14 +368,14 @@ def flash_attention_4_forward(
         qkv = qkv.to(module.fa_target_dtype)
     else:
         convert_dtype = False
-    attn_output, _ = flash_attn_varlen_func(  # type: ignore
+    attn_output, _ = flash_attn_varlen_func(
         q=q,
         k=k,
         v=v,
         cu_seqlens_q=cu_seqlens,
         cu_seqlens_k=cu_seqlens,
-        max_seqlen_k=max_seqlen,  # type: ignore
-        max_seqlen_q=max_seqlen,  # type: ignore
+        max_seqlen_k=max_seqlen,
+        max_seqlen_q=max_seqlen,
         softmax_scale=module.softmax_scale,
     )
     attn_output = cast(Tensor, attn_output)

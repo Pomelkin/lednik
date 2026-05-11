@@ -85,8 +85,7 @@ def create_static_embeddings_model(
 
         vocab_tokens_ids = [[tok_id] for tok_id in tokenizer.get_vocab().values()]
         vocab_len = len(vocab_tokens_ids)
-        pad_token = int(tokenizer.pad_token_id)  # type: ignore
-
+        pad_token = int(tokenizer.pad_token_id)
         embeddings_t = extract_embeddings(
             model=model,
             vocab_tokens=vocab_tokens_ids,

@@ -82,7 +82,7 @@ class LLMTextGenerator:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = self.client.chat.completions.create(  # type: ignore
+        response = self.client.chat.completions.create(
             model=model_name,
             messages=messages,
             max_tokens=max_tokens,

@@ -10,7 +10,6 @@ from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
-from typing import cast
 
 
 def _get_postprocessor(
@@ -143,8 +142,8 @@ class ContrastiveCollator:  # noqa: D101
             if use_negatives:
                 neg_tok, neg_emb = self._get_embedding_and_coresponding_tokens(
                     item,
-                    cast(str, self.neg_tok_colname),
-                    cast(str, self.neg_teacher_embedding_colname),
+                    self.neg_tok_colname,
+                    self.neg_teacher_embedding_colname,
                 )
                 neg_tok_list.append(neg_tok)
                 neg_embeddings.append(neg_emb)

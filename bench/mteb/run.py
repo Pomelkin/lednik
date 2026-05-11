@@ -225,7 +225,7 @@ def main(
         ]  # ty:ignore[invalid-argument-type]
     )
     run_result = mteb.evaluate(
-        model_wrapper,  # type: ignore
+        model_wrapper,
         tasks2run,
         encode_kwargs={"batch_size": batch_size},
     )

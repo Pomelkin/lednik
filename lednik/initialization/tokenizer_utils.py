@@ -60,10 +60,10 @@ def _replace_normalizer(
     new_normalizers.append(Replace(Regex(r"\s+"), " "))
     new_normalizers.append(Strip(right=True))
     if normalizer is None:
-        normalizer = Sequence(new_normalizers)  # type: ignore
+        normalizer = Sequence(new_normalizers)
     else:
-        normalizer = Sequence([normalizer, *new_normalizers])  # type: ignore
-    tokenizer.normalizer = normalizer  # type: ignore
+        normalizer = Sequence([normalizer, *new_normalizers])
+    tokenizer.normalizer = normalizer
     return tokenizer
 
 
@@ -71,7 +71,7 @@ def _replace_post_processor(
     tokenizer: Tokenizer,
 ) -> Tokenizer:
     """Replace the post-processor for the tokenizer."""
-    tokenizer.post_processor = _get_default_post_processor_template()  # type: ignore
+    tokenizer.post_processor = _get_default_post_processor_template()
     return tokenizer
 
 

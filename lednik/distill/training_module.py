@@ -682,9 +682,7 @@ class DistillationModule(KostylLightningModule):
         return output
 
     @override
-    def training_step(  # type: ignore
-        self, batch: CollatorOutput, batch_idx: int
-    ) -> torch.Tensor:
+    def training_step(self, batch: CollatorOutput, batch_idx: int) -> torch.Tensor:
         output = self._base_step(batch)
         metrics = {
             "loss": output.loss.detach(),
@@ -735,9 +733,7 @@ class DistillationModule(KostylLightningModule):
         return output.loss
 
     @override
-    def validation_step(  # type: ignore
-        self, batch: CollatorOutput, batch_idx: int
-    ) -> torch.Tensor:
+    def validation_step(self, batch: CollatorOutput, batch_idx: int) -> torch.Tensor:
         output = self._base_step(batch)
         metrics = {
             "loss": output.loss.detach(),
@@ -808,7 +804,7 @@ class DistillationModule(KostylLightningModule):
 
     @override
     @torch.inference_mode()
-    def on_validation_epoch_end(self) -> None:  # type: ignore
+    def on_validation_epoch_end(self) -> None:
         if (
             self.trainer.sanity_checking
             or self.task is None

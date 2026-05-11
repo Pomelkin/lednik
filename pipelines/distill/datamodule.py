@@ -55,7 +55,7 @@ class DataModule(LightningDataModule):
 
         self.clearml_datasets = collect_clearml_datasets(config.datasets)
         self.collator = ContrastiveCollator(
-            tokenizer=tokenizer,  # type: ignore
+            tokenizer=tokenizer,
             pad_to_multiple_of=8,
             query_tok_colname=config.query_tok_colname,
             pos_tok_colname=config.pos_tok_colname,
@@ -121,7 +121,7 @@ class DataModule(LightningDataModule):
                 continue
             else:
                 ds = ds.remove_columns(col2remove)
-                datasets.append(ds)  # type: ignore
+                datasets.append(ds)
         if len(datasets) == 0:
             raise ValueError(
                 f"Not one of the datasets: {', '.join(set(self.path_to_ds_name.values()))}, "
