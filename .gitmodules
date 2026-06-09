@@ -1,0 +1,4 @@
+[submodule "kostyl_toolkit"]
+	path = kostyl_toolkit
+	url = https://github.com/Pomelkin/kostyl-toolkit
+	branch = develop
