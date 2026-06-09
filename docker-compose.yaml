@@ -1,6 +1,29 @@
 name: lednik
 
 services:
+  flash_attention_builder:
+    build:
+      context: .
+      dockerfile: docker/buildFlashAttention.Dockerfile
+      args:
+        - HOST_UID=${HOST_UID:?Please set HOST_UID environment variable}
+        - HOST_GID=${HOST_GID:?Please set HOST_GID environment variable}
+        - HOST_USER=${HOST_USER:?Please set HOST_USER environment variable}
+    container_name: flash_attention_builder
+    volumes:
+      - ./uv.lock:/home/$HOST_USER/app/uv.lock
+      - ./pyproject.toml:/home/$HOST_USER/app/pyproject.toml
+      - ./.python-version:/home/$HOST_USER/app/.python-version
+      - /home/$HOST_USER/.cache:/home/$HOST_USER/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+    profiles:
+      - flash_attention_builder
   qdrant:
     image: qdrant/qdrant:v1.17
     container_name: qdrant

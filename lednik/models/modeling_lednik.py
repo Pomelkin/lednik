@@ -32,12 +32,12 @@ from .outputs import LednikModelOutput
 
 
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_varlen_qkvpacked_func  # type: ignore
-    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore
+    from flash_attn import flash_attn_varlen_qkvpacked_func
+    from flash_attn.ops.triton.rotary import apply_rotary
 
 if is_flash_attn_4_available():
-    from flash_attn.cute import flash_attn_varlen_func  # type: ignore
-    from flash_attn.ops.triton.rotary import apply_rotary  # type: ignore
+    from flash_attn.cute import flash_attn_varlen_func
+    from flash_attn.ops.triton.rotary import apply_rotary
 
 logger = setup_logger()
 
@@ -374,8 +374,8 @@ def flash_attention_4_forward(
         v=v,
         cu_seqlens_q=cu_seqlens,
         cu_seqlens_k=cu_seqlens,
-        max_seqlen_k=max_seqlen,
-        max_seqlen_q=max_seqlen,
+        max_seqlen_k=max_seqlen,  # ty:ignore[unknown-argument]
+        max_seqlen_q=max_seqlen,  # ty:ignore[unknown-argument]
         softmax_scale=module.softmax_scale,
     )
     attn_output = cast(Tensor, attn_output)
@@ -788,16 +788,21 @@ class UnpaddedInputs:
 
     def to_model_inputs(
         self, unpadded_inputs_type: Literal["input_ids", "inputs_embeds"] = "input_ids"
-    ) -> dict[str, torch.Tensor | int | None]:
+    ) -> dict[str, torch.Tensor | int]:
         """Formats the unpadded inputs into a dictionary suitable for model input."""
-        return {
+        dict_inputs = {
             unpadded_inputs_type: self.unpadded_inputs,
             "cu_seqlens": self.cu_seqlens,
             "max_seqlen": self.max_seqlen,
             "non_pad_indices": self.non_pad_indices,
-            "position_ids": self.unpadded_position_ids,
-            "labels": self.unpadded_labels,
+            # "position_ids": self.unpadded_position_ids,
+            # "labels": self.unpadded_labels,
         }
+        if self.unpadded_position_ids is not None:
+            dict_inputs["position_ids"] = self.unpadded_position_ids
+        if self.unpadded_labels is not None:
+            dict_inputs["labels"] = self.unpadded_labels
+        return dict_inputs
 
 
 def unpad_inputs(
@@ -1172,10 +1177,6 @@ class LednikModel(LednikPreTrainedModel):
         attention_mask: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if attention_mask is None:
-            raise NotImplementedError(
-                "for mean pooling, attention_mask must be provided."
-            )
         if cu_seqlens is not None:
             if hidden_state.ndim != 2:
                 raise ValueError(
@@ -1189,6 +1190,11 @@ class LednikModel(LednikPreTrainedModel):
             ]
             sentence_embeddings = torch.cat(sentence_embeddings, dim=0)
         else:
+            if attention_mask is None:
+                raise NotImplementedError(
+                    "for mean pooling, attention_mask must be provided."
+                )
+
             if hidden_state.ndim != 3:
                 raise ValueError(
                     f"When cu_seqlens is not provided, hidden_state must be 3D, got {hidden_state.ndim}D"

@@ -55,9 +55,6 @@ flash-attn = [
 default-groups = ["dev", "distill"]
 no-build-isolation-package = ["flash-attn"]
 
-[tool.pyright]
-typeCheckingMode = "off"                                                  # "off" | "basic" | "standard" | "strict"
-
 [tool.pyrefly]
 project-excludes = [
   "**/node_modules",
@@ -74,7 +71,7 @@ python-interpreter-path = ".venv/bin/python3"
 
 
 [tool.ty.environment]
-python = ".venv"
+python = "./.venv"
 
 
 [tool.ruff]

@@ -46,15 +46,22 @@ def _parse_tags(ctx: click.Context, param: click.Parameter, value: str) -> list[
     callback=_parse_tags,
     help="Additional tags for the task, separated by commas (e.g., 'tag1,tag2,tag3').",
 )
+@click.option(
+    "--reuse-last-task-id/--no-reuse-last-task-id",
+    "reuse_last_task_id",
+    default=True,
+    help="Whether to reuse the last task ID for this task. Useful for resuming or updating an existing task in ClearML.",
+)
 def _distill_model(
     remote_execution_queue: str,
     tags: list[str],
+    reuse_last_task_id: bool = True,
 ) -> None:
     task: Task = Task.init(
         project_name="Lednik",
         task_name="Model Distillation",
         task_type=Task.TaskTypes.training,
-        reuse_last_task_id=True,
+        reuse_last_task_id=reuse_last_task_id,
         auto_connect_frameworks={
             "pytorch": False,
             "tensorboard": True,
