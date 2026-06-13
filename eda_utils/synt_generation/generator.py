@@ -84,7 +84,7 @@ class LLMTextGenerator:
 
         response = self.client.chat.completions.create(
             model=model_name,
-            messages=messages,
+            messages=messages,  # ty:ignore[invalid-argument-type]
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
