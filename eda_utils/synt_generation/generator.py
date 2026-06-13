@@ -92,7 +92,7 @@ class LLMTextGenerator:
         result = GenerationResult(
             data_id=data_id,
             prompt=prompt,
-            response=response.choices[0].message.content,  # ty:ignore[invalid-argument-type]
+            response=response.choices[0].message.content,  # ty:ignore[invalid-argument-type, unused-ignore-comment]
         )
         return result
 
