@@ -109,7 +109,7 @@ python -m pipelines.distill.run --remote-execution-queue q   # remote ClearML ag
 ## Models
 
 - **`LednikModel`** — a small encoder transformer with Rotary Positional Embeddings,
-  RMSNorm, SwiGLU/GeGLU MLPs and Flash-Attention / varlen-SDPA backends. Returns
+  RMSNorm, SwiGLU/GeGLU MLPs and Flash-Attention / torch-varlen backends. Returns
   `last_hidden_state` and mean-pooled `sentence_embeddings`.
 - **`StaticEmbeddingsModel`** — maps tokens directly to static vectors with per-token SIF
   weights and mean pooling; no attention. Ideal for ultra-low-latency / CPU inference. A
