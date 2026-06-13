@@ -6,7 +6,7 @@ from typing import cast
 
 import torch
 import torch.nn.functional as F
-from kostyl.ml.integrations.lightning import LightningCheckpointLoaderMixin
+from kostyl.ml.integrations.lightning import LightningCheckpointModelMixin
 from kostyl.utils import setup_logger
 from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
@@ -32,12 +32,12 @@ from .outputs import LednikModelOutput
 
 
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_varlen_qkvpacked_func
-    from flash_attn.ops.triton.rotary import apply_rotary
+    from flash_attn import flash_attn_varlen_qkvpacked_func  # ty:ignore[unresolved-import, unused-ignore-comment]
+    from flash_attn.ops.triton.rotary import apply_rotary  # ty:ignore[unresolved-import, unused-ignore-comment, unused-ignore-comment]
 
 if is_flash_attn_4_available():
-    from flash_attn.cute import flash_attn_varlen_func
-    from flash_attn.ops.triton.rotary import apply_rotary
+    from flash_attn.cute import flash_attn_varlen_func  # ty:ignore[unresolved-import,  unused-ignore-comment, unused-ignore-comment]
+    from flash_attn.ops.triton.rotary import apply_rotary  # ty:ignore[unresolved-import,  unused-ignore-comment, unused-ignore-comment]
 
 logger = setup_logger()
 
@@ -361,26 +361,24 @@ def flash_attention_4_forward(
     **_kwargs: Any,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Flash attention forward function."""
-    # qkv = torch.stack((q, k, v), dim=1)
-    # original_dtype = qkv.dtype
-    # if qkv.dtype != module.fa_target_dtype:
-    #     convert_dtype = True
-    #     qkv = qkv.to(module.fa_target_dtype)
-    # else:
-    #     convert_dtype = False
+    original_dtype = q.dtype
+    if original_dtype != module.fa_target_dtype:
+        q = q.to(module.fa_target_dtype)
+        k = k.to(module.fa_target_dtype)
+        v = v.to(module.fa_target_dtype)
     attn_output, _ = flash_attn_varlen_func(
         q=q,
         k=k,
         v=v,
         cu_seqlens_q=cu_seqlens,
         cu_seqlens_k=cu_seqlens,
-        max_seqlen_k=max_seqlen,  # ty:ignore[unknown-argument]
-        max_seqlen_q=max_seqlen,  # ty:ignore[unknown-argument]
+        max_seqlen_k=max_seqlen,  # ty:ignore[unknown-argument, unused-ignore-comment]
+        max_seqlen_q=max_seqlen,  # ty:ignore[unknown-argument, unused-ignore-comment]
         softmax_scale=module.softmax_scale,
     )
     attn_output = cast(Tensor, attn_output)
-    # if convert_dtype:
-    #     attn_output = attn_output.to(original_dtype)
+    if original_dtype != module.fa_target_dtype:
+        attn_output = attn_output.to(original_dtype)
     return attn_output, torch.empty((1,))  # dummy attention weights
 
 
@@ -718,7 +716,7 @@ class LednikEmbeddings(nn.Module):
 
 class LednikPreTrainedModel(
     PreTrainedModel,
-    LightningCheckpointLoaderMixin,  # pyrefly: ignore
+    LightningCheckpointModelMixin,  # pyrefly: ignore
 ):
     """Lednik PreTrained Model class."""
 

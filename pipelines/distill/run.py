@@ -105,7 +105,7 @@ def _distill_model(
 
     ### Tokenizer Loading ###
     tokenizer, _ = load_tokenizer_from_clearml(
-        model_id=training_settings.tokenizer_id,
+        tokenizer_id=training_settings.tokenizer_id,
         task=task,
         name="Tokenizer",
     )

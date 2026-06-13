@@ -1,9 +1,9 @@
 from typing import Literal
 
 from kostyl.ml.configs import HyperparamsConfig
-from kostyl.ml.configs.hyperparams import OPTIMIZER_CONFIG
-from kostyl.ml.configs.hyperparams import Lr
-from kostyl.ml.configs.hyperparams import WeightDecay
+from kostyl.ml.configs.structs.hyperparams import OPTIMIZER_CONFIG
+from kostyl.ml.configs.structs.hyperparams import Lr
+from kostyl.ml.configs.structs.hyperparams import WeightDecay
 from kostyl.utils.logging import setup_logger
 from pydantic import BaseModel
 from pydantic import Field

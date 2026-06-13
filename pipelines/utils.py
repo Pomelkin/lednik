@@ -4,13 +4,13 @@ from pathlib import Path
 from typing import Literal
 
 from clearml import Task
-from kostyl.ml.configs.training_settings import SUPPORTED_STRATEGIES
-from kostyl.ml.configs.training_settings import CheckpointConfig
-from kostyl.ml.configs.training_settings import DDPStrategyConfig
-from kostyl.ml.configs.training_settings import EarlyStoppingConfig
-from kostyl.ml.configs.training_settings import FSDP1StrategyConfig
-from kostyl.ml.configs.training_settings import FSDP2StrategyConfig
-from kostyl.ml.configs.training_settings import SingleDeviceStrategyConfig
+from kostyl.ml.configs.structs.training_settings import SUPPORTED_STRATEGIES
+from kostyl.ml.configs.structs.training_settings import CheckpointConfig
+from kostyl.ml.configs.structs.training_settings import DDPStrategyConfig
+from kostyl.ml.configs.structs.training_settings import EarlyStoppingConfig
+from kostyl.ml.configs.structs.training_settings import FSDP1StrategyConfig
+from kostyl.ml.configs.structs.training_settings import FSDP2StrategyConfig
+from kostyl.ml.configs.structs.training_settings import SingleDeviceStrategyConfig
 from kostyl.ml.integrations.clearml import ClearMLCheckpointUploader
 from kostyl.ml.integrations.lightning.callbacks import setup_checkpoint_callback
 from kostyl.ml.integrations.lightning.callbacks import setup_early_stopping_callback

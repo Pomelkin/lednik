@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "accelerate>=1.13.0",
-  "kostyl-toolkit[ml]>=0.1.41",
+  "kostyl-toolkit[ml]",
   "liger-kernel>=0.6.4",
   "loguru>=0.7.3",
   "matplotlib>=3.10.8",
@@ -55,6 +55,14 @@ flash-attn = [
 [tool.uv]
 default-groups = ["dev", "distill"]
 no-build-isolation-package = ["flash-attn"]
+
+[tool.uv.workspace]
+members = [
+    "kostyl_toolkit",
+]
+
+[tool.uv.sources]
+kostyl-toolkit = { workspace = true }
 
 [tool.pyrefly]
 project-excludes = [

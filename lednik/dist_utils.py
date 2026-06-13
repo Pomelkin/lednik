@@ -4,8 +4,8 @@ from typing import TypedDict
 
 import torch
 import torch.distributed as dist
-from kostyl.ml.configs.training_settings import FSDP1StrategyConfig
-from kostyl.ml.configs.training_settings import FSDP2StrategyConfig
+from kostyl.ml.configs.structs.training_settings import FSDP1StrategyConfig
+from kostyl.ml.configs.structs.training_settings import FSDP2StrategyConfig
 from kostyl.utils import setup_logger
 from torch import nn
 from torch.distributed.fsdp import CPUOffload

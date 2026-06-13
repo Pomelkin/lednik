@@ -3,7 +3,7 @@ from typing import override
 
 import torch
 import torch.nn.functional as F
-from kostyl.ml.integrations.lightning import LightningCheckpointLoaderMixin
+from kostyl.ml.integrations.lightning import LightningCheckpointModelMixin
 from kostyl.utils import setup_logger
 from torch import nn
 from transformers import PreTrainedModel
@@ -20,7 +20,7 @@ logger = setup_logger(fmt="only_message")
 TPreTrainedModel = TypeVar("TPreTrainedModel", bound="PreTrainedModel")
 
 
-class StaticEmbeddingsPreTrainedModel(LightningCheckpointLoaderMixin, PreTrainedModel):
+class StaticEmbeddingsPreTrainedModel(LightningCheckpointModelMixin, PreTrainedModel):
     """
     An abstract base class for static embedding models, inheriting from `PreTrainedModel`.
 

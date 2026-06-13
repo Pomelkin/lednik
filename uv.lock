@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "kostyl-toolkit",
+    "lednik",
+]
+
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -1567,15 +1573,12 @@ wheels = [
 
 [[package]]
 name = "kostyl-toolkit"
-version = "0.1.61"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.65"
+source = { editable = "kostyl_toolkit" }
 dependencies = [
     { name = "case-converter" },
     { name = "loguru" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/8e/414c59c641a44cabbeb7f64dc95333999da2dfd46480a2c39a2f2c1a549e/kostyl_toolkit-0.1.61.tar.gz", hash = "sha256:0b9a22a52fb804f492586469f751add29514280f8cebf50e03f936326da79158", size = 34994, upload-time = "2026-03-26T15:01:05.944Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/6b/458bf0c5fdb3fa4b861d15b59156b40f6176cf2ab58eecb74b462e7eca90/kostyl_toolkit-0.1.61-py3-none-any.whl", hash = "sha256:f0621ba4bc6134c7c4a220e19bbceca7ae180b4d6df9c26cb1a5acfff452f007", size = 51799, upload-time = "2026-03-26T15:01:04.473Z" },
+    { name = "orjson" },
 ]
 
 [package.optional-dependencies]
@@ -1584,6 +1587,58 @@ ml = [
     { name = "pydantic" },
     { name = "torch" },
     { name = "transformers" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ipywidgets" },
+    { name = "notebook" },
+    { name = "pandas" },
+    { name = "peft" },
+    { name = "polars" },
+    { name = "pre-commit" },
+    { name = "pyarrow" },
+]
+ml = [
+    { name = "case-converter" },
+    { name = "clearml", extra = ["s3"] },
+    { name = "lightning" },
+    { name = "pydantic" },
+    { name = "torch" },
+    { name = "torchao" },
+    { name = "transformers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "case-converter", specifier = ">=1.2.0" },
+    { name = "case-converter", marker = "extra == 'ml'", specifier = ">=1.2.0" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "orjson", specifier = ">=3.11.9" },
+    { name = "pydantic", marker = "extra == 'ml'", specifier = ">=2.12.4" },
+    { name = "torch", marker = "extra == 'ml'" },
+    { name = "transformers", marker = "extra == 'ml'" },
+]
+provides-extras = ["ml"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "ipywidgets", specifier = ">=8.1.8" },
+    { name = "notebook", specifier = ">=7.4.7" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "peft", specifier = ">=0.18.0" },
+    { name = "polars", specifier = ">=1.35.2" },
+    { name = "pre-commit", specifier = ">=4.3.0" },
+    { name = "pyarrow", specifier = ">=22.0.0" },
+]
+ml = [
+    { name = "case-converter", specifier = ">=1.2.0" },
+    { name = "clearml", extras = ["s3"], specifier = ">=2.0.2" },
+    { name = "lightning", specifier = ">=2.5.6" },
+    { name = "pydantic", specifier = ">=2.12.4" },
+    { name = "torch", specifier = ">=2.9.1" },
+    { name = "torchao", specifier = ">=0.15.0" },
+    { name = "transformers", specifier = ">=4.57.1" },
 ]
 
 [[package]]
@@ -1650,7 +1705,7 @@ flash-attn = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.13.0" },
-    { name = "kostyl-toolkit", extras = ["ml"], specifier = ">=0.1.41" },
+    { name = "kostyl-toolkit", extras = ["ml"], editable = "kostyl_toolkit" },
     { name = "liger-kernel", specifier = ">=0.6.4" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "matplotlib", specifier = ">=3.10.8" },
@@ -2576,6 +2631,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/31/51/99caf463dc7c18eb18dad1fffe465a3cf3ee50ac3d1dccbd1781336fe9c7/pathlib2-2.3.7.post1.tar.gz", hash = "sha256:9fe0edad898b83c0c3e199c842b27ed216645d2e177757b2dd67384d4113c641", size = 211190, upload-time = "2022-02-10T18:01:09.996Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/09/eb/4af4bcd5b8731366b676192675221c5324394a580dfae469d498313b5c4a/pathlib2-2.3.7.post1-py2.py3-none-any.whl", hash = "sha256:5266a0fd000452f1b3467d782f079a4343c63aaa119221fbdc4e39577489ca5b", size = 18027, upload-time = "2022-02-10T18:01:07.751Z" },
+]
+
+[[package]]
+name = "peft"
+version = "0.19.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "psutil" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/cf/037f1e3d5186496c05513a6754639e2dab3038a05f384284d49a9bd06a2d/peft-0.19.1.tar.gz", hash = "sha256:0d97542fe96dcdaa20d3b81c06f26f988618f416a73544ab23c3618ccb674a40", size = 763738, upload-time = "2026-04-16T15:46:45.105Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/b6/f54d676ed93cc2dd2234c3b172ea9c8c3d7d29361e66b1b23dec57a67465/peft-0.19.1-py3-none-any.whl", hash = "sha256:2113f72a81621b5913ef28f9022204c742df111890c5f49d812716a4a301e356", size = 680692, upload-time = "2026-04-16T15:46:42.886Z" },
 ]
 
 [[package]]

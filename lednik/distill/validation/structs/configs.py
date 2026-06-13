@@ -4,7 +4,7 @@ from kostyl.ml.configs.mixins import ConfigLoadingMixin
 from pydantic import BaseModel
 
 
-class RedisConfig(BaseModel, ConfigLoadingMixin["RedisConfig"]):
+class RedisConfig(BaseModel, ConfigLoadingMixin):
     """Configuration for Redis connection."""
 
     host: str
@@ -37,7 +37,7 @@ class KNNConfig(BaseModel):
     k: int
 
 
-class EvaluationRunnerConfig(BaseModel, ConfigLoadingMixin["EvaluationRunnerConfig"]):
+class EvaluationRunnerConfig(BaseModel, ConfigLoadingMixin):
     """Configuration for retrieval evaluation."""
 
     mrr_config: MRRConfig | None = None
@@ -47,7 +47,7 @@ class EvaluationRunnerConfig(BaseModel, ConfigLoadingMixin["EvaluationRunnerConf
     device: str = "auto"
 
 
-class EvaluationWorkerConfig(BaseModel, ConfigLoadingMixin["EvaluationWorkerConfig"]):
+class EvaluationWorkerConfig(BaseModel, ConfigLoadingMixin):
     """Configuration for the evaluation worker."""
 
     redis: RedisConfig
