@@ -23,7 +23,7 @@ repos:
     args: [ --py312-plus ]
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.12
+  rev: v0.15.21
   hooks:
   - id: ruff
     name: ruff lint
@@ -43,7 +43,7 @@ repos:
   - id: codespell
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.11.13
+  rev: 0.11.28
   hooks:
   - id: uv-lock
   - id: uv-export
@@ -64,7 +64,7 @@ repos:
     args: [ --fix ]
 
 - repo: https://github.com/allganize/ty-pre-commit
-  rev: v0.0.35
+  rev: v0.0.59
   hooks:
   # Run the type checker with verbose output.
   - id: ty-check
