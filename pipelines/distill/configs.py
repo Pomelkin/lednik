@@ -10,6 +10,7 @@ from pydantic import Field
 from pydantic import model_validator
 
 from lednik.distill.configs import DistillationConfig as BaseDistillationConfig
+from lednik.distill.validation import EvaluationRunnerConfig
 from lednik.distill.validation.structs import RedisConfig
 
 
@@ -45,8 +46,13 @@ class DataConfig(BaseModel):
     num_workers: int = Field(ge=1)
 
     query_tok_colname: str
+    query_text_colname: str
     pos_tok_colname: str
+    pos_text_colname: str
     neg_tok_colname: str | None = None
+    neg_text_colname: str | None = None
+
+    aug_prob: float = Field(default=0.0, ge=0.0, le=1.0)
 
     query_teacher_embedding_colname: str
     pos_teacher_embedding_colname: str
@@ -88,14 +94,22 @@ class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin)
     data: DataConfig
 
     redis: RedisConfig | None = None
+    runner_config: EvaluationRunnerConfig | None = None
 
     @model_validator(mode="after")
-    def _validate_checkpoint_settigs(self) -> "TrainingSettings":
+    def _validate_settings(self) -> "TrainingSettings":
         if (
             self.is_student_lightning_checkpoint
             and self.checkpoint_weight_prefix is None
         ):
             raise ValueError(
                 "checkpoint_weight_prefix must be provided when is_student_lightning_checkpoint is True."
+            )
+        if self.redis is None and self.runner_config is None:
+            raise ValueError(
+                "At least one of redis or runner_config must be provided for:"
+                "\n- If redis is not provided, runner_config must be provided for local evaluation."
+                "\n- If runner_config is not provided, redis must be provided for remote evaluation."
+                "\n- If both are provided, the dispatcher will attempt to use Redis for dispatching and fall back to local evaluation if Redis is unavailable."
             )
         return self

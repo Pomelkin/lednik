@@ -1,15 +1,20 @@
-from typing import TypedDict
+import math
+import random
 from collections.abc import Callable
 from dataclasses import dataclass
-from random import randint
 from typing import Any
+from typing import TypedDict
 
 import torch
-import torch.nn.functional as F
+from kostyl.utils import setup_logger
+from sage.spelling_corruption import SBSCCorruptor
+from tokenizers import Tokenizer
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
+
+
+logger = setup_logger(fmt="only_message")
 
 
 def _get_postprocessor(
@@ -34,7 +39,9 @@ def _get_postprocessor(
     return postprocessor
 
 
-class CollatorOutput(TypedDict):  # noqa: D101
+class CollatorOutput(TypedDict):
+    """Output structure for the collator."""
+
     input_ids: Tensor
     attention_mask: Tensor
     queries_mask: Tensor
@@ -45,160 +52,243 @@ class CollatorOutput(TypedDict):  # noqa: D101
 
 
 @dataclass
-class ContrastiveCollator:  # noqa: D101
-    tokenizer: TokenizersBackend | SentencePieceBackend
+class ContrastiveCollator:
+    """Collator for contrastive distillation with optional text augmentation."""
+
+    tokenizer: TokenizersBackend
 
     query_tok_colname: str
+    query_text_colname: str
     query_teacher_embedding_colname: str
 
     pos_tok_colname: str
+    pos_text_colname: str
     pos_teacher_embedding_colname: str
 
     neg_tok_colname: str | None = None
+    neg_text_colname: str | None = None
     neg_teacher_embedding_colname: str | None = None
 
     label_colname: str | None = None
     pad_to_multiple_of: int | None = 8
     max_len: int | None = None
-    postprocessor: Callable[[list[int]], list[int]] | None = None
 
-    def __post_init__(self):  # noqa: ANN204, D105
+    aug_prob: float = 0.0
+    corruptor: SBSCCorruptor | None = None
+
+    backend_tokenizer: Tokenizer | None = None
+
+    def __post_init__(self) -> None:
+        """Post-initialization checks and setup for the collator."""
+        if self.backend_tokenizer is None:
+            if isinstance(self.tokenizer, TokenizersBackend):
+                self.backend_tokenizer = self.tokenizer.backend_tokenizer
+                self.backend_tokenizer.no_padding()
+                self.backend_tokenizer.no_truncation()
+            else:
+                raise ValueError(
+                    "backend_tokenizer must be provided for SentencePieceBackend."
+                )
+        ### Augmentation checks
+        if self.aug_prob > 0.0 and self.corruptor is None:
+            raise ValueError(
+                "If aug_prob > 0.0, a corruptor must be provided for data augmentation."
+            )
+        if not 0.0 <= self.aug_prob <= 1.0:
+            raise ValueError("aug_prob must be between 0.0 and 1.0.")
+        if math.isclose(self.aug_prob, 0.0):
+            self.corruptor = None
+            logger.warning("aug_prob is close to 0.0, setting corruptor to None.")
+
+        ### Max length check
         if self.max_len is None:
             self.max_len = int(self.tokenizer.model_max_length)
-        self.postprocessor = _get_postprocessor(self.tokenizer, self.max_len)
-        if (self.neg_tok_colname is None) != (
-            self.neg_teacher_embedding_colname is None
+
+        if not (
+            (self.neg_tok_colname is None)
+            == (self.neg_teacher_embedding_colname is None)
+            == (self.neg_text_colname is None)
         ):
             raise ValueError(
-                "neg_tok_colname and neg_teacher_embedding_colname must be provided together or omitted."
+                "neg_tok_colname, neg_text_colname, and neg_teacher_embedding_colname must be provided together or omitted."
             )
         return
 
-    @staticmethod
-    def _select_sentence(sentences: list[list[int]]) -> list[int]:
-        if len(sentences) == 1:
-            return sentences[0]
-        index = randint(0, len(sentences) - 1)  # noqa: S311
-        return sentences[index]
-
-    def _preprocess_token_ids(self, token_ids: list[int]) -> Tensor:
-        if self.postprocessor is None:
-            raise ValueError(
-                "Postprocessor must be defined before preprocessing token ids."
-            )
-        token_ids = self.postprocessor(token_ids)
-        return torch.tensor(token_ids, dtype=torch.long)
-
-    def _pad_to_multiple_of(self, tensor: Tensor) -> Tensor:
+    def _determine_seqlen(self, max_len_in_batch: int) -> int:
         if self.pad_to_multiple_of is None:
-            return tensor
-        pad_len = -tensor.size(-1) % self.pad_to_multiple_of
-        if pad_len == 0:
-            return tensor
-        return F.pad(tensor, (0, pad_len), value=self.tokenizer.pad_token_id)
+            return max_len_in_batch
+        res = -max_len_in_batch % self.pad_to_multiple_of
+        return max_len_in_batch + res
 
-    def _get_embedding_and_coresponding_tokens(
-        self, item: dict[str, Any], tok_colname: str, teacher_emb_colname: str
-    ) -> tuple[Tensor, Tensor]:
-        tokens = item[tok_colname]
-        embedding = item[teacher_emb_colname]
-        if isinstance(tokens[0], list):
-            index = randint(0, len(tokens) - 1)  # noqa: S311
-            tokens = tokens[index]
-            embedding = embedding[index]
+    def _pad_sequences(
+        self,
+        sequences: list[Tensor],
+        pad_value: int,
+        pad_len: int,
+    ) -> Tensor:
+        seq_buf = torch.full((len(sequences), pad_len), pad_value, dtype=torch.long)
+        for i, seq in enumerate(sequences):
+            if seq.ndim != 1:
+                raise ValueError(f"Expected 1D tensor, got {seq.ndim}D tensor.")
+            seq_buf[i, : seq.size(0)] = seq
+        return seq_buf
 
-        tokens = self._preprocess_token_ids(tokens)
-        embedding = torch.tensor(embedding)
-        if embedding.ndim == 1:
-            embedding = embedding.unsqueeze(0)
-        return tokens, embedding
+    def _encode_texts(self, texts: list[str]) -> list[list[int]]:
+        if self.backend_tokenizer is None:
+            raise ValueError("backend_tokenizer must be defined for text encoding.")
 
-    def __call__(self, batch: list[dict[str, Any]]) -> CollatorOutput:  # noqa: D102
-        query_tok_list = []
-        pos_tok_list = []
-        neg_tok_list = []
-
-        query_embeddings = []
-        pos_embeddings = []
-        neg_embeddings = []
-
-        use_negatives = (
-            self.neg_tok_colname is not None
-            and self.neg_teacher_embedding_colname is not None
+        encoded = self.backend_tokenizer.encode_batch_fast(
+            texts,
+            add_special_tokens=False,
         )
+        return [enc.ids for enc in encoded]
 
-        labels_list = []
-        for item in batch:
-            query_tok, query_emb = self._get_embedding_and_coresponding_tokens(
-                item,
-                self.query_tok_colname,
-                self.query_teacher_embedding_colname,
-            )
-            pos_tok, pos_emb = self._get_embedding_and_coresponding_tokens(
-                item,
-                self.pos_tok_colname,
-                self.pos_teacher_embedding_colname,
-            )
-            if use_negatives:
-                neg_tok, neg_emb = self._get_embedding_and_coresponding_tokens(
-                    item,
-                    self.neg_tok_colname,
-                    self.neg_teacher_embedding_colname,
-                )
-                neg_tok_list.append(neg_tok)
-                neg_embeddings.append(neg_emb)
+    def _postprocess_tokens(self, tokens: list[int]) -> list[int]:
+        if self.max_len is None:
+            raise ValueError("max_len must be defined for postprocessing tokens.")
 
-            query_tok_list.append(query_tok)
-            pos_tok_list.append(pos_tok)
-            query_embeddings.append(query_emb)
-            pos_embeddings.append(pos_emb)
-
-            label = (
-                item.get(self.label_colname, None)
-                if self.label_colname is not None
-                else None
-            )
-            if label is not None:
-                if isinstance(label, int):
-                    label = [label]
-                labels_list.append(torch.tensor(label, dtype=torch.long).reshape(-1))
-
-        sequences = query_tok_list + pos_tok_list
-        if use_negatives:
-            sequences += neg_tok_list
-        inputs = pad_sequence(
-            sequences,
-            padding_value=self.tokenizer.pad_token_id,
-            batch_first=True,
-        )
-        inputs = self._pad_to_multiple_of(inputs)
-
-        mask = torch.zeros(inputs.size(0), dtype=torch.long)
-        mask[len(query_tok_list) : len(query_tok_list) + len(pos_tok_list)] = 1
-        if use_negatives:
-            mask[len(query_tok_list) + len(pos_tok_list) :] = 2
-
-        queries_mask = mask == 0
-        positives_mask = mask == 1
-        negatives_mask = mask == 2 if use_negatives else None
-
-        if len(labels_list) > 0:
-            labels = torch.cat(labels_list)
+        if (
+            self.tokenizer.cls_token_id is not None
+            and self.tokenizer.sep_token_id is not None
+        ):
+            cls_id = self.tokenizer.cls_token_id
+            sep_id = self.tokenizer.sep_token_id
+            tokens = [cls_id, *tokens[: self.max_len - 2], sep_id]
+        elif self.tokenizer.eos_token_id is not None:
+            eos_id = self.tokenizer.eos_token_id
+            tokens = [*tokens[: self.max_len - 1], eos_id]
         else:
-            labels = torch.full((len(query_tok_list),), -1, dtype=torch.long)
+            raise ValueError(
+                "Tokenizer must have either cls and sep tokens or an eos token."
+            )
+        return tokens
 
-        attention_mask = (inputs != self.tokenizer.pad_token_id).long()
+    def _gather_tokens(
+        self, items: list[dict[str, Any]], text_colname: str, tokens_colname: str
+    ) -> list[Tensor]:
+        text: list[str] = []
+        tokens: list[list[int] | None] = []
 
-        teacher_embeddings = query_embeddings + pos_embeddings
+        if self.aug_prob > 0.0:
+            aug_indices = random.sample(
+                range(len(items)),
+                k=min(math.ceil(len(items) * self.aug_prob), len(items)),
+            )
+            # Sort indices to maintain order when replacing tokens after encoding
+            aug_indices.sort()
+        else:
+            aug_indices = []
+
+        aug_indices_set = set(aug_indices)
+        for i, item in enumerate(items):
+            if i in aug_indices_set:
+                if self.corruptor is None:
+                    raise ValueError(
+                        "Corruptor must be provided for data augmentation."
+                    )
+                corrupted_text = self.corruptor.corrupt(item[text_colname])
+                text.append(corrupted_text)
+                tokens.append(None)
+            else:
+                tokens.append(item[tokens_colname])
+
+        if len(text) > 0:
+            encoded_texts = self._encode_texts(text)
+            for idx, enc in zip(aug_indices, encoded_texts, strict=True):
+                tokens[idx] = enc
+
+        tokens_t: list[Tensor] = []
+        for tok in tokens:
+            if tok is None:
+                raise ValueError("Tokenization failed for some items.")
+
+            tok = self._postprocess_tokens(tok)
+            tokens_t.append(torch.tensor(tok, dtype=torch.long))
+        return tokens_t
+
+    def _gather_teacher_embeddings(
+        self, items: list[dict[str, Any]], teacher_emb_colname: str
+    ) -> Tensor:
+        embeddings: list[Tensor] = []
+        for item in items:
+            emb = torch.tensor(item[teacher_emb_colname])
+            if emb.ndim != 1:
+                raise ValueError(
+                    f"Expected 1D tensor for teacher embedding, got {emb.ndim}D tensor."
+                )
+            embeddings.append(emb)
+        return torch.stack(embeddings)
+
+    def __call__(self, batch: list[dict[str, Any]]) -> CollatorOutput:
+        """Collate items into padded inputs, section masks, and teacher embeddings."""
+        sequences = self._gather_tokens(
+            batch, self.query_text_colname, self.query_tok_colname
+        )
+        sequences += self._gather_tokens(
+            batch, self.pos_text_colname, self.pos_tok_colname
+        )
+        embeddings = [
+            self._gather_teacher_embeddings(
+                batch, self.query_teacher_embedding_colname
+            ),
+            self._gather_teacher_embeddings(batch, self.pos_teacher_embedding_colname),
+        ]
+
+        use_negatives = False
+        if (
+            self.neg_tok_colname is not None
+            and self.neg_text_colname is not None
+            and self.neg_teacher_embedding_colname is not None
+        ):
+            use_negatives = True
+            sequences += self._gather_tokens(
+                batch, self.neg_text_colname, self.neg_tok_colname
+            )
+            embeddings.append(
+                self._gather_teacher_embeddings(
+                    batch, self.neg_teacher_embedding_colname
+                )
+            )
+
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            raise ValueError("Tokenizer must have a pad token for batch collation.")
+
+        pad_len = self._determine_seqlen(max(seq.size(0) for seq in sequences))
+        input_ids = self._pad_sequences(
+            sequences, pad_value=pad_token_id, pad_len=pad_len
+        )
+
+        lengths = torch.tensor([seq.size(0) for seq in sequences], dtype=torch.long)
+        attention_mask = (torch.arange(pad_len) < lengths.unsqueeze(1)).long()
+
+        batch_size = len(batch)
+        total = input_ids.size(0)
+        queries_mask = torch.zeros(total, dtype=torch.bool)
+        queries_mask[:batch_size] = True
+        positives_mask = torch.zeros(total, dtype=torch.bool)
+        positives_mask[batch_size : 2 * batch_size] = True
+        negatives_mask: Tensor | None = None
         if use_negatives:
-            teacher_embeddings += neg_embeddings
-        teacher_sentence_embeddings = torch.cat(teacher_embeddings)
-        return {
-            "input_ids": inputs,
-            "attention_mask": attention_mask,
-            "queries_mask": queries_mask,
-            "positives_mask": positives_mask,
-            "negatives_mask": negatives_mask,
-            "labels": labels,
-            "teacher_sentence_embeddings": teacher_sentence_embeddings,
-        }
+            negatives_mask = torch.zeros(total, dtype=torch.bool)
+            negatives_mask[2 * batch_size :] = True
+
+        if self.label_colname is not None:
+            labels = torch.cat(
+                [
+                    torch.tensor(item[self.label_colname], dtype=torch.long).reshape(-1)
+                    for item in batch
+                ]
+            )
+        else:
+            labels = torch.full((batch_size,), -1, dtype=torch.long)
+
+        return CollatorOutput(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            queries_mask=queries_mask,
+            positives_mask=positives_mask,
+            negatives_mask=negatives_mask,
+            labels=labels,
+            teacher_sentence_embeddings=torch.cat(embeddings),
+        )

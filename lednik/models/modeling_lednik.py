@@ -18,26 +18,37 @@ from transformers import PreTrainedModel
 from transformers.integrations import use_kernel_func_from_hub
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+from transformers.modeling_rope_utils import RopeParameters
 from transformers.modeling_rope_utils import dynamic_rope_update
-from transformers.utils import is_flash_attn_2_available, is_flash_attn_4_available
+from transformers.utils import is_flash_attn_2_available
+from transformers.utils import is_flash_attn_4_available
 from transformers.utils.generic import is_flash_attention_requested
 from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
-from transformers.modeling_rope_utils import RopeParameters
-
 
 from .configuration_lednik import LednikConfig
 from .outputs import LednikModelOutput
 
 
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_varlen_qkvpacked_func  # ty:ignore[unresolved-import, unused-ignore-comment]
-    from flash_attn.ops.triton.rotary import apply_rotary  # ty:ignore[unresolved-import, unused-ignore-comment, unused-ignore-comment]
+    from flash_attn import (
+        flash_attn_varlen_qkvpacked_func,  # ty:ignore[unresolved-import, unused-ignore-comment]
+    )
+    from flash_attn.ops.triton.rotary import (
+        apply_rotary,  # ty:ignore[unresolved-import, unused-ignore-comment, unused-ignore-comment]
+    )
 
 if is_flash_attn_4_available():
-    from flash_attn.cute import flash_attn_varlen_func  # ty:ignore[unresolved-import,  unused-ignore-comment, unused-ignore-comment]
-    from flash_attn.ops.triton.rotary import apply_rotary  # ty:ignore[unresolved-import,  unused-ignore-comment, unused-ignore-comment]
+    from flash_attn.cute import (
+        flash_attn_varlen_func,  # ty:ignore[unresolved-import,  unused-ignore-comment, unused-ignore-comment]
+    )
+    from flash_attn.ops.triton.rotary import (
+        apply_rotary,  # ty:ignore[unresolved-import,  unused-ignore-comment, unused-ignore-comment]
+    )
+
+with contextlib.suppress(ImportError):
+    from fla.layers import GatedDeltaNet2
 
 logger = setup_logger()
 
@@ -293,7 +304,7 @@ def apply_rotary_pos_emb_unpadded(
 
 
 def eager_attention_forward(
-    module: "LednikAttention",
+    module: "LednikFullAttention",
     q: torch.Tensor,  # [b, seq, num_heads, dim]
     k: torch.Tensor,  # [b, seq, num_heads, dim]
     v: torch.Tensor,  # [b, seq, num_heads, dim]
@@ -322,7 +333,7 @@ def eager_attention_forward(
 
 
 def flash_attention_2_forward(
-    module: "LednikAttention",
+    module: "LednikFullAttention",
     q: torch.Tensor,  # [b * seq, num_heads, dim]
     k: torch.Tensor,  # [b * seq, num_heads, dim]
     v: torch.Tensor,  # [b * seq, num_heads, dim]
@@ -352,7 +363,7 @@ def flash_attention_2_forward(
 
 
 def flash_attention_4_forward(
-    module: "LednikAttention",
+    module: "LednikFullAttention",
     q: torch.Tensor,  # [b * seq, num_heads, dim]
     k: torch.Tensor,  # [b * seq, num_heads, dim]
     v: torch.Tensor,  # [b * seq, num_heads, dim]
@@ -372,8 +383,8 @@ def flash_attention_4_forward(
         v=v,
         cu_seqlens_q=cu_seqlens,
         cu_seqlens_k=cu_seqlens,
-        max_seqlen_k=max_seqlen,  # ty:ignore[unknown-argument, unused-ignore-comment]
-        max_seqlen_q=max_seqlen,  # ty:ignore[unknown-argument, unused-ignore-comment]
+        max_seqlen_k=max_seqlen,  # ty:ignore[unknown-argument]
+        max_seqlen_q=max_seqlen,  # ty:ignore[unknown-argument]
         softmax_scale=module.softmax_scale,
     )
     attn_output = cast(Tensor, attn_output)
@@ -383,7 +394,7 @@ def flash_attention_4_forward(
 
 
 def torch_varlen_attn_forward(
-    module: "LednikAttention",
+    module: "LednikFullAttention",
     q: torch.Tensor,  # [b * seq, num_heads, dim]
     k: torch.Tensor,  # [b * seq, num_heads, dim]
     v: torch.Tensor,  # [b * seq, num_heads, dim]
@@ -422,7 +433,7 @@ LEDNIK_ATTENTION_FUNCTION = {
 }
 
 
-class LednikAttention(nn.Module):
+class LednikFullAttention(nn.Module):
     """Lednik Attention Module. Supports eager and flash attention implementations."""
 
     def __init__(self, config: LednikConfig) -> None:
@@ -434,21 +445,24 @@ class LednikAttention(nn.Module):
                 "for attention block initialization"
             )
         self.num_heads = config.num_attention_heads
-        self.head_dim = config.hidden_size // config.num_attention_heads
+        self.head_dim = config.head_dim
+        self.proj_size = self.num_heads * self.head_dim
 
         self.q_proj = nn.Linear(
-            config.hidden_size, config.hidden_size, bias=config.attention_bias
+            config.hidden_size,
+            self.proj_size if not config.use_gated_attention else self.proj_size * 2,
+            bias=config.attention_bias,
         )
         self.k_proj = nn.Linear(
-            config.hidden_size, config.hidden_size, bias=config.attention_bias
+            config.hidden_size, self.proj_size, bias=config.attention_bias
         )
         self.v_proj = nn.Linear(
-            config.hidden_size, config.hidden_size, bias=config.attention_bias
+            config.hidden_size, self.proj_size, bias=config.attention_bias
         )
         self.q_norm = LigerRMSNorm(hidden_size=self.head_dim)
         self.k_norm = LigerRMSNorm(hidden_size=self.head_dim)
         self.out_proj = nn.Linear(
-            config.hidden_size, config.hidden_size, bias=config.attention_bias
+            self.proj_size, config.hidden_size, bias=config.attention_bias
         )
         self.out_dropout = (
             nn.Dropout(config.out_attn_dropout)
@@ -478,6 +492,7 @@ class LednikAttention(nn.Module):
         max_seqlen: int | None = None,
         non_pad_indices: torch.Tensor | None = None,
         seqlen: int | None = None,
+        **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Perform the forward pass of the attention mechanism.
@@ -494,6 +509,7 @@ class LednikAttention(nn.Module):
                 of sequences in the flattened batch. Defaults to None.
             max_seqlen (int | None, optional): Maximum sequence length in the batch, required
                 for unpadded attention implementations. Defaults to None.
+            kwargs (Any): Additional keyword arguments for future extensions.
 
             Required for non-Flash Attention unpadded implementations to correctly apply RoPE:
 
@@ -510,7 +526,12 @@ class LednikAttention(nn.Module):
                 `max_seqlen` are not provided.
 
         """
-        q: torch.Tensor = self.q_proj(hidden_state)
+        if not self.config.use_gated_attention:
+            q: torch.Tensor = self.q_proj(hidden_state)
+            gate = None
+        else:
+            q, gate = self.q_proj(hidden_state).chunk(2, dim=-1)
+
         k: torch.Tensor = self.k_proj(hidden_state)
         v: torch.Tensor = self.v_proj(hidden_state)
 
@@ -550,7 +571,11 @@ class LednikAttention(nn.Module):
             cu_seqlens=cu_seqlens,  # type: ignore
             max_seqlen=max_seqlen,  # type: ignore
         )
-        hidden_state = attn_output.view_as(hidden_state)
+        hidden_state = attn_output.reshape_as(hidden_state)
+
+        if gate is not None:
+            hidden_state = hidden_state * gate.sigmoid()
+
         hidden_state = self.out_dropout(self.out_proj(hidden_state))
         return (hidden_state, attention_weights)
 
@@ -588,20 +613,17 @@ class LednikAttention(nn.Module):
                     raise ValueError(
                         "non_pad_indices and seqlen must be provided for torch varlen attention"
                     )
-                buf_q = q.new_zeros(
-                    ((cu_seqlens.size(0) - 1) * seqlen, self.num_heads, self.head_dim)
-                )
-                buf_k = k.new_zeros(
-                    ((cu_seqlens.size(0) - 1) * seqlen, self.num_heads, self.head_dim)
-                )
+                bsz = cu_seqlens.size(0) - 1
+
+                buf_q = q.new_empty(bsz * seqlen, self.num_heads, self.head_dim)
+                buf_k = k.new_empty(bsz * seqlen, self.num_heads, self.head_dim)
+
                 buf_q[non_pad_indices] = q
                 buf_k[non_pad_indices] = k
-                buf_q = buf_q.view(
-                    cu_seqlens.size(0) - 1, seqlen, self.num_heads, self.head_dim
-                )
-                buf_k = buf_k.view(
-                    cu_seqlens.size(0) - 1, seqlen, self.num_heads, self.head_dim
-                )
+
+                buf_q = buf_q.view(bsz, seqlen, self.num_heads, self.head_dim)
+                buf_k = buf_k.view(bsz, seqlen, self.num_heads, self.head_dim)
+
                 buf_q, buf_k = apply_rotary_pos_emb(
                     q=buf_q,
                     k=buf_k,
@@ -609,6 +631,7 @@ class LednikAttention(nn.Module):
                     sin=sin,
                     unsqueeze_dim=2,
                 )
+
                 q = buf_q.view(-1, self.num_heads, self.head_dim)[non_pad_indices]
                 k = buf_k.view(-1, self.num_heads, self.head_dim)[non_pad_indices]
         else:
@@ -622,24 +645,120 @@ class LednikAttention(nn.Module):
         return q, k
 
 
+class LednikBiGatedDeltaAttention(nn.Module):
+    """Lednik Bi-directional Gated Delta Attention Module."""
+
+    def __init__(self, config: LednikConfig) -> None:
+        """Initializes the Lednik Bi-directional Gated Delta Attention module."""
+        super().__init__()
+        # sanity check
+        if (
+            "flash" not in config._attn_implementation
+            and config._attn_implementation != "sdpa"
+        ):
+            raise ValueError(
+                f"LednikBiGatedDeltaAttention only supports flash attention/torch varlen (sdpa), but got {config._attn_implementation}"
+            )
+
+        self.delta_net = GatedDeltaNet2(
+            hidden_size=config.hidden_size,
+            expand_v=config.gdn_expand_v,
+            conv_size=config.gdn_conv_size,
+            head_dim=config.gdn_head_dim,
+            conv_bias=config.gdn_conv_bias,
+            num_heads=config.gdn_num_heads,
+            use_short_conv=config.gdn_use_short_conv,
+            allow_neg_eigval=config.gdn_allow_neg_eigval,
+        )
+
+        self.norm = LigerRMSNorm(hidden_size=config.hidden_size * 2)
+        self.merge_proj = nn.Linear(config.hidden_size * 2, config.hidden_size)
+
+        self.config = config
+        return
+
+    def forward(
+        self,
+        hidden_state: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        reversed_idx: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass for LednikBiGatedDeltaAttention.
+
+        Args:
+            hidden_state (torch.Tensor): Packed (unpadded) hidden states of shape
+                ``(total_tokens, hidden_size)``.
+            cu_seqlens (torch.Tensor): Cumulative sequence lengths, shape ``(batch + 1,)``.
+            reversed_idx (torch.Tensor): Per-sequence reversal permutation for the packed
+                tokens, precomputed once in `LednikModel.forward` and shared across layers
+                (it depends only on `cu_seqlens`).
+            **kwargs (Any): Unused; absorbs the shared attention interface (cos/sin/mask/…).
+        """
+        if reversed_idx is None:
+            raise ValueError(
+                "reversed_idx must be provided; it is precomputed in LednikModel.forward."
+            )
+        residual = hidden_state
+        total_tokens = hidden_state.size(0)
+
+        # Pack both directions into a single varlen batch of 2 * batch segments:
+        # [forward tokens | reversed tokens]. Varlen kernels process each segment
+        # independently, so one delta_net call is equivalent to two separate ones
+        # while paying the projection/conv kernel-launch overhead once.
+
+        bi_hidden_state = torch.cat([hidden_state, hidden_state[reversed_idx]], dim=0)
+        bi_cu_seqlens = torch.cat([cu_seqlens, cu_seqlens[1:] + total_tokens], dim=0)
+
+        bi_hidden_state, _, _ = self.delta_net(
+            hidden_states=bi_hidden_state.unsqueeze(0), cu_seqlens=bi_cu_seqlens
+        )
+        bi_hidden_state = bi_hidden_state.squeeze(0)
+        fwd_hidden_state = bi_hidden_state[:total_tokens] + residual
+        bwd_hidden_state = bi_hidden_state[total_tokens:][reversed_idx] + residual
+
+        hidden_state = torch.cat([fwd_hidden_state, bwd_hidden_state], dim=-1)
+        hidden_state = self.norm(hidden_state)
+        hidden_state = self.merge_proj(hidden_state)
+        return hidden_state, torch.empty((1,))  # dummy attention weights
+
+
 ACT2MLP = {"silu": LigerSwiGLUMLP, "gelu": LigerGEGLUMLP}
 
 
 class LednikEncoderLayer(GradientCheckpointingLayer):
     """Lednik Encoder Layer that combines attention and MLP blocks with RMSNorm."""
 
-    def __init__(self, config: LednikConfig) -> None:
+    def __init__(self, config: LednikConfig, layer_idx: int) -> None:
         """Initializes the Lednik Encoder Layer."""
         super().__init__()
+        match config.layers[layer_idx]:
+            case "full-attention":
+                self.attention = LednikFullAttention(config)
+            case "gated-delta-net":
+                self.attention = LednikBiGatedDeltaAttention(config)
+            case _:
+                raise ValueError(
+                    f"Unsupported layer type {config.layers[layer_idx]} at index {layer_idx}. "
+                    "Supported types are 'full-attention' and 'gated-delta-net'."
+                )
         self.atten_norm = LigerRMSNorm(hidden_size=config.hidden_size)
-        self.attention = LednikAttention(config)
-        self.mlp_norm = LigerRMSNorm(hidden_size=config.hidden_size)
-        self.mlp = ACT2MLP[config.hidden_act](config)
-        self.mlp_dropout = (
-            nn.Dropout(config.mlp_dropout)
-            if config.mlp_dropout > 0.0
-            else nn.Identity()
-        )
+
+        if (
+            not config.use_mlp_after_gdn
+            and config.layers[layer_idx] == "gated-delta-net"
+        ):
+            self.mlp = nn.Identity()
+            self.mlp_norm = nn.Identity()
+            self.mlp_dropout = nn.Identity()
+        else:
+            self.mlp_norm = LigerRMSNorm(hidden_size=config.hidden_size)
+            self.mlp = ACT2MLP[config.hidden_act](config)
+            self.mlp_dropout = (
+                nn.Dropout(config.mlp_dropout)
+                if config.mlp_dropout > 0.0
+                else nn.Identity()
+            )
         return
 
     @property
@@ -650,13 +769,14 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_state: torch.Tensor,
-        cos: torch.Tensor,
-        sin: torch.Tensor,
+        cos: torch.Tensor | None = None,
+        sin: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
         non_pad_indices: torch.Tensor | None = None,
         seqlen: int | None = None,
+        reversed_idx: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor]:
         """
         Performs the forward pass of the Lednik Encoder Layer.
@@ -667,19 +787,20 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
             seqlen (int | None, optional): Sequence length of the input (can be greater than max_seqlen in case of `pad_multiple_of` in collator).
         """
         attn_output, _ = self.attention(
-            self.atten_norm(hidden_state),
-            cos,
-            sin,
-            attention_mask,
-            cu_seqlens,
-            max_seqlen,
-            non_pad_indices,
-            seqlen,
+            hidden_state=self.atten_norm(hidden_state),
+            cos=cos,
+            sin=sin,
+            attention_mask=attention_mask,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+            non_pad_indices=non_pad_indices,
+            seqlen=seqlen,
+            reversed_idx=reversed_idx,
         )
         hidden_state = hidden_state + attn_output
+
         mlp_output = self.mlp(self.mlp_norm(hidden_state))
-        hidden_state = hidden_state + self.mlp_dropout(mlp_output)
-        return hidden_state
+        return hidden_state + self.mlp_dropout(mlp_output)
 
 
 class LednikEmbeddings(nn.Module):
@@ -728,7 +849,7 @@ class LednikPreTrainedModel(
 
     _can_record_outputs = {  # noqa: RUF012
         "hidden_states": LednikEncoderLayer,
-        "attentions": LednikAttention,
+        "attentions": LednikFullAttention,
     }
 
     def _check_and_adjust_attn_implementation(
@@ -785,7 +906,9 @@ class UnpaddedInputs:
         )
 
     def to_model_inputs(
-        self, unpadded_inputs_type: Literal["input_ids", "inputs_embeds"] = "input_ids"
+        self,
+        unpadded_inputs_type: Literal["input_ids", "inputs_embeds"] = "input_ids",
+        device: torch.device | None = None,
     ) -> dict[str, torch.Tensor | int]:
         """Formats the unpadded inputs into a dictionary suitable for model input."""
         dict_inputs = {
@@ -800,6 +923,12 @@ class UnpaddedInputs:
             dict_inputs["position_ids"] = self.unpadded_position_ids
         if self.unpadded_labels is not None:
             dict_inputs["labels"] = self.unpadded_labels
+
+        if device is not None:
+            dict_inputs = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in dict_inputs.items()
+            }
         return dict_inputs
 
 
@@ -931,10 +1060,13 @@ class LednikModel(LednikPreTrainedModel):
         """Initializes the Lednik Model."""
         super().__init__(config)
         self.embeddings = LednikEmbeddings(config)
-        self.rotary_emb = LednikRotaryEmbedding(config)
         self.layers = nn.ModuleList(
-            [LednikEncoderLayer(config=config) for _ in range(config.num_hidden_layers)]
+            [
+                LednikEncoderLayer(config=config, layer_idx=i)
+                for i in range(config.num_hidden_layers)
+            ]
         )
+        self.rotary_emb = LednikRotaryEmbedding(config)
         self.output_projection = (
             nn.Linear(config.hidden_size, config.output_hidden_size)
             if config.output_hidden_size is not None
@@ -949,6 +1081,26 @@ class LednikModel(LednikPreTrainedModel):
         self.is_flash_attn = is_flash_attention_requested(config=config)
         self.post_init()
         return
+
+    @staticmethod
+    def _get_reversed_idx(cu_seqlens: torch.Tensor, total_tokens: int) -> torch.Tensor:
+        """Builds a per-sequence reversal permutation for packed varlen tokens.
+
+        Used by the bi-directional gated-delta-net layers. For a token at flat position
+        ``p`` inside the sequence spanning ``[start, end)`` its mirror is
+        ``start + end - 1 - p``. Built fully on-device without host-device syncs
+        (no ``.item()`` / Python loop), so it is cheap on the hot path.
+
+        Args:
+            cu_seqlens (torch.Tensor): Cumulative sequence lengths, shape ``[batch + 1]``.
+            total_tokens (int): Number of packed tokens (``cu_seqlens[-1]``), passed as a
+                Python int to avoid a device sync.
+        """
+        cu = cu_seqlens.long()
+        pos = torch.arange(total_tokens, device=cu.device)
+        # segment index of each token = number of sequence-ends (cu[1:]) that are <= p
+        seg = torch.searchsorted(cu[1:], pos, right=True)
+        return cu[seg] + cu[seg + 1] - 1 - pos
 
     def replace_embeddings(self, new_embeddings: torch.Tensor | nn.Parameter) -> None:
         """Replace the current model embeddings weights with given one."""
@@ -1134,6 +1286,16 @@ class LednikModel(LednikPreTrainedModel):
 
         cos, sin = self.rotary_emb(hidden_state, position_ids)
 
+        # Shared across the bi-directional gated-delta-net layers (depends only on
+        # cu_seqlens), so compute it once here like cos/sin. Skip when there are no
+        # hybrid blocks to feed it.
+        reversed_idx = (
+            self._get_reversed_idx(cu_seqlens, hidden_state.size(0))
+            if cu_seqlens is not None
+            and any(layer == "gated-delta-net" for layer in self.config.layers)
+            else None
+        )
+
         for layer in self.layers:
             hidden_state = layer(
                 hidden_state=hidden_state,
@@ -1144,6 +1306,7 @@ class LednikModel(LednikPreTrainedModel):
                 max_seqlen=max_seqlen,
                 non_pad_indices=non_pad_indices,
                 seqlen=seqlen,
+                reversed_idx=reversed_idx,
             )
         hidden_state = self.output_projection(hidden_state)
         hidden_state = self.final_norm(hidden_state)

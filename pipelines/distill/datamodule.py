@@ -2,22 +2,21 @@ from pathlib import Path
 from typing import Literal
 from typing import override
 
+from datasets import Dataset as HFDataset
+from datasets import concatenate_datasets
 from kostyl.ml.integrations.clearml import collect_clearml_datasets
 from kostyl.ml.integrations.clearml import download_clearml_datasets
 from kostyl.ml.integrations.clearml import get_datasets_paths
 from kostyl.utils.logging import setup_logger
+from lightning import LightningDataModule
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 from lightning.pytorch.utilities.types import TRAIN_DATALOADERS
+from sage.spelling_corruption import SBSCConfig
+from sage.spelling_corruption import SBSCCorruptor
 from torch.utils.data import DataLoader
-from lightning import LightningDataModule
-from transformers import (
-    TokenizersBackend,
-    SentencePieceBackend,
-)
-from lednik.distill.collator import ContrastiveCollator
+from transformers import TokenizersBackend
 
-from datasets import Dataset as HFDataset
-from datasets import concatenate_datasets
+from lednik.distill.collator import ContrastiveCollator
 
 from .configs import DataConfig
 
@@ -31,7 +30,7 @@ class DataModule(LightningDataModule):
     def __init__(
         self,
         config: DataConfig | dict,
-        tokenizer: TokenizersBackend | SentencePieceBackend,
+        tokenizer: TokenizersBackend,
     ) -> None:
         """
         Initializes the DataModule for fine-tuning.
@@ -54,17 +53,42 @@ class DataModule(LightningDataModule):
         self.save_hyperparameters({"data_cfg": config.model_dump()})
 
         self.clearml_datasets = collect_clearml_datasets(config.datasets)
-        self.collator = ContrastiveCollator(
+
+        self.train_collator = ContrastiveCollator(
             tokenizer=tokenizer,
             pad_to_multiple_of=8,
             query_tok_colname=config.query_tok_colname,
+            query_text_colname=config.query_text_colname,
             pos_tok_colname=config.pos_tok_colname,
+            pos_text_colname=config.pos_text_colname,
             neg_tok_colname=config.neg_tok_colname,
+            neg_text_colname=config.neg_text_colname,
             query_teacher_embedding_colname=config.query_teacher_embedding_colname,
             pos_teacher_embedding_colname=config.pos_teacher_embedding_colname,
             neg_teacher_embedding_colname=config.neg_teacher_embedding_colname,
             label_colname=config.val_label_colname,
+            aug_prob=config.aug_prob,
+            corruptor=SBSCCorruptor.from_config(SBSCConfig(min_typos=5))
+            if config.aug_prob > 0.0
+            else None,
         )
+        self.val_collator = ContrastiveCollator(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=8,
+            query_tok_colname=config.query_tok_colname,
+            query_text_colname=config.query_text_colname,
+            pos_tok_colname=config.pos_tok_colname,
+            pos_text_colname=config.pos_text_colname,
+            neg_tok_colname=config.neg_tok_colname,
+            neg_text_colname=config.neg_text_colname,
+            query_teacher_embedding_colname=config.query_teacher_embedding_colname,
+            pos_teacher_embedding_colname=config.pos_teacher_embedding_colname,
+            neg_teacher_embedding_colname=config.neg_teacher_embedding_colname,
+            label_colname=config.val_label_colname,
+            aug_prob=0.0,  # No augmentation during validation
+            corruptor=None,
+        )
+
         self.config = config
         self.path_to_ds_name: dict[Path, str] = {}
         self.datasets_paths: dict[str, Path] | None = None
@@ -177,7 +201,7 @@ class DataModule(LightningDataModule):
             pin_memory=True,
             drop_last=True,
             num_workers=self.config.num_workers,
-            collate_fn=self.collator,
+            collate_fn=self.train_collator,
         )
 
     @override
@@ -191,5 +215,5 @@ class DataModule(LightningDataModule):
             pin_memory=True,
             drop_last=True,
             num_workers=self.config.num_workers,
-            collate_fn=self.collator,
+            collate_fn=self.val_collator,
         )

@@ -1,5 +1,3 @@
-from torch.optim import Optimizer
-from lednik.models.outputs import LednikModelOutput
 from dataclasses import dataclass
 from typing import Any
 from typing import Literal
@@ -27,33 +25,39 @@ from lightning.pytorch.strategies import ParallelStrategy
 from torch import nn
 from torch.distributed._composable.replicate_with_fsdp import replicate
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import ShardingStrategy
 from torch.distributed.fsdp import fully_shard
-from torch.nn.modules.loss import _Loss
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import Optimizer
 from torchmetrics.functional import cosine_similarity
 from torchmetrics.functional import mean_squared_error
-from transformers import PreTrainedConfig
-from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizerBase
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
+from transformers.configuration_utils import PreTrainedConfig
+from transformers.modeling_utils import PreTrainedModel
 
 from lednik.dist_utils import GatherSentenceEmbeddings
 from lednik.dist_utils import get_fsdp1_policies
 from lednik.dist_utils import get_fsdp2_policies
 from lednik.dist_utils import get_fsdp_wrap_classes
 from lednik.dist_utils import select_wrap_policy
-from lednik.distill.configs import DirectDistillationConfig
 from lednik.distill.configs import DistillationConfig
-from lednik.distill.validation import EvaluationDispatcher
+from lednik.distill.validation import (
+    EvaluationDispatcher,
+    EvaluationRunnerConfig,
+    EvaluationRunner,
+)
 from lednik.distill.validation import RedisConfig
 from lednik.distill.validation import ValidationContract
 from lednik.models import LednikModel
 from lednik.models import StaticEmbeddingsModel
+from lednik.models.outputs import LednikModelOutput
 from lednik.models.outputs import StaticEmbeddingsOutput
-from .param_groups import create_param_groups
+
 from .collator import CollatorOutput
+from .param_groups import create_param_groups
 
 
 logger = setup_logger()
@@ -135,6 +139,7 @@ class DistillationModule(KostylLightningModule):
         train_cfg: DistillationConfig,
         strategy_config: SUPPORTED_STRATEGIES,
         redis_config: RedisConfig | None = None,
+        runner_config: EvaluationRunnerConfig | None = None,
         task: Task | None = None,
         num_labels: int | None = None,
     ) -> None:
@@ -152,8 +157,17 @@ class DistillationModule(KostylLightningModule):
                 If provided, enables KNN-based evaluation during validation.
                 If None, KNN metrics are disabled.
             redis_config : Configuration for Redis-based evaluation dispatching (optional).
+            runner_config : Configuration for the evaluation runner (optional).
 
         """
+        if runner_config is None and redis_config is None:
+            raise ValueError(
+                "At least one of runner_config or redis_config must be provided for:"
+                "\n- If runner_config is not provided, redis_config must be provided for remote evaluation."
+                "\n- If redis_config is not provided, runner_config must be provided for local evaluation."
+                "\n- If both are provided, the dispatcher will attempt to use Redis for dispatching and fall back to local evaluation if Redis is unavailable."
+            )
+
         super().__init__()
         self.student = student
         self.register_buffer(
@@ -162,16 +176,31 @@ class DistillationModule(KostylLightningModule):
             persistent=False,
         )
 
-        (
-            self.student_to_teacher_proj,
-            self.direct_loss,
-        ) = self._init_direct(
-            train_cfg.distillation_method,
-            teacher_hidden_size=teacher_hidden_size,
-            student_hidden_size=student.config.hidden_size,
-            device=student.device,
-            dtype=student.dtype,
-        )
+        if self.student.config.hidden_size != teacher_hidden_size:
+            self.student_to_teacher_proj = nn.Linear(
+                self.student.config.hidden_size,
+                teacher_hidden_size,
+                device=self.student.device,
+                dtype=self.student.dtype,
+                bias=False,
+            )
+            if self.student.device != torch.device("meta"):
+                nn.init.trunc_normal_(self.student_to_teacher_proj.weight, std=0.02)
+                self.student_to_teacher_proj.weight._is_hf_initialized = True  # type: ignore
+        else:
+            self.student_to_teacher_proj = nn.Identity()
+
+        match train_cfg.distillation_method.distill_loss_type:
+            case "cosine":
+                direct_loss = nn.CosineEmbeddingLoss()
+            case "mse":
+                direct_loss = nn.MSELoss()
+            case _:
+                raise ValueError(
+                    f"Unsupported loss type: {train_cfg.distillation_method.distill_loss_type} "
+                    f"Supported types: 'cosine', 'mse'"
+                )
+        self.direct_loss = direct_loss
 
         self.train_cfg = train_cfg
         self.strategy_config = strategy_config
@@ -180,47 +209,18 @@ class DistillationModule(KostylLightningModule):
         self.num_labels = num_labels if num_labels is not None else 0
         self.task = task
 
-        self.evaluation_dispatcher = (
-            EvaluationDispatcher(redis_config=redis_config)
-            if redis_config is not None
-            else None
+        if runner_config is not None:
+            eval_runner = EvaluationRunner(config=runner_config)
+        else:
+            eval_runner = None
+        self.evaluation_dispatcher = EvaluationDispatcher(
+            evaluation_runner=eval_runner, redis_config=redis_config
         )
 
         self.eval_outputs: list[_EvalResult] = []
         self.cpu_group: dist.ProcessGroup | None = None
         self._model_configured = False
         return
-
-    def _init_direct(
-        self,
-        config: DirectDistillationConfig,
-        teacher_hidden_size: int,
-        student_hidden_size: int,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> tuple[nn.Linear | nn.Identity, _Loss]:
-        if student_hidden_size != teacher_hidden_size:
-            student_to_teacher_proj = nn.Linear(
-                student_hidden_size, teacher_hidden_size, device=device, dtype=dtype
-            )
-            if device != torch.device("meta"):
-                nn.init.trunc_normal_(student_to_teacher_proj.weight, std=0.02)
-                nn.init.zeros_(student_to_teacher_proj.bias)
-                student_to_teacher_proj.weight._is_hf_initialized = True  # type: ignore
-                student_to_teacher_proj.bias._is_hf_initialized = True  # type: ignore
-        else:
-            student_to_teacher_proj = nn.Identity()
-        match config.distill_loss_type:
-            case "cosine":
-                loss = nn.CosineEmbeddingLoss()
-            case "mse":
-                loss = nn.MSELoss()
-            case _:
-                raise ValueError(
-                    f"Unsupported loss type: {config.distill_loss_type} "
-                    f"Supported types: 'cosine', 'mse'"
-                )
-        return student_to_teacher_proj, loss
 
     @override
     def configure_model(self) -> None:  # noqa: C901
@@ -337,14 +337,16 @@ class DistillationModule(KostylLightningModule):
 
     @property
     @override
-    def model_instance(self) -> PreTrainedModel | nn.Module:
+    def model_instance(self) -> PreTrainedModel:
         """Returns the underlying model."""
         return self.student
 
     @property
     @override
-    def model_config(self) -> PreTrainedConfig | None:
-        return self.student.config
+    def model_config(self) -> PreTrainedConfig:
+        if self.model_instance is None:
+            raise ValueError("Model instance is not initialized.")
+        return self.model_instance.config
 
     @property
     @override
@@ -352,7 +354,8 @@ class DistillationModule(KostylLightningModule):
         return self.train_cfg.grad_clip_val
 
     @property
-    def _data_parallel_group(self) -> dist.ProcessGroup | None:
+    def dp_group(self) -> dist.ProcessGroup | None:
+        """Returns the data parallel process group for distributed training."""
         if not dist.is_initialized():
             return None
         strategy = cast(ParallelStrategy, self.trainer.strategy)
@@ -399,14 +402,14 @@ class DistillationModule(KostylLightningModule):
             scaled_lrs = scale_lrs_by_world_size(
                 lrs=lrs,
                 verbosity_level="rank-zero-only",
-                group=self._data_parallel_group,
+                group=self.dp_group,
             )
             for key, value in scaled_lrs.items():
                 setattr(self.train_cfg.lr, key, value)
 
         total_steps = estimate_total_steps(
             trainer=self.trainer,
-            dp_process_group=self._data_parallel_group,
+            dp_process_group=self.dp_group,
         )
         freeze_student_embeddings = (
             self.train_cfg.freeze_student_emb_steps_ratio is not None
@@ -566,13 +569,13 @@ class DistillationModule(KostylLightningModule):
             )
 
         if dist.is_initialized():
-            rank = dist.get_rank(group=self._data_parallel_group)
+            rank = dist.get_rank(group=self.dp_group)
             global_anchors, global_positives, global_negatives = (
                 GatherSentenceEmbeddings.apply(
                     queries_emb,
                     pos_emb,
                     neg_emb,
-                    self._data_parallel_group,
+                    self.dp_group,
                 )
             )
         else:
@@ -613,27 +616,17 @@ class DistillationModule(KostylLightningModule):
         """Performs a single training step for knowledge distillation."""
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
-        non_special_tokens_mask = torch.isin(
-            input_ids, cast(torch.Tensor, self.spec_tok_buff), invert=True
-        ).to(device=attention_mask.device)
-
-        # Keep special tokens in the student's forward + pooling, but exclude them from
-        # token-level distillation to avoid biasing towards service tokens.
-        per_token_loss_mask = attention_mask * non_special_tokens_mask.long()
-
-        # if student is static embeddings model,
-        # we need to exclude special tokens from sentence embedding (we use mask for pooling in forward)
-        # because they are static (cannot be sentence-dependent) and would degrade the quality of sentence embeddings.
-        student_attention_mask = (
-            attention_mask
-            if not isinstance(_unwrap_model(self.student), StaticEmbeddingsModel)
-            else per_token_loss_mask
-        )
+        if isinstance(_unwrap_model(self.student), StaticEmbeddingsModel):
+            non_special_tokens_mask = torch.isin(
+                input_ids, cast(torch.Tensor, self.spec_tok_buff), invert=True
+            ).to(device=attention_mask.device, dtype=torch.long)
+            attention_mask = attention_mask * non_special_tokens_mask
 
         student_outputs = self._get_student_outputs(
             input_ids=input_ids,
-            attention_mask=student_attention_mask,
+            attention_mask=attention_mask,
         )
+
         teacher_sentence_embeddings = batch["teacher_sentence_embeddings"]
         student_sentence_embeddings = student_outputs["student_sentence_embeddings"]
 
@@ -728,7 +721,7 @@ class DistillationModule(KostylLightningModule):
             on_epoch=True,
             logger=False,
             sync_dist=True,
-            sync_dist_group=self._data_parallel_group,
+            sync_dist_group=self.dp_group,
         )
         return output.loss
 
@@ -781,7 +774,7 @@ class DistillationModule(KostylLightningModule):
             logger=True,
             sync_dist=True,
             stage="val",
-            sync_dist_group=self._data_parallel_group,
+            sync_dist_group=self.dp_group,
         )
         self.log(
             "val_loss",
@@ -792,7 +785,7 @@ class DistillationModule(KostylLightningModule):
             on_epoch=True,
             logger=False,
             sync_dist=True,
-            sync_dist_group=self._data_parallel_group,
+            sync_dist_group=self.dp_group,
         )
         return output.loss
 
