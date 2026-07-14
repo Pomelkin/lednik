@@ -3,10 +3,10 @@ name = "lednik"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
   "accelerate>=1.13.0",
-  "kostyl-toolkit[ml]",
+  "kostyl-toolkit",
   "liger-kernel>=0.6.4",
   "loguru>=0.7.3",
   "matplotlib>=3.10.8",
@@ -45,11 +45,13 @@ distill = [
   "plotly>=6.5.0",
   "qdrant-client>=1.17.1",
   "redis>=7.4.0",
+  "sage",
   "tensorboard>=2.20.0",
   "torchmetrics>=1.8.2",
 ]
-flash-attn = [
-    "flash-attn>=2.8.3",
+fast-attn = [
+    "flash-attn",
+    "flash-linear-attention[cuda]>=0.5.1",
 ]
 
 [tool.uv]
@@ -63,6 +65,8 @@ members = [
 
 [tool.uv.sources]
 kostyl-toolkit = { workspace = true }
+flash-attn = { path = "wheels/flash_attn-2.8.3-cp313-cp313-linux_x86_64.whl" }
+sage = { git = "https://github.com/Pomelkin/sage" }
 
 [tool.pyrefly]
 project-excludes = [
