@@ -32,7 +32,6 @@ from transformers import TokenizersBackend
 
 from lednik.distill.training_module import DistillationModule
 from lednik.models import MODEL_MAPPING
-from pipelines.distill.configs import DistillationConfig
 from pipelines.distill.configs import TrainingSettings
 from pipelines.distill.datamodule import DataModule
 
@@ -142,14 +141,22 @@ def setup_strategy(  # noqa: C901
     help="Additional tags for the task, separated by commas (e.g., 'tag1,tag2,tag3').",
 )
 @click.option(
+    "--config-path",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Path to the configuration file.",
+)
+@click.option(
     "--reuse-last-task-id/--no-reuse-last-task-id",
     "reuse_last_task_id",
     default=True,
-    help="Whether to reuse the last task ID for this task. Useful for resuming or updating an existing task in ClearML.",
+    help="Whether to reuse the last task ID for this task. "
+    "Useful for resuming or updating an existing task in ClearML.",
 )
 def _distill_model(
     remote_execution_queue: str,
     tags: list[str],
+    config_path: Path,
     reuse_last_task_id: bool = True,
 ) -> None:
     task: Task = Task.init(
@@ -168,30 +175,23 @@ def _distill_model(
 
     ROOT_PATH = Path(__file__).parent.parent.parent
 
-    distill_config = DistillationConfig.connect_as_file(
-        task, ROOT_PATH / "configs" / "distill_config.yaml"
-    )
-    training_settings = TrainingSettings.connect_as_file(
-        task, ROOT_PATH / "configs" / "training_settings.yaml"
-    )
+    settings = TrainingSettings.connect_as_file(task, config_path)
 
     if remote_execution_queue != "":
         task.execute_remotely(queue_name=remote_execution_queue, exit_process=True)
 
     ### Teacher Model Loading ###
-    clearml_teacher = InputModel(model_id=training_settings.teacher_model_id)
+    clearml_teacher = InputModel(model_id=settings.teacher_model_id)
 
     ### Student Model Loading ###
-    model_cls = MODEL_MAPPING[training_settings.model_cfg.model_type]
+    model_cls = MODEL_MAPPING[settings.model_cfg.model_type]
 
-    load_kwargs = training_settings.model_cfg.model_dump(exclude={"model_type"})
-    if training_settings.is_student_lightning_checkpoint:
-        load_kwargs.update(
-            {"weights_prefix": training_settings.checkpoint_weight_prefix}
-        )
+    load_kwargs = settings.model_cfg.model_dump(exclude={"model_type"})
+    if settings.is_student_lightning_checkpoint:
+        load_kwargs.update({"weights_prefix": settings.checkpoint_weight_prefix})
 
     student, clearml_student = load_model_from_clearml(
-        model_id=training_settings.student_model_id,
+        model_id=settings.student_model_id,
         model=model_cls,
         task=task,
         name="Model to Distill (Student)",
@@ -200,7 +200,7 @@ def _distill_model(
 
     ### Tokenizer Loading ###
     tokenizer, _ = load_tokenizer_from_clearml(
-        tokenizer_id=training_settings.tokenizer_id,
+        tokenizer_id=settings.tokenizer_id,
         task=task,
         name="Tokenizer",
     )
@@ -214,15 +214,15 @@ def _distill_model(
         teacher_hidden_size=clearml_teacher.config_dict["hidden_size"],
         student=student,
         tokenizer=tokenizer,
-        train_cfg=distill_config,
-        strategy_config=training_settings.trainer.strategy,
+        train_cfg=settings.distill_config,
+        strategy_config=settings.trainer.strategy,
         task=task,
-        num_labels=training_settings.data.val_num_labels,
-        redis_config=training_settings.redis,
-        runner_config=training_settings.runner_config,
+        num_labels=settings.data.val_num_labels,
+        redis_config=settings.redis,
+        runner_config=settings.runner_config,
     )
 
-    datamodule = DataModule(config=training_settings.data, tokenizer=tokenizer)
+    datamodule = DataModule(config=settings.data, tokenizer=tokenizer)
 
     ### Callbacks, Loggers, and Strategy ###
     output_model = OutputModel(
@@ -245,39 +245,37 @@ def _distill_model(
     )
     checkpoint_callback = setup_checkpoint_callback(
         ROOT_PATH / "checkpoints" / task.name / task.id,
-        training_settings.checkpoint,
+        settings.checkpoint,
     )
     callbacks: list[Callback] = [checkpoint_callback, lr_monitor]
-    if training_settings.early_stopping is not None:
-        early_stopping_callback = setup_early_stopping_callback(
-            training_settings.early_stopping
-        )
+    if settings.early_stopping is not None:
+        early_stopping_callback = setup_early_stopping_callback(settings.early_stopping)
         callbacks.append(early_stopping_callback)
 
     strategy = setup_strategy(
-        accelerator=training_settings.trainer.accelerator,
-        strategy_settings=training_settings.trainer.strategy,
-        devices=training_settings.trainer.devices,
+        accelerator=settings.trainer.accelerator,
+        strategy_settings=settings.trainer.strategy,
+        devices=settings.trainer.devices,
     )
 
     ### Trainer Setup and Training Start ###
     trainer = L.Trainer(
-        max_epochs=training_settings.trainer.max_epochs,
-        accelerator=training_settings.trainer.accelerator
+        max_epochs=settings.trainer.max_epochs,
+        accelerator=settings.trainer.accelerator
         if strategy.accelerator is None
         else "auto",
-        devices=training_settings.trainer.devices,
+        devices=settings.trainer.devices,
         strategy=strategy,
-        precision=training_settings.trainer.precision,
-        accumulate_grad_batches=training_settings.trainer.accumulate_grad_batches,
+        precision=settings.trainer.precision,
+        accumulate_grad_batches=settings.trainer.accumulate_grad_batches,
         gradient_clip_val=None,
-        val_check_interval=training_settings.trainer.val_check_interval,
+        val_check_interval=settings.trainer.val_check_interval,
         callbacks=callbacks,
-        log_every_n_steps=training_settings.trainer.log_every_n_steps,
-        limit_train_batches=training_settings.trainer.limit_train_batches,
-        limit_val_batches=training_settings.trainer.limit_val_batches,
-        limit_test_batches=training_settings.trainer.limit_test_batches,
-        limit_predict_batches=training_settings.trainer.limit_predict_batches,
+        log_every_n_steps=settings.trainer.log_every_n_steps,
+        limit_train_batches=settings.trainer.limit_train_batches,
+        limit_val_batches=settings.trainer.limit_val_batches,
+        limit_test_batches=settings.trainer.limit_test_batches,
+        limit_predict_batches=settings.trainer.limit_predict_batches,
         logger=[logger],
     )
 

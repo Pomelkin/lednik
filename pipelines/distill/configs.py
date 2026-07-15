@@ -96,6 +96,8 @@ class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin)
     redis: RedisConfig | None = None
     runner_config: EvaluationRunnerConfig | None = None
 
+    distill_config: DistillationConfig
+
     @model_validator(mode="after")
     def _validate_settings(self) -> "TrainingSettings":
         if (

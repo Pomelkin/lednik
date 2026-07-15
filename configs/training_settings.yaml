@@ -1,7 +1,19 @@
-redis:
-  host: 127.0.0.1
-  port: 6379
-  stream_name: validation_tasks
+runner_config:
+  mrr_config:
+    qdrant_host: localhost
+    qdrant_port: 6333
+    mrr_top_k: 10
+  logreg_config:
+    lr: 1.0
+    weight_decay: 0.01
+    solver: "LBFGS"
+    tol: 1e-4
+    batch_size: -1
+    total_steps: 100
+  knn_config:
+    k: 5
+  scatter_num_points: 200
+  device: cpu
 
 data:
   datasets:
@@ -10,7 +22,9 @@ data:
   batch_size: 96
   num_workers: 4
   query_tok_colname: query-tokens
+  query_text_colname: query
   pos_tok_colname: pos-tokens
+  pos_text_colname: pos
   #neg_tok_colname: neg-tokens
   query_teacher_embedding_colname: query-embedding
   pos_teacher_embedding_colname: pos-embedding
@@ -18,15 +32,6 @@ data:
   val_label_colname: label
   val_num_labels: 6
 
-trainer:
-  accelerator: "cuda"
-  max_epochs: 20
-  strategy:
-    type: "ddp"
-  val_check_interval: 0.3
-  devices: 8
-  precision: bf16-true
-  log_every_n_steps: 25
 
 early_stopping:
   monitor: "val_loss"
@@ -43,6 +48,41 @@ checkpoint:
 teacher_model_id: af954495ff03440abc58790c4e41ff22
 student_model_id: 2064bdd9dda642e0bcf05ef10cc7595a
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
+
+trainer:
+  accelerator: "cuda"
+  max_epochs: 100
+  strategy:
+    type: "ddp"
+  val_check_interval: 0.5
+  devices: 8
+  precision: bf16-true
+  log_every_n_steps: 25
+
+distill_config:
+  grad_clip_val: 2.0
+  teacher_pooling_method: last
+  distillation_method:
+    type: direct-distillation
+    loss_type: cosine
+    contrastive_loss_weight: 1.0
+    temperature: 0.07
+  optimizer:
+    type: AdamW8bit
+    betas: [ 0.9, 0.98 ]
+    block_size: 128
+    bf16_stochastic_round: true
+  lr:
+    scheduler_type: plateau-with-cosine-annealing
+    warmup_ratio: 0.05
+    warmup_value: 1e-5
+    base_value: 3e-4
+    final_value: 1e-6
+    plateau_ratio: 0.7
+  weight_decay:
+    base_value: 0.001
+
+  freeze_student_emb_steps_ratio: 0.1
 
 model_cfg:
   model_type: lednik

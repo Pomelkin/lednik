@@ -23,7 +23,8 @@ services:
               count: 1
               capabilities: [ gpu ]
     profiles:
-      - flash_attention_builder
+      - flash-attention-builder
+
   qdrant:
     image: qdrant/qdrant:v1.17
     container_name: qdrant
@@ -38,3 +39,51 @@ services:
     ports:
       - '0.0.0.0:6379:6379'
     command: redis-server
+    profiles:
+      - redis
+
+  training:
+    build:
+      context: .
+      dockerfile: docker/training.Dockerfile
+      network: host # proxy on host 127.0.0.1 must be reachable from build steps
+      args:
+        - HOST_UID=${HOST_UID:?HOST_UID is required}
+        - HOST_GID=${HOST_GID:?HOST_GID is required}
+        - HOST_USER=${HOST_USER:?HOST_USER is required}
+
+    container_name: "emelyan.egorov-training"
+    volumes:
+      - ${HOME:?HOME is required}/clearml.conf:/home/${HOST_USER}/clearml.conf:ro # clearml config file
+      - ${HOME:?HOME is required}/.clearml:/home/${HOST_USER}/.clearml # clearml cache directory
+      - ${HOME:?HOME is required}/.local/share/fish:/home/${HOST_USER}/.local/share/fish # fish
+      - ./:/home/${HOST_USER}/lednik/ # project directory
+      - /home/${HOST_USER}/lednik/.venv # exclude host .venv from the bind mount
+      - ${HOME:?HOME is required}/.cache/uv-docker:/home/${HOST_USER}/.cache/uv # uv cache on host FS
+      - ${HOME:?HOME is required}/.cache/hierarchical-labels-docker:/home/${HOST_USER}/.cache/hierarchical-labels # dataset cache on host FS
+    environment:
+      - PYTHONPATH=/home/${HOST_USER}/lednik
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+    network_mode: host
+    working_dir: /home/${HOST_USER}/lednik
+
+    user: "${HOST_UID:?HOST_UID is required}:${HOST_GID:?HOST_GID is required}"
+
+    cpuset: 0-7
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "0", "1" ]
+              capabilities: [ gpu ]
+    # CPU and GPU pinning lives in docker-compose.override.yaml (per-user, gitignored).
+    ipc: host
+    mem_limit: 128G
+
+    profiles:
+      - training
+    shm_size: 4G
+    stdin_open: true
+    tty: true
