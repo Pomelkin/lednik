@@ -52,7 +52,9 @@ def create_param_groups(
         else:
             param_group = {"params": param, "lr": lr}
 
-        if any(keyword in name for keyword in no_decay_keywords_):
+        if any(keyword in name for keyword in no_decay_keywords_) or getattr(
+            param, "_no_weight_decay", False
+        ):
             param_group["weight_decay"] = 0.0
         else:
             param_group["weight_decay"] = weight_decay

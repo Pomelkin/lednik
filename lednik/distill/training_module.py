@@ -182,11 +182,13 @@ class DistillationModule(KostylLightningModule):
                 teacher_hidden_size,
                 device=self.student.device,
                 dtype=self.student.dtype,
-                bias=False,
+                bias=True,
             )
             if self.student.device != torch.device("meta"):
                 nn.init.trunc_normal_(self.student_to_teacher_proj.weight, std=0.02)
+                nn.init.zeros_(self.student_to_teacher_proj.bias)
                 self.student_to_teacher_proj.weight._is_hf_initialized = True  # type: ignore
+                self.student_to_teacher_proj.bias._is_hf_initialized = True  # type: ignore
         else:
             self.student_to_teacher_proj = nn.Identity()
 
@@ -419,7 +421,7 @@ class DistillationModule(KostylLightningModule):
             model=self,
             lr=self.train_cfg.lr.base_value,
             weight_decay=self.train_cfg.weight_decay.base_value,
-            no_decay_keywords={"emb", "token_pos_weights"},
+            no_decay_keywords={"emb", "token_pos_weights", "dt_bias", "A_log"},
             freeze_student_embeddings=freeze_student_embeddings,
             embeddings_lr_multiplier=self.train_cfg.embeddings_lr_multiplier,
             attn_proj_wd_multiplier=self.train_cfg.attn_proj_wd_multiplier,

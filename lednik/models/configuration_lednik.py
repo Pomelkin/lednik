@@ -13,6 +13,8 @@ class LednikConfig(PreTrainedConfig):
     """Configuration class for Lednik Model."""
 
     model_type = "LednikPreTrainedModel"
+    # Initializer range for weight initialization.
+    initializer_range = 0.02
     # Vocabulary size for token embeddings.
     vocab_size: int = 30522
     # Hidden size of encoder states.

@@ -86,8 +86,7 @@ python-interpreter-path = ".venv/bin/python3"
 exclude = ["./kostyl_toolkit"]
 
 [tool.ty.environment]
-root = ["./"]
-python = "./.venv"
+python = ".venv"
 
 
 [tool.ruff]

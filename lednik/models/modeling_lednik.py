@@ -14,7 +14,7 @@ from liger_kernel.transformers import LigerSwiGLUMLP
 from torch import Tensor
 from torch import nn
 from torch.nn.attention import varlen
-from transformers import PreTrainedModel
+from transformers.modeling_utils import PreTrainedModel
 from transformers.integrations import use_kernel_func_from_hub
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
@@ -26,6 +26,7 @@ from transformers.utils.generic import is_flash_attention_requested
 from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
+import math
 
 from .configuration_lednik import LednikConfig
 from .outputs import LednikModelOutput
@@ -670,8 +671,7 @@ class LednikBiGatedDeltaAttention(nn.Module):
             use_short_conv=config.gdn_use_short_conv,
             allow_neg_eigval=config.gdn_allow_neg_eigval,
         )
-
-        self.norm = LigerRMSNorm(hidden_size=config.hidden_size * 2)
+        self.delta_net.config = config
         self.merge_proj = nn.Linear(config.hidden_size * 2, config.hidden_size)
 
         self.config = config
@@ -699,7 +699,6 @@ class LednikBiGatedDeltaAttention(nn.Module):
             raise ValueError(
                 "reversed_idx must be provided; it is precomputed in LednikModel.forward."
             )
-        residual = hidden_state
         total_tokens = hidden_state.size(0)
 
         # Pack both directions into a single varlen batch of 2 * batch segments:
@@ -714,11 +713,10 @@ class LednikBiGatedDeltaAttention(nn.Module):
             hidden_states=bi_hidden_state.unsqueeze(0), cu_seqlens=bi_cu_seqlens
         )
         bi_hidden_state = bi_hidden_state.squeeze(0)
-        fwd_hidden_state = bi_hidden_state[:total_tokens] + residual
-        bwd_hidden_state = bi_hidden_state[total_tokens:][reversed_idx] + residual
+        fwd_hidden_state = bi_hidden_state[:total_tokens]
+        bwd_hidden_state = bi_hidden_state[total_tokens:][reversed_idx]
 
         hidden_state = torch.cat([fwd_hidden_state, bwd_hidden_state], dim=-1)
-        hidden_state = self.norm(hidden_state)
         hidden_state = self.merge_proj(hidden_state)
         return hidden_state, torch.empty((1,))  # dummy attention weights
 
@@ -869,6 +867,44 @@ class LednikPreTrainedModel(
         return super()._check_and_adjust_attn_implementation(
             attn_implementation, is_init_check, allow_all_kernels
         )
+
+    @torch.no_grad()
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+
+        if isinstance(module, GatedDeltaNet2):
+            module.q_conv1d.weight.data.normal_(
+                mean=0.0,
+                std=module.config.initializer_range,  # ty:ignore[invalid-argument-type, unresolved-attribute]
+            )
+            module.q_conv1d.weight.data._is_hf_initialized = True  # ty:ignore[invalid-assignment]
+            module.k_conv1d.weight.data.normal_(
+                mean=0.0,
+                std=module.config.initializer_range,  # ty:ignore[invalid-argument-type, unresolved-attribute]
+            )
+            module.k_conv1d.weight.data._is_hf_initialized = True  # ty:ignore[invalid-assignment]
+            module.v_conv1d.weight.data.normal_(
+                mean=0.0,
+                std=module.config.initializer_range,  # ty:ignore[invalid-argument-type, unresolved-attribute]
+            )
+            module.v_conv1d.weight.data._is_hf_initialized = True  # ty:ignore[invalid-assignment]
+
+            module.A_log.copy_(nn.init.uniform_(module.A_log, a=0, b=16).log())
+            module.A_log._is_hf_initialized = True  # ty:ignore[unresolved-attribute]
+
+            nn.init.kaiming_uniform_(module.o_proj.weight.data, a=math.sqrt(5))
+            module.o_proj.weight.data /= math.sqrt(2 * module.config.num_hidden_layers)  # ty:ignore[unsupported-operator, unresolved-attribute]
+            module.o_proj.weight.data._is_hf_initialized = True  # ty:ignore[invalid-assignment]
+
+            dt = torch.exp(
+                torch.rand(module.key_dim, dtype=torch.float32)
+                * (math.log(0.1) - math.log(0.001))
+                + math.log(0.001)
+            ).clamp(min=1e-4)
+            inv_dt = dt + torch.log(-torch.expm1(-dt))
+            module.dt_bias.copy_(inv_dt)
+            module.dt_bias._is_hf_initialized = True  # ty:ignore[unresolved-attribute]
+        return
 
 
 UnpaddedInputsTuple = tuple[
