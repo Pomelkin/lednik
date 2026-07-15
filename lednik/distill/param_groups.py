@@ -11,7 +11,6 @@ def create_param_groups(
     lr: float,
     freeze_student_embeddings: bool = False,
     embeddings_lr_multiplier: float | None = None,
-    attn_proj_wd_multiplier: float | None = None,
     no_decay_keywords: set[str] | None = None,
 ) -> list[dict]:
     """Create optimizer parameter groups for a PyTorch model with fine-grained weight decay control."""
@@ -23,19 +22,6 @@ def create_param_groups(
     }
     if no_decay_keywords is not None:
         no_decay_keywords_ = no_decay_keywords_.union(no_decay_keywords)
-
-    # TODO: Make if-checks FSDP/DDP Aware
-    # if freeze_student_embeddings and not isinstance(model.student, LednikModel):
-    #     raise ValueError(
-    #         "freeze_student_embeddings is only supported for LednikModel student models."
-    #     )
-
-    # if attn_proj_wd_multiplier is not None and not isinstance(
-    #     model.student, LednikModel
-    # ):
-    #     raise ValueError(
-    #         "attn_proj_wd_multiplier is only supported for LednikModel student models."
-    #     )
 
     param_groups = []
     for name, param in model.named_parameters():
@@ -59,10 +45,6 @@ def create_param_groups(
         else:
             param_group["weight_decay"] = weight_decay
 
-        if "q_proj" in name or "k_proj" in name:
-            param_group["weight_decay"] = weight_decay * (
-                attn_proj_wd_multiplier or 1.0
-            )
         param_groups.append(param_group)
 
     fused_param_groups = _fuse_groups(param_groups)

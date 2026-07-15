@@ -96,7 +96,8 @@ class ContrastiveCollator:
             )
         if not 0.0 <= self.aug_prob <= 1.0:
             raise ValueError("aug_prob must be between 0.0 and 1.0.")
-        if math.isclose(self.aug_prob, 0.0):
+
+        if self.aug_prob == 0.0 and self.corruptor is not None:
             self.corruptor = None
             logger.warning("aug_prob is close to 0.0, setting corruptor to None.")
 
@@ -163,10 +164,10 @@ class ContrastiveCollator:
             )
         return tokens
 
-    def _gather_tokens(
+    def _gather_tokens(  # noqa: C901
         self, items: list[dict[str, Any]], text_colname: str, tokens_colname: str
     ) -> list[Tensor]:
-        text: list[str] = []
+        texts: list[str] = []
         tokens: list[list[int] | None] = []
 
         if self.aug_prob > 0.0:
@@ -186,14 +187,38 @@ class ContrastiveCollator:
                     raise ValueError(
                         "Corruptor must be provided for data augmentation."
                     )
-                corrupted_text = self.corruptor.corrupt(item[text_colname])
-                text.append(corrupted_text)
+
+                item_texts: list[str] = item[text_colname]
+                if not isinstance(item_texts, list):
+                    raise ValueError(
+                        f"Expected a list of texts for augmentation, got {type(item_texts)}."
+                    )
+
+                text = (
+                    random.choice(item_texts) if len(item_texts) > 1 else item_texts[0]  # noqa: S311
+                )
+                corrupted_text = self.corruptor.corrupt(text)
+                texts.append(corrupted_text)
                 tokens.append(None)
             else:
-                tokens.append(item[tokens_colname])
+                item_tokens: list[list[int]] = item[tokens_colname]
+                if not isinstance(item_tokens, list):
+                    raise ValueError(
+                        f"Expected a list of tokens, got {type(item_tokens)}."
+                    )
+                toks: list[int] = (
+                    random.choice(item_tokens)  # noqa: S311
+                    if len(item_tokens) > 1
+                    else item_tokens[0]
+                )
+                if not isinstance(toks, list) or not isinstance(toks[0], int):
+                    raise ValueError(
+                        f"Expected a list of integers for tokens, got {toks}."
+                    )
+                tokens.append(toks)
 
-        if len(text) > 0:
-            encoded_texts = self._encode_texts(text)
+        if len(texts) > 0:
+            encoded_texts = self._encode_texts(texts)
             for idx, enc in zip(aug_indices, encoded_texts, strict=True):
                 tokens[idx] = enc
 

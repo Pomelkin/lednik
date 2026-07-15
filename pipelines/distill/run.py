@@ -18,6 +18,7 @@ from kostyl.ml.integrations.lightning.callbacks import setup_early_stopping_call
 from kostyl.ml.integrations.lightning.loggers import ClearMLLogger
 from kostyl.utils.logging import setup_logger
 from lightning import Callback
+from typing import Any, cast
 from lightning.pytorch.accelerators import Accelerator
 from lightning.pytorch.accelerators import CPUAccelerator
 from lightning.pytorch.accelerators import CUDAAccelerator
@@ -186,7 +187,8 @@ def _distill_model(
     ### Student Model Loading ###
     model_cls = MODEL_MAPPING[settings.model_cfg.model_type]
 
-    load_kwargs = settings.model_cfg.model_dump(exclude={"model_type"})
+    load_kwargs = settings.model_cfg.override_params
+    load_kwargs = cast(dict[str, Any], load_kwargs)
     if settings.is_student_lightning_checkpoint:
         load_kwargs.update({"weights_prefix": settings.checkpoint_weight_prefix})
 
@@ -195,6 +197,7 @@ def _distill_model(
         model=model_cls,
         task=task,
         name="Model to Distill (Student)",
+        ignore_remote_overrides=True,
         **load_kwargs,
     )
 

@@ -64,8 +64,8 @@ class EvaluationDispatcher:
             try:
                 self.redis_client.xadd(
                     self.stream_name,
-                    contract.to_bytes_dict(),  # type: ignore
-                )
+                    contract.to_bytes_dict(),
+                )  # ty:ignore[no-matching-overload]
                 return
             except Exception as e:
                 logger.warning(

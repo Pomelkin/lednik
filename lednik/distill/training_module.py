@@ -424,7 +424,6 @@ class DistillationModule(KostylLightningModule):
             no_decay_keywords={"emb", "token_pos_weights", "dt_bias", "A_log"},
             freeze_student_embeddings=freeze_student_embeddings,
             embeddings_lr_multiplier=self.train_cfg.embeddings_lr_multiplier,
-            attn_proj_wd_multiplier=self.train_cfg.attn_proj_wd_multiplier,
         )
 
         optim = create_optimizer(
@@ -449,6 +448,7 @@ class DistillationModule(KostylLightningModule):
                     - self.train_cfg.freeze_student_emb_steps_ratio,
                 )
                 schedulers["embedding_lr"] = emb_scheduler
+                
                 model_scheduler = create_scheduler(
                     config=self.train_cfg.lr,
                     optim=optim,

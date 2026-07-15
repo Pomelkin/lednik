@@ -49,7 +49,7 @@ class EvaluationWorker:
                 f"Stream '{self.stream_name}' does not exist. Creating stream..."
             )
             msg_id = self.redis_client.xadd(self.stream_name, {"init": b"1"})
-            self.redis_client.xdel(self.stream_name, msg_id)  # type: ignore
+            self.redis_client.xdel(self.stream_name, msg_id)
             logger.info(f"Stream '{self.stream_name}' created.")
 
         if not self._group_exists():
