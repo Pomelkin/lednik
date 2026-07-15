@@ -159,6 +159,9 @@ def _distill_model(
     config_path: Path,
     reuse_last_task_id: bool = True,
 ) -> None:
+    L.seed_everything(42, workers=True)
+
+    
     task: Task = Task.init(
         project_name="Lednik",
         task_name="Model Distillation",
