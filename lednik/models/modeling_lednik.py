@@ -49,7 +49,7 @@ if is_flash_attn_4_available():
     )
 
 with contextlib.suppress(ImportError):
-    from fla.layers import GatedDeltaNet2
+    from fla.layers import GatedDeltaNet
 
 logger = setup_logger()
 
@@ -570,7 +570,7 @@ class LednikFullAttention(nn.Module):
             cu_seqlens=cu_seqlens,  # type: ignore
             max_seqlen=max_seqlen,  # type: ignore
         )
-        
+
         hidden_state = attn_output.reshape(*target_size)
 
         if gate is not None:
@@ -660,7 +660,7 @@ class LednikBiGatedDeltaAttention(nn.Module):
                 f"LednikBiGatedDeltaAttention only supports flash attention/torch varlen (sdpa), but got {config._attn_implementation}"
             )
 
-        self.delta_net = GatedDeltaNet2(
+        self.delta_net = GatedDeltaNet(
             hidden_size=config.hidden_size,
             expand_v=config.gdn_expand_v,
             conv_size=config.gdn_conv_size,
@@ -875,7 +875,7 @@ class LednikPreTrainedModel(
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)
 
-        if isinstance(module, GatedDeltaNet2):
+        if isinstance(module, GatedDeltaNet):
             module.q_conv1d.weight.data.normal_(
                 mean=0.0,
                 std=module.config.initializer_range,  # ty:ignore[invalid-argument-type, unresolved-attribute]
@@ -899,11 +899,16 @@ class LednikPreTrainedModel(
             module.o_proj.weight.data /= math.sqrt(2 * module.config.num_hidden_layers)  # ty:ignore[unsupported-operator, unresolved-attribute]
             module.o_proj.weight.data._is_hf_initialized = True  # ty:ignore[invalid-assignment]
 
+            # hard coded for now
+            dt_min = 0.001
+            dt_max = 0.1
+            dt_init_floor = 1e-4
             dt = torch.exp(
-                torch.rand(module.key_dim, dtype=torch.float32)
-                * (math.log(0.1) - math.log(0.001))
-                + math.log(0.001)
-            ).clamp(min=1e-4)
+                torch.rand(module.num_v_heads) * (math.log(dt_max) - math.log(dt_min))
+                + math.log(dt_min),
+            )
+            dt = torch.clamp(dt, min=dt_init_floor)
+            # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
             inv_dt = dt + torch.log(-torch.expm1(-dt))
             module.dt_bias.copy_(inv_dt)
             module.dt_bias._is_hf_initialized = True  # ty:ignore[unresolved-attribute]
