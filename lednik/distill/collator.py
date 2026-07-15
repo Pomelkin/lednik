@@ -1,7 +1,7 @@
 import math
 import random
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from typing import TypedDict
 
@@ -75,8 +75,11 @@ class ContrastiveCollator:
 
     aug_prob: float = 0.0
     corruptor: SBSCCorruptor | None = None
+    max_aug_attempts: int = 3
 
     backend_tokenizer: Tokenizer | None = None
+
+    _bad_texts: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Post-initialization checks and setup for the collator."""
@@ -164,100 +167,193 @@ class ContrastiveCollator:
             )
         return tokens
 
-    def _gather_tokens(  # noqa: C901
-        self, items: list[dict[str, Any]], text_colname: str, tokens_colname: str
-    ) -> list[Tensor]:
+    @staticmethod
+    def _normalize_nested_list(
+        data: Any, scalar_type: type, colname: str
+    ) -> list[list[Any]]:
+        """Normalize a flat list of scalars or a list of lists of scalars to 2D form."""
+        if isinstance(data, list) and len(data) > 0:
+            if isinstance(data[0], scalar_type):
+                return [data]
+            if (
+                isinstance(data[0], list)
+                and len(data[0]) > 0
+                and isinstance(data[0][0], scalar_type)
+            ):
+                return data
+        raise ValueError(
+            f"Expected a list of {scalar_type.__name__}s or a non-empty list of lists of "
+            f"{scalar_type.__name__}s for column '{colname}', got {type(data)}. Data: {data!r:.300}"
+        )
+
+    @staticmethod
+    def _normalize_list(data: Any, scalar_type: type, colname: str) -> list[Any]:
+        """Normalize a flat list of scalars to 1D form."""
+        if isinstance(data, list) and len(data) > 0:
+            if isinstance(data[0], scalar_type):
+                return data
+        elif isinstance(data, scalar_type):
+            return [data]
+        raise ValueError(
+            f"Expected a {scalar_type.__name__} or a list of {scalar_type.__name__}s for column '{colname}', got {type(data)}. Data: {data!r:.300}"
+        )
+
+    @staticmethod
+    def _sanity_check(tokens: list[int], embedding: list[float], text: str) -> None:
+        if len(tokens) == 0:
+            raise ValueError(f"Tokens list is empty for text: {text!r:.300}")
+        if len(embedding) == 0:
+            raise ValueError(f"Teacher embedding list is empty for text: {text!r:.300}")
+        if len(text) == 0:
+            raise ValueError("Text is empty.")
+
+        if not isinstance(tokens, list) or not isinstance(tokens[0], int):
+            raise ValueError(
+                f"Tokens must be a list of ints, got {type(tokens)}. Tokens: {tokens!r:.300}"
+            )
+        if not isinstance(embedding, list) or not isinstance(embedding[0], float):
+            raise ValueError(
+                f"Teacher embeddings must be a list of floats, got {type(embedding)}. Embeddings: {embedding!r:.300}"
+            )
+        if not isinstance(text, str):
+            raise ValueError(
+                f"Text must be a string, got {type(text)}. Text: {text!r:.300}"
+            )
+        return
+
+    def _gather_tokens_and_teacher_embeddings(  # noqa: C901
+        self,
+        items: list[dict[str, Any]],
+        text_colname: str,
+        tokens_colname: str,
+        teacher_emb_colname: str,
+    ) -> tuple[list[Tensor], list[Tensor]]:
         texts: list[str] = []
         tokens: list[list[int] | None] = []
+        embeddings_l: list[Tensor] = []
 
-        if self.aug_prob > 0.0:
-            aug_indices = random.sample(
-                range(len(items)),
-                k=min(math.ceil(len(items) * self.aug_prob), len(items)),
+        aug_indices_set: set[int] = (
+            set(
+                random.sample(
+                    range(len(items)),
+                    k=min(math.ceil(len(items) * self.aug_prob), len(items)),
+                )
             )
-            # Sort indices to maintain order when replacing tokens after encoding
-            aug_indices.sort()
-        else:
-            aug_indices = []
+            if self.aug_prob > 0.0
+            else set()
+        )
 
-        aug_indices_set = set(aug_indices)
+        encode_indices: list[int] = []
         for i, item in enumerate(items):
-            if i in aug_indices_set:
+            try:
+                tokens_list: list[list[int]] = self._normalize_nested_list(
+                    item[tokens_colname], int, tokens_colname
+                )
+                teacher_embeddings_list: list[list[float]] = (
+                    self._normalize_nested_list(
+                        item[teacher_emb_colname], float, teacher_emb_colname
+                    )
+                )
+                text_list: list[str] = self._normalize_list(
+                    item[text_colname], str, text_colname
+                )
+            except KeyError as e:
+                raise KeyError(
+                    f"Missing expected column in item {i}: {e}. Item keys: {list(item.keys())}"
+                ) from e
+
+            if len(tokens_list) != len(teacher_embeddings_list):
+                raise ValueError(
+                    f"Length mismatch between tokens and teacher embeddings for item {i}. "
+                    f"Tokens length: {len(tokens_list)}, Teacher embeddings length: {len(teacher_embeddings_list)}."
+                )
+            if len(teacher_embeddings_list) != len(text_list):
+                raise ValueError(
+                    f"Length mismatch between teacher embeddings and texts for item {i}. "
+                    f"Teacher embeddings length: {len(teacher_embeddings_list)}, Texts length: {len(text_list)}."
+                )
+
+            index = (
+                random.randint(0, len(tokens_list) - 1) if len(tokens_list) > 1 else 0  # noqa: S311
+            )
+
+            item_tokens = tokens_list[index]
+            item_teacher_embedding = teacher_embeddings_list[index]
+            item_text = text_list[index]
+
+            self._sanity_check(item_tokens, item_teacher_embedding, item_text)
+
+            if i in aug_indices_set and item_text not in self._bad_texts:
                 if self.corruptor is None:
                     raise ValueError(
                         "Corruptor must be provided for data augmentation."
                     )
 
-                item_texts: list[str] = item[text_colname]
-                if not isinstance(item_texts, list):
-                    raise ValueError(
-                        f"Expected a list of texts for augmentation, got {type(item_texts)}."
+                attempt = 0
+                while attempt < self.max_aug_attempts:
+                    try:
+                        corrupted_text = self.corruptor.corrupt(item_text)
+                        break
+                    except Exception:
+                        attempt += 1
+                else:
+                    logger.warning(
+                        f"Failed to corrupt text {item_text} after {self.max_aug_attempts} attempts."
+                        " Using original text for tokenization and adding this text to bad set (preventing future aug attempts)."
                     )
+                    # Fallback to original text if corruption fails
+                    corrupted_text = item_text
+                    # Adding this text to a set to avoid future augmentation attempts
+                    self._bad_texts.add(item_text)
 
-                text = (
-                    random.choice(item_texts) if len(item_texts) > 1 else item_texts[0]  # noqa: S311
-                )
-                corrupted_text = self.corruptor.corrupt(text)
+                encode_indices.append(i)
                 texts.append(corrupted_text)
                 tokens.append(None)
             else:
-                item_tokens: list[list[int]] = item[tokens_colname]
-                if not isinstance(item_tokens, list):
-                    raise ValueError(
-                        f"Expected a list of tokens, got {type(item_tokens)}."
-                    )
-                toks: list[int] = (
-                    random.choice(item_tokens)  # noqa: S311
-                    if len(item_tokens) > 1
-                    else item_tokens[0]
+                tokens.append(item_tokens)
+
+            item_teacher_embedding_t = torch.tensor(
+                item_teacher_embedding, dtype=torch.float32
+            )
+            if item_teacher_embedding_t.ndim != 1:
+                raise ValueError(
+                    f"Expected 1D tensor for teacher embedding, got {item_teacher_embedding_t.ndim}D tensor."
                 )
-                if not isinstance(toks, list) or not isinstance(toks[0], int):
-                    raise ValueError(
-                        f"Expected a list of integers for tokens, got {toks}."
-                    )
-                tokens.append(toks)
+
+            embeddings_l.append(item_teacher_embedding_t)
 
         if len(texts) > 0:
             encoded_texts = self._encode_texts(texts)
-            for idx, enc in zip(aug_indices, encoded_texts, strict=True):
+            for idx, enc in zip(encode_indices, encoded_texts, strict=True):
                 tokens[idx] = enc
 
-        tokens_t: list[Tensor] = []
+        tokens_l: list[Tensor] = []
         for tok in tokens:
             if tok is None:
-                raise ValueError("Tokenization failed for some items.")
+                raise RuntimeError(
+                    "Some items are still None. Please check the augmentation logic."
+                )
 
             tok = self._postprocess_tokens(tok)
-            tokens_t.append(torch.tensor(tok, dtype=torch.long))
-        return tokens_t
-
-    def _gather_teacher_embeddings(
-        self, items: list[dict[str, Any]], teacher_emb_colname: str
-    ) -> Tensor:
-        embeddings: list[Tensor] = []
-        for item in items:
-            emb = torch.tensor(item[teacher_emb_colname])
-            if emb.ndim != 1:
-                raise ValueError(
-                    f"Expected 1D tensor for teacher embedding, got {emb.ndim}D tensor."
-                )
-            embeddings.append(emb)
-        return torch.stack(embeddings)
+            tokens_l.append(torch.tensor(tok, dtype=torch.long))
+        return tokens_l, embeddings_l
 
     def __call__(self, batch: list[dict[str, Any]]) -> CollatorOutput:
         """Collate items into padded inputs, section masks, and teacher embeddings."""
-        sequences = self._gather_tokens(
-            batch, self.query_text_colname, self.query_tok_colname
+        sequences, embeddings = self._gather_tokens_and_teacher_embeddings(
+            batch,
+            text_colname=self.query_text_colname,
+            tokens_colname=self.query_tok_colname,
+            teacher_emb_colname=self.query_teacher_embedding_colname,
         )
-        sequences += self._gather_tokens(
-            batch, self.pos_text_colname, self.pos_tok_colname
+        pos_sequences, pos_embeddings = self._gather_tokens_and_teacher_embeddings(
+            batch,
+            text_colname=self.pos_text_colname,
+            tokens_colname=self.pos_tok_colname,
+            teacher_emb_colname=self.pos_teacher_embedding_colname,
         )
-        embeddings = [
-            self._gather_teacher_embeddings(
-                batch, self.query_teacher_embedding_colname
-            ),
-            self._gather_teacher_embeddings(batch, self.pos_teacher_embedding_colname),
-        ]
+        sequences += pos_sequences
+        embeddings += pos_embeddings
 
         use_negatives = False
         if (
@@ -266,14 +362,14 @@ class ContrastiveCollator:
             and self.neg_teacher_embedding_colname is not None
         ):
             use_negatives = True
-            sequences += self._gather_tokens(
-                batch, self.neg_text_colname, self.neg_tok_colname
+            neg_sequences, neg_embeddings = self._gather_tokens_and_teacher_embeddings(
+                batch,
+                text_colname=self.neg_text_colname,
+                tokens_colname=self.neg_tok_colname,
+                teacher_emb_colname=self.neg_teacher_embedding_colname,
             )
-            embeddings.append(
-                self._gather_teacher_embeddings(
-                    batch, self.neg_teacher_embedding_colname
-                )
-            )
+            sequences += neg_sequences
+            embeddings += neg_embeddings
 
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
@@ -315,5 +411,5 @@ class ContrastiveCollator:
             positives_mask=positives_mask,
             negatives_mask=negatives_mask,
             labels=labels,
-            teacher_sentence_embeddings=torch.cat(embeddings),
+            teacher_sentence_embeddings=torch.stack(embeddings),
         )

@@ -66,7 +66,6 @@ class DataModule(LightningDataModule):
             query_teacher_embedding_colname=config.query_teacher_embedding_colname,
             pos_teacher_embedding_colname=config.pos_teacher_embedding_colname,
             neg_teacher_embedding_colname=config.neg_teacher_embedding_colname,
-            label_colname=config.val_label_colname,
             aug_prob=config.aug_prob,
             corruptor=SBSCCorruptor.from_config(SBSCConfig(min_typos=5))
             if config.aug_prob > 0.0
@@ -156,18 +155,24 @@ class DataModule(LightningDataModule):
     def _create_hf_dataset(self, subset: Literal["train", "val"]) -> HFDataset:
         if self.datasets_paths is None:
             self.datasets_paths = get_datasets_paths(self.clearml_datasets)
+
         data_columns = {
             self.config.query_tok_colname,
+            self.config.query_text_colname,
             self.config.pos_tok_colname,
+            self.config.pos_text_colname,
             self.config.query_teacher_embedding_colname,
             self.config.pos_teacher_embedding_colname,
         }
         if (
             self.config.neg_tok_colname is not None
             and self.config.neg_teacher_embedding_colname is not None
+            and self.config.neg_text_colname is not None
         ):
             data_columns.add(self.config.neg_tok_colname)
             data_columns.add(self.config.neg_teacher_embedding_colname)
+            data_columns.add(self.config.neg_text_colname)
+
         if subset == "val" and self.config.val_label_colname is not None:
             data_columns.add(self.config.val_label_colname)
 

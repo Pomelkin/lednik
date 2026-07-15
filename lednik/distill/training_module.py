@@ -324,6 +324,7 @@ class DistillationModule(KostylLightningModule):
                     mesh=dp_mesh,
                     mp_policy=policies["mp_policy"],
                 )
+        logger.info(f"Using attn implementation: {self.student.config._attn_implementation}")
         self._model_configured = True
         return
 
@@ -448,7 +449,7 @@ class DistillationModule(KostylLightningModule):
                     - self.train_cfg.freeze_student_emb_steps_ratio,
                 )
                 schedulers["embedding_lr"] = emb_scheduler
-                
+
                 model_scheduler = create_scheduler(
                     config=self.train_cfg.lr,
                     optim=optim,

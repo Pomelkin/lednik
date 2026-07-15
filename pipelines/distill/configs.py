@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Any
 
 from kostyl.ml.configs import CheckpointConfig
 from kostyl.ml.configs import EarlyStoppingConfig
@@ -20,22 +20,11 @@ class DistillationConfig(
     """Configuration schema for the training process with ClearML functionality."""
 
 
-class LednikModelTrainConfig(BaseModel):
-    """Configuration for training a Lednik model."""
-
-    model_type: Literal["lednik"]
-    embedding_dropout: float = 0.0
-    attention_dropout: float = 0.0
-    out_attn_dropout: float = 0.0
-    mlp_dropout: float = 0.0
-    output_hidden_size: int | None = None
-
-
-class StaticEmbeddingsTrainConfig(BaseModel):
+class ModelTrainingConfig(BaseModel):
     """Configuration for training a static embeddings model."""
 
-    model_type: Literal["static_embeddings"]
-    embedding_dropout: float = 0.0
+    model_type: Literal["static_embeddings", "lednik"]
+    override_params: dict[str, Any] = Field(default_factory=dict)
 
 
 class DataConfig(BaseModel):
@@ -83,7 +72,7 @@ class TrainingSettings(BaseModel, ConfigSyncingClearmlMixin, ConfigLoadingMixin)
     teacher_model_id: str
     student_model_id: str
     tokenizer_id: str
-    model_cfg: LednikModelTrainConfig | StaticEmbeddingsTrainConfig
+    model_cfg: ModelTrainingConfig
 
     is_student_lightning_checkpoint: bool = False
     checkpoint_weight_prefix: str | None = None

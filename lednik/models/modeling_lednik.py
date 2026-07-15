@@ -465,11 +465,7 @@ class LednikFullAttention(nn.Module):
         self.out_proj = nn.Linear(
             self.proj_size, config.hidden_size, bias=config.attention_bias
         )
-        self.out_dropout = (
-            nn.Dropout(config.out_attn_dropout)
-            if config.out_attn_dropout > 0
-            else nn.Identity()
-        )
+
         self.softmax_scale = self.head_dim**-0.5
 
         self.is_varlen_attn = (
@@ -544,11 +540,13 @@ class LednikFullAttention(nn.Module):
             q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))
             k = self.k_norm(k.view(-1, self.num_heads, self.head_dim))
             v = v.view(-1, self.num_heads, self.head_dim)
+            target_size = (hidden_state.size(0), self.proj_size)
         else:
             bs, seq_len, _ = hidden_state.size()
             q = self.q_norm(q.view(bs, seq_len, self.num_heads, self.head_dim))
             k = self.k_norm(k.view(bs, seq_len, self.num_heads, self.head_dim))
             v = v.view(bs, seq_len, self.num_heads, self.head_dim)
+            target_size = (bs, seq_len, self.proj_size)
 
         q, k = self._apply_rope(
             q,
@@ -572,12 +570,13 @@ class LednikFullAttention(nn.Module):
             cu_seqlens=cu_seqlens,  # type: ignore
             max_seqlen=max_seqlen,  # type: ignore
         )
-        hidden_state = attn_output.reshape_as(hidden_state)
+        
+        hidden_state = attn_output.reshape(*target_size)
 
         if gate is not None:
             hidden_state = hidden_state * gate.sigmoid()
 
-        hidden_state = self.out_dropout(self.out_proj(hidden_state))
+        hidden_state = self.out_proj(hidden_state)
         return (hidden_state, attention_weights)
 
     def _apply_rope(
@@ -741,7 +740,11 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
                     "Supported types are 'full-attention' and 'gated-delta-net'."
                 )
         self.atten_norm = LigerRMSNorm(hidden_size=config.hidden_size)
-
+        self.out_attn_dropout = (
+            nn.Dropout(config.out_attn_dropout)
+            if config.out_attn_dropout > 0
+            else nn.Identity()
+        )
         if (
             not config.use_mlp_after_gdn
             and config.layers[layer_idx] == "gated-delta-net"
@@ -795,7 +798,7 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
             seqlen=seqlen,
             reversed_idx=reversed_idx,
         )
-        hidden_state = hidden_state + attn_output
+        hidden_state = hidden_state + self.out_attn_dropout(attn_output)
 
         mlp_output = self.mlp(self.mlp_norm(hidden_state))
         return hidden_state + self.mlp_dropout(mlp_output)
