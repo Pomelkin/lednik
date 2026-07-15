@@ -54,13 +54,12 @@ services:
 
     container_name: "emelyan.egorov-training"
     volumes:
-      - ${HOME:?HOME is required}/clearml.conf:/home/${HOST_USER}/clearml.conf:ro # clearml config file
+      - ${HOME:?HOME is required}/clearml-pomelk1n.conf:/home/${HOST_USER}/clearml.conf:ro # clearml config file
       - ${HOME:?HOME is required}/.clearml:/home/${HOST_USER}/.clearml # clearml cache directory
       - ${HOME:?HOME is required}/.local/share/fish:/home/${HOST_USER}/.local/share/fish # fish
+      - ${HOME:?HOME is required}/.cache/uv-docker:/home/${HOST_USER}/.cache/uv # uv cache on host FS
       - ./:/home/${HOST_USER}/lednik/ # project directory
       - /home/${HOST_USER}/lednik/.venv # exclude host .venv from the bind mount
-      - ${HOME:?HOME is required}/.cache/uv-docker:/home/${HOST_USER}/.cache/uv # uv cache on host FS
-      - ${HOME:?HOME is required}/.cache/hierarchical-labels-docker:/home/${HOST_USER}/.cache/hierarchical-labels # dataset cache on host FS
     environment:
       - PYTHONPATH=/home/${HOST_USER}/lednik
       - HTTP_PROXY=${HTTP_PROXY:-}
@@ -70,13 +69,13 @@ services:
 
     user: "${HOST_UID:?HOST_UID is required}:${HOST_GID:?HOST_GID is required}"
 
-    cpuset: 0-7
+    cpuset: 37-42
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: [ "0", "1" ]
+              device_ids: [ "1", "2" ]
               capabilities: [ gpu ]
     ipc: host
     mem_limit: 128G

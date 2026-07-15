@@ -19,7 +19,6 @@ RUN test -n "$HOST_UID" || (echo "HOST_UID is required" && exit 1); \
         build-essential=12.9ubuntu3 \
         git=1:2.34.1-1ubuntu1.17 \
         git-lfs=3.0.2-1ubuntu0.3 \
-        openssh-client=1:8.9p1-3ubuntu0.15 \
         curl=7.81.0-1ubuntu1.25 \
         ca-certificates=20240203~22.04.1 \
         libgomp1=12.3.0-1ubuntu1~22.04.3 \
