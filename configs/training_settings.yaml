@@ -1,6 +1,6 @@
 runner_config:
   mrr_config:
-    qdrant_host: localhost
+    qdrant_host: 127.0.0.1
     qdrant_port: 6333
     mrr_top_k: 10
   logreg_config:
@@ -13,15 +13,15 @@ runner_config:
   knn_config:
     k: 5
   scatter_num_points: 200
-  device: cpu
+  device: "cuda:0"
 
 data:
   datasets:
     ru-HNP: 79fcccb7143c48f79ddf300bfd5ee1e4
     Mixed-Summarization: 173599873b46449fa9b4ad6350a657bf
-  aug_prob: 0.3
-  batch_size: 96
-  num_workers: 4
+  aug_prob: 0.35
+  batch_size: 312
+  num_workers: 6
   query_tok_colname: query-tokens
   query_text_colname: query
   pos_tok_colname: pos-tokens
@@ -32,7 +32,6 @@ data:
   #neg_teacher_embedding_colname: neg-embedding
   val_label_colname: label
   val_num_labels: 6
-
 
 early_stopping:
   monitor: "val_loss"
@@ -47,26 +46,25 @@ checkpoint:
   filename: "|{epoch}|-|{step}|-|{val_loss:.5f}|"
 
 teacher_model_id: af954495ff03440abc58790c4e41ff22
-student_model_id: 2064bdd9dda642e0bcf05ef10cc7595a
+student_model_id: e25bc585c2664dea9957ba3cb5c4a1e7
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
 
 trainer:
   accelerator: "cuda"
-  max_epochs: 100
+  max_epochs: 300
   strategy:
     type: "ddp"
-  val_check_interval: 0.5
-  devices: 8
+  val_check_interval: 1.0
+  devices: [ 0, 1 ]
   precision: bf16-true
   log_every_n_steps: 25
 
 distill_config:
   grad_clip_val: 2.0
-  teacher_pooling_method: last
   distillation_method:
     type: direct-distillation
     loss_type: cosine
-    contrastive_loss_weight: 1.0
+    contrastive_loss_weight: 0.7
     temperature: 0.07
   optimizer:
     type: AdamW8bit
@@ -79,15 +77,15 @@ distill_config:
     warmup_value: 1e-5
     base_value: 3e-4
     final_value: 1e-6
-    plateau_ratio: 0.7
+    plateau_ratio: 0.8
   weight_decay:
-    base_value: 0.001
-
+    base_value: 0.02
   freeze_student_emb_steps_ratio: 0.1
 
 model_cfg:
   model_type: lednik
-  embeddings_dropout: 0.25
-  attention_dropout: 0.0
-  out_attn_dropout: 0.15
-  mlp_dropout: 0.15
+  override_params:
+    embedding_dropout: 0.15
+    attention_dropout: 0.0
+    out_attn_dropout: 0.1
+    mlp_dropout: 0.1

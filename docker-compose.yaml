@@ -69,7 +69,7 @@ services:
 
     user: "${HOST_UID:?HOST_UID is required}:${HOST_GID:?HOST_GID is required}"
 
-    cpuset: 37-42
+    cpuset: 0-31
     deploy:
       resources:
         reservations:
