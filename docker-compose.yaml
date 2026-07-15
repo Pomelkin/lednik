@@ -78,7 +78,6 @@ services:
             - driver: nvidia
               device_ids: [ "0", "1" ]
               capabilities: [ gpu ]
-    # CPU and GPU pinning lives in docker-compose.override.yaml (per-user, gitignored).
     ipc: host
     mem_limit: 128G
 
