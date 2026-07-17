@@ -1,4 +1,5 @@
 import contextlib
+import math
 from dataclasses import dataclass
 from typing import Any
 from typing import Literal
@@ -6,6 +7,7 @@ from typing import cast
 
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from kostyl.ml.integrations.lightning import LightningCheckpointModelMixin
 from kostyl.utils import setup_logger
 from liger_kernel.transformers import LigerGEGLUMLP
@@ -14,28 +16,30 @@ from liger_kernel.transformers import LigerSwiGLUMLP
 from torch import Tensor
 from torch import nn
 from torch.nn.attention import varlen
-from transformers.modeling_utils import PreTrainedModel
 from transformers.integrations import use_kernel_func_from_hub
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_rope_utils import RopeParameters
 from transformers.modeling_rope_utils import dynamic_rope_update
+from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import is_flash_attn_2_available
 from transformers.utils import is_flash_attn_4_available
 from transformers.utils.generic import is_flash_attention_requested
 from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
-import math
 
 from .configuration_lednik import LednikConfig
 from .outputs import LednikModelOutput
 
 
 if is_flash_attn_2_available():
+    from flash_attn import flash_attn_varlen_func
     from flash_attn import (
         flash_attn_varlen_qkvpacked_func,  # ty:ignore[unresolved-import, unused-ignore-comment]
     )
+    from flash_attn.flash_attn_interface import _flash_attn_varlen_backward
+    from flash_attn.flash_attn_interface import _flash_attn_varlen_forward
     from flash_attn.ops.triton.rotary import (
         apply_rotary,  # ty:ignore[unresolved-import, unused-ignore-comment, unused-ignore-comment]
     )
@@ -304,6 +308,447 @@ def apply_rotary_pos_emb_unpadded(
     return RotaryEmbUnpad.apply(q, k, cos, sin, cu_seqlens, max_seqlen)
 
 
+def calc_chunks(
+    cu_seqlen: torch.Tensor, moba_chunk_size: int
+) -> tuple[torch.Tensor, int, torch.Tensor]:
+    """
+    Calc chunk meta: chunk offsets, chunk count and chunk-to-batch mapping.
+
+    Every chunk (including the ragged tail chunk of each batch) is a gating
+    candidate — attention is bidirectional, there is no causal tail special case.
+    """
+    # batch_sizes[batch_idx] = batch size ( seqlen ) of batch idx
+    batch_sizes = cu_seqlen[1:] - cu_seqlen[:-1]
+    # batch_num_chunk[batch_idx] = how many chunk in batch idx
+    batch_num_chunk = (batch_sizes + (moba_chunk_size - 1)) // moba_chunk_size
+    # cu_num_chunk[batch_idx] = first chunk id of this batch
+    cu_num_chunk = torch.ones(
+        batch_num_chunk.numel() + 1,
+        device=cu_seqlen.device,
+        dtype=batch_num_chunk.dtype,
+    )
+    cu_num_chunk[1:] = batch_num_chunk.cumsum(dim=0)
+    # total chunk ( for all batch )
+    num_chunk = int(cu_num_chunk[-1].item())
+    # chunk_sizes[chunk_idx] = chunk_size of chunk idx
+    chunk_sizes = torch.full(
+        (num_chunk + 1,), moba_chunk_size, dtype=torch.int32, device=cu_seqlen.device
+    )
+    chunk_sizes[0] = 0  # for calc cu chunk
+    batch_last_chunk_size = batch_sizes - (batch_num_chunk - 1) * moba_chunk_size
+    chunk_sizes[cu_num_chunk[1:]] = batch_last_chunk_size
+    # cu_chunk[chunk_idx] = the start chunk offset of chunk idx
+    cu_chunk = chunk_sizes.cumsum(dim=-1, dtype=torch.int32)
+    # chunk_to_batch[chunk_idx] = batch idx of the chunk idx
+    chunk_to_batch = torch.zeros(
+        (num_chunk,), dtype=torch.int32, device=cu_seqlen.device
+    )
+    chunk_to_batch[cu_num_chunk[1:-1]] = 1
+    chunk_to_batch = chunk_to_batch.cumsum(dim=0, dtype=torch.int32)
+
+    return (
+        cu_chunk,
+        num_chunk,
+        chunk_to_batch,
+    )
+
+
+class MixedAttention(torch.autograd.Function):
+    """Mixed Attention Autograd Function for combining self-attention and moba attention."""
+
+    @staticmethod
+    def forward(
+        ctx: torch.autograd.Function,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        self_attn_cu_seqlen: torch.Tensor,
+        moba_q: torch.Tensor,
+        moba_kv: torch.Tensor,
+        moba_cu_seqlen_q: torch.Tensor,
+        moba_cu_seqlen_kv: torch.Tensor,
+        max_seqlen: int,
+        moba_chunk_size: int,
+        moba_q_sh_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward pass for Mixed Attention Autograd Function."""
+        ctx.max_seqlen = max_seqlen  # ty:ignore[unresolved-attribute]
+        ctx.moba_chunk_size = moba_chunk_size  # ty:ignore[unresolved-attribute]
+        ctx.softmax_scale = softmax_scale = q.shape[-1] ** (-0.5)  # ty:ignore[unresolved-attribute]
+
+        # self attn
+        self_attn_out_sh, self_attn_lse_hs, _, _ = _flash_attn_varlen_forward(
+            q=q,
+            k=k,
+            v=v,
+            cu_seqlens_q=self_attn_cu_seqlen,
+            cu_seqlens_k=self_attn_cu_seqlen,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            softmax_scale=softmax_scale,
+            causal=False,
+            dropout_p=0.0,
+        )
+
+        # moba attn
+        moba_attn_out, moba_attn_lse_hs, _, _ = _flash_attn_varlen_forward(
+            q=moba_q,
+            k=moba_kv[:, 0],
+            v=moba_kv[:, 1],
+            cu_seqlens_q=moba_cu_seqlen_q,
+            cu_seqlens_k=moba_cu_seqlen_kv,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=moba_chunk_size,
+            softmax_scale=softmax_scale,
+            causal=False,
+            dropout_p=0.0,
+        )
+
+        # convert lse shape hs -> sh ( follow the legacy mix attn logic )
+        self_attn_lse_sh = self_attn_lse_hs.t().contiguous()
+        moba_attn_lse = moba_attn_lse_hs.t().contiguous()
+
+        # output buffer [S, H, D], same shape as q
+        output = torch.zeros(
+            (q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32
+        )
+
+        # flatten vS & H for index ops
+        output_2d = output.view(-1, q.shape[2])
+
+        # calc mixed_lse
+        # minus max lse to avoid exp explosion
+        max_lse_1d = self_attn_lse_sh.view(-1)
+        max_lse_1d = max_lse_1d.index_reduce(
+            0, moba_q_sh_indices, moba_attn_lse.view(-1), "amax"
+        )
+        self_attn_lse_sh = self_attn_lse_sh - max_lse_1d.view_as(self_attn_lse_sh)
+        moba_attn_lse = (
+            moba_attn_lse.view(-1)
+            .sub(max_lse_1d.index_select(0, moba_q_sh_indices))
+            .reshape_as(moba_attn_lse)
+        )
+
+        mixed_attn_se_sh = self_attn_lse_sh.exp()
+        moba_attn_se = moba_attn_lse.exp()
+
+        mixed_attn_se_sh.view(-1).index_add_(
+            0, moba_q_sh_indices, moba_attn_se.view(-1)
+        )
+        mixed_attn_lse_sh = mixed_attn_se_sh.log()
+
+        # add attn output
+        factor = (self_attn_lse_sh - mixed_attn_lse_sh).exp()  # [ vS, H ]
+        self_attn_out_sh = self_attn_out_sh * factor.unsqueeze(-1)
+        output_2d += self_attn_out_sh.reshape_as(output_2d)
+
+        # add moba output
+        mixed_attn_lse = (
+            mixed_attn_lse_sh.view(-1)
+            .index_select(0, moba_q_sh_indices)
+            .view_as(moba_attn_lse)
+        )
+        factor = (moba_attn_lse - mixed_attn_lse).exp()  # [ vS, H ]
+        moba_attn_out = moba_attn_out * factor.unsqueeze(-1)
+        raw_attn_out = moba_attn_out.view(-1, moba_attn_out.shape[-1])
+        output_2d.index_add_(0, moba_q_sh_indices, raw_attn_out)
+        output = output.to(q.dtype)
+        # add back max lse
+        mixed_attn_lse_sh = mixed_attn_lse_sh + max_lse_1d.view_as(mixed_attn_se_sh)
+        ctx.save_for_backward(
+            output,
+            mixed_attn_lse_sh,
+            q,
+            k,
+            v,
+            self_attn_cu_seqlen,
+            moba_q,
+            moba_kv,
+            moba_cu_seqlen_q,
+            moba_cu_seqlen_kv,
+            moba_q_sh_indices,
+        )
+        return output
+
+    @staticmethod
+    def backward(ctx: torch.autograd.Function, d_output: torch.Tensor) -> Any:  # ty:ignore[invalid-method-override]
+        """Backward pass for Mixed Attention Autograd Function."""
+        max_seqlen = ctx.max_seqlen  # ty:ignore[unresolved-attribute]
+        moba_chunk_size = ctx.moba_chunk_size  # ty:ignore[unresolved-attribute]
+        softmax_scale = ctx.softmax_scale  # ty:ignore[unresolved-attribute]
+
+        (
+            output,
+            mixed_attn_vlse_sh,
+            q,
+            k,
+            v,
+            self_attn_cu_seqlen,
+            moba_q,
+            moba_kv,
+            moba_cu_seqlen_q,
+            moba_cu_seqlen_kv,
+            moba_q_sh_indices,
+        ) = ctx.saved_tensors  # ty:ignore[invalid-assignment]
+
+        d_output = d_output.contiguous()
+
+        dq = torch.empty_like(q)
+        dk = torch.empty_like(k)
+        dv = torch.empty_like(v)
+        _flash_attn_varlen_backward(
+            dout=d_output,
+            q=q,
+            k=k,
+            v=v,
+            out=output,
+            softmax_lse=mixed_attn_vlse_sh.t().contiguous(),
+            dq=dq,
+            dk=dk,
+            dv=dv,
+            cu_seqlens_q=self_attn_cu_seqlen,
+            cu_seqlens_k=self_attn_cu_seqlen,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            softmax_scale=softmax_scale,
+            causal=False,
+            dropout_p=0.0,
+            window_size_left=-1,
+            window_size_right=-1,
+            softcap=0.0,
+            alibi_slopes=None,
+            deterministic=True,
+        )
+
+        headdim = q.shape[-1]
+        d_moba_output = (
+            d_output.view(-1, headdim).index_select(0, moba_q_sh_indices).unsqueeze(1)
+        )
+        moba_output = (
+            output.view(-1, headdim).index_select(0, moba_q_sh_indices).unsqueeze(1)
+        )
+
+        mixed_attn_vlse = (
+            mixed_attn_vlse_sh.view(-1).index_select(0, moba_q_sh_indices).view(1, -1)
+        )
+
+        dmq = torch.empty_like(moba_q)
+        dmk = torch.empty_like(moba_kv[:, 0], memory_format=torch.contiguous_format)
+        dmv = torch.empty_like(moba_kv[:, 1], memory_format=torch.contiguous_format)
+        _flash_attn_varlen_backward(
+            dout=d_moba_output,
+            q=moba_q,
+            k=moba_kv[:, 0],
+            v=moba_kv[:, 1],
+            out=moba_output,
+            softmax_lse=mixed_attn_vlse,
+            dq=dmq,
+            dk=dmk,
+            dv=dmv,
+            cu_seqlens_q=moba_cu_seqlen_q,
+            cu_seqlens_k=moba_cu_seqlen_kv,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=moba_chunk_size,
+            softmax_scale=softmax_scale,
+            causal=False,
+            dropout_p=0.0,
+            window_size_left=-1,
+            window_size_right=-1,
+            softcap=0.0,
+            alibi_slopes=None,
+            deterministic=True,
+        )
+
+        dmkv = torch.stack((dmk, dmv), dim=1)
+        return dq, dk, dv, None, dmq, dmkv, None, None, None, None, None
+
+
+def moba_attn_varlen(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
+    moba_chunk_size: int,
+    moba_topk: int,
+) -> torch.Tensor:
+    """
+    An efficient version of bidirectional moba implementation with flash-attn, the core logic.
+
+    1. Split each batch into chunks of moba_chunk_size ( the tail chunk may be shorter )
+       - every token attends its whole own chunk via the self attn path
+    2. K in each chunk will calculate mean value as the representative k, and Q will attend to these representative
+    k to get the gate logit, which will be used to select topk chunks
+       - candidates are all chunks of the token's batch except its own chunk ( no causal restriction )
+    3. Select the topk chunks and get the dense q for each kv chunk pair and do the varlen attention
+    4. Combine the varlen attn and self attn results via online softmax to get the final result
+
+    Args:
+        q (torch.Tensor): [seqlen, head, head_dim]
+        k (torch.Tensor): [seqlen, head, head_dim]
+        v (torch.Tensor): [seqlen, head, head_dim]
+        cu_seqlens (torch.Tensor): the cumulative sequence length tensor, same definition in flash attn
+        max_seqlen (int): the max sequence length of the batch, same definition in flash attn
+        moba_chunk_size (int): the chunk size for moba attention, the last chunk of each batch may be shorter
+        moba_topk (int): the topk chunks to attend for each token.
+
+    Returns:
+        attn_output (torch.Tensor): [seqlen, head, head_dim]
+    """
+    kv = torch.stack((k, v), dim=1)
+
+    # some basic variables
+    # qkv shape = [ S, H, D ]
+    seqlen, num_head, head_dim = q.shape
+
+    # prepare chunk meta
+    cu_chunk, num_chunk, chunk_to_batch = calc_chunks(cu_seqlens, moba_chunk_size)
+
+    chunk_start = cu_chunk[:-1]
+    chunk_end = cu_chunk[1:]
+    chunk_len = (chunk_end - chunk_start).to(torch.int64)
+
+    # we will adjust selective topk to moba_topk - 1, as the own chunk is always
+    # attended via the self attn path
+    moba_topk = min(moba_topk - 1, num_chunk - 1)
+    need_moba_attn = moba_topk > 0
+
+    # corner case: if no moba attn needed, just return self attn
+    if not need_moba_attn:
+        return flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,  # ty:ignore[invalid-argument-type]
+            max_seqlen,  # ty:ignore[invalid-argument-type]
+            causal=False,
+        )
+
+    self_attn_cu_seqlen = cu_chunk
+
+    # calc key_gate_weight and gate
+
+    # key_gate_weight [ N_CHUNK, HEAD, HEAD_DIM ]: mean k over each ( possibly ragged ) chunk
+    token_to_chunk = torch.repeat_interleave(
+        torch.arange(num_chunk, device=q.device, dtype=torch.int64), chunk_len
+    )
+    key_gate_weight = torch.zeros(
+        (num_chunk, num_head, head_dim), device=q.device, dtype=torch.float32
+    )
+    key_gate_weight.index_add_(0, token_to_chunk, k.float())
+    key_gate_weight = key_gate_weight / chunk_len.view(-1, 1, 1).float()
+
+    gate = torch.einsum(
+        "nhd,shd->nhs", key_gate_weight, q.float()
+    )  # gate [ N_CHUNK, HEAD, SEQ ], float logit for better gate logit perception
+
+    # post process gate: mask the token's own chunk ( it is covered by the self attn
+    # path, selecting it here would double count its kv ) and tokens of other batches
+    gate_seq_idx = torch.arange(0, seqlen, device=q.device, dtype=torch.int32)[None, :]
+    own_chunk_mask = (gate_seq_idx >= chunk_start[:, None]) & (
+        gate_seq_idx < chunk_end[:, None]
+    )
+    batch_start = cu_seqlens[chunk_to_batch]
+    batch_end = cu_seqlens[chunk_to_batch + 1]
+    outside_batch_mask = (gate_seq_idx < batch_start[:, None]) | (
+        gate_seq_idx >= batch_end[:, None]
+    )
+    gate_inf_mask = own_chunk_mask | outside_batch_mask
+    gate.masked_fill_(gate_inf_mask.unsqueeze(1), -float("inf"))
+
+    # find moba q that needs moba attn
+
+    # find topk chunks
+    # gate_mask [ N_CHUNK, HEAD, SEQ ], true indicates that needs attention
+    _, gate_top_k_idx = torch.topk(gate, k=moba_topk, dim=0, largest=True, sorted=False)
+    # drop masked ( own chunk / other batch ) entries that topk may have picked
+    gate_mask = torch.logical_not(gate.isinf())
+    # select topk chunks
+    gate_idx_mask = torch.zeros(gate_mask.shape, dtype=torch.bool, device=q.device)
+    gate_idx_mask = gate_idx_mask.scatter_(dim=0, index=gate_top_k_idx, value=True)
+    gate_mask = torch.logical_and(gate_mask, gate_idx_mask)
+
+    # varlen trick: combining all q index that needs moba attn
+    # the result will be like [ C0H0 ][ C0H1 ][ C0H2 ][ ... ][ CnHm ]
+    moba_q_indices = gate_mask.reshape(gate_mask.shape[0], -1).nonzero(as_tuple=True)[
+        -1
+    ]  # [ HS indices ] * N
+    # moba_seqlen_q indicates that how many q chunks are selected for each kv chunk - head
+    moba_seqlen_q = gate_mask.sum(dim=-1).flatten()
+    # select all q that needs moba attn based on the moba_q_indices
+    moba_q = rearrange(q, "s h d -> ( h s ) d").index_select(
+        0, moba_q_indices
+    )  # [ selected_S, D ]
+    moba_q = moba_q.unsqueeze(1)
+    # moba_q_sh_indices represents the position in the origin q tensor of each q token inside moba_q
+    moba_q_sh_indices = moba_q_indices % seqlen * num_head + moba_q_indices // seqlen
+
+    # prepare moba kv
+
+    # Since moba_q is organized as HS * N, we need to reorganize kv to adapt to q
+
+    # experts are ( chunk, head ) pairs in chunk-major order
+    # cut off zero experts ( no q selected them ), or the grad may be nan
+    valid_expert_mask = moba_seqlen_q > 0
+    if not bool(valid_expert_mask.all()):
+        moba_seqlen_q = moba_seqlen_q[valid_expert_mask]
+    # moba cu_seqlen for flash attn
+    moba_cu_seqlen_q = torch.cat(
+        (
+            torch.tensor([0], device=q.device, dtype=moba_seqlen_q.dtype),
+            moba_seqlen_q.cumsum(dim=0),
+        ),
+        dim=0,
+    ).to(torch.int32)
+
+    # ragged kv gather: expert ( chunk c, head h ) provides kv tokens
+    # [ chunk_start[c], chunk_end[c] ) of head h; tail chunks may be shorter
+    # than moba_chunk_size, hence cu_seqlen built from actual chunk lengths
+    expert_idx = valid_expert_mask.nonzero(as_tuple=True)[0]
+    expert_chunk = expert_idx // num_head
+    expert_head = expert_idx % num_head
+    expert_len = chunk_len[expert_chunk]
+    moba_cu_seqlen_kv_i64 = torch.cat(
+        (
+            torch.zeros(1, device=q.device, dtype=torch.int64),
+            expert_len.cumsum(dim=0),
+        ),
+        dim=0,
+    )
+    kv_token_idx = torch.repeat_interleave(
+        chunk_start[expert_chunk].to(torch.int64) - moba_cu_seqlen_kv_i64[:-1],
+        expert_len,
+    ) + torch.arange(
+        int(moba_cu_seqlen_kv_i64[-1].item()), device=q.device, dtype=torch.int64
+    )
+    kv_head_idx = torch.repeat_interleave(expert_head, expert_len)
+    moba_kv = kv[kv_token_idx, :, kv_head_idx].unsqueeze(2)  # [ total_kv, 2, 1, D ]
+    moba_cu_seqlen_kv = moba_cu_seqlen_kv_i64.to(torch.int32)
+
+    # Shape check
+    if moba_cu_seqlen_kv.shape != moba_cu_seqlen_q.shape:
+        raise ValueError(
+            f"moba_cu_seqlen_kv.shape != moba_cu_seqlen_q.shape {moba_cu_seqlen_kv.shape} != {moba_cu_seqlen_q.shape}"
+        )
+
+    # Wrapping up the flash attn call and online softmax dlse inside MixedAttention class
+    return MixedAttention.apply(
+        q,
+        k,
+        v,
+        self_attn_cu_seqlen,
+        moba_q,
+        moba_kv,
+        moba_cu_seqlen_q,
+        moba_cu_seqlen_kv,
+        max_seqlen,
+        moba_chunk_size,
+        moba_q_sh_indices,
+    )
+
+
 def eager_attention_forward(
     module: "LednikFullAttention",
     q: torch.Tensor,  # [b, seq, num_heads, dim]
@@ -434,17 +879,67 @@ LEDNIK_ATTENTION_FUNCTION = {
 }
 
 
+def flash_attention_2_moba_forward(
+    module: "LednikFullAttention",
+    q: torch.Tensor,  # [b * seq, num_heads, dim]
+    k: torch.Tensor,  # [b * seq, num_heads, dim]
+    v: torch.Tensor,  # [b * seq, num_heads, dim]
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
+    **_kwargs: Any,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flash attention forward function with MoBA."""
+    original_dtype = q.dtype
+
+    if original_dtype != module.fa_target_dtype:
+        convert_dtype = True
+        q = q.to(module.fa_target_dtype)
+        k = k.to(module.fa_target_dtype)
+        v = v.to(module.fa_target_dtype)
+    else:
+        convert_dtype = False
+
+    attn_output = moba_attn_varlen(
+        q=q,
+        k=k,
+        v=v,
+        cu_seqlens=cu_seqlens,
+        max_seqlen=max_seqlen,
+        moba_chunk_size=module.config.moba_chunk_size,
+        moba_topk=module.config.moba_topk,
+    )
+    if convert_dtype:
+        attn_output = attn_output.to(original_dtype)
+    return attn_output, torch.empty((1,))  # dummy attention weights
+
+
+LEDNIK_ATTENTION_FUNCTION_MOBA = {
+    "flash_attention_2": flash_attention_2_moba_forward,
+}
+
+
 class LednikFullAttention(nn.Module):
     """Lednik Attention Module. Supports eager and flash attention implementations."""
 
-    def __init__(self, config: LednikConfig) -> None:
+    def __init__(self, config: LednikConfig, is_moba: bool = False) -> None:
         """Initializes the Lednik Attention module."""
         super().__init__()
+
+        if (
+            is_moba
+            and config._attn_implementation not in LEDNIK_ATTENTION_FUNCTION_MOBA
+        ):
+            raise ValueError(
+                f"MoBA attention is not supported for {config._attn_implementation}. "
+                f"Supported implementations: {list(LEDNIK_ATTENTION_FUNCTION_MOBA.keys())}"
+            )
         if config.num_attention_heads is None:
             raise ValueError(
                 "`num_attention_heads` must be provided in config "
                 "for attention block initialization"
             )
+
+        self.is_moba = is_moba
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
         self.proj_size = self.num_heads * self.head_dim
@@ -559,7 +1054,12 @@ class LednikFullAttention(nn.Module):
             seqlen,
         )
 
-        attn_output, attention_weights = LEDNIK_ATTENTION_FUNCTION[
+        ATTN_FUNC = (
+            LEDNIK_ATTENTION_FUNCTION
+            if not self.is_moba
+            else LEDNIK_ATTENTION_FUNCTION_MOBA
+        )
+        attn_output, attention_weights = ATTN_FUNC[
             self.config._attn_implementation  # pyrefly: ignore
         ](
             q=q,
@@ -731,7 +1231,9 @@ class LednikEncoderLayer(GradientCheckpointingLayer):
         super().__init__()
         match config.layers[layer_idx]:
             case "full-attention":
-                self.attention = LednikFullAttention(config)
+                self.attention = LednikFullAttention(config, is_moba=False)
+            case "moba":
+                self.attention = LednikFullAttention(config, is_moba=True)
             case "gated-delta-net":
                 self.attention = LednikBiGatedDeltaAttention(config)
             case _:

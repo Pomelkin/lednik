@@ -52,7 +52,7 @@ class LednikConfig(PreTrainedConfig):
     use_gated_attention: bool = True
 
     # List of layers to include in the model architecture.
-    layers: list[Literal["full-attention", "gated-delta-net"]] = field(
+    layers: list[Literal["full-attention", "gated-delta-net", "moba"]] = field(
         default_factory=list
     )
 
@@ -66,6 +66,10 @@ class LednikConfig(PreTrainedConfig):
     gdn_use_short_conv: bool = True
     gdn_allow_neg_eigval: bool = False
     use_mlp_after_gdn: bool = True
+
+    # Moba specific parameters.
+    moba_chunk_size: int = 32
+    moba_topk: int = 3
 
     # Pooling strategy for classifier head.
     classifier_pooling: Literal["cls", "mean"] = "cls"
