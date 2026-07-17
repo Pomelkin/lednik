@@ -22,7 +22,14 @@ WORKDIR /home/${HOST_USER}/app
 
 RUN curl -LsSf https://astral.sh/uv/install.sh -o install_uv.sh && \
     chmod +x install_uv.sh && \
-    bash install_uv.sh && rm install_uv.sh
-ENV PATH="/home/${HOST_USER}/.local/bin:${PATH}"
+    bash install_uv.sh && rm install_uv.sh && \
+    mkdir -p /home/${HOST_USER}/.local/bin && \
+    mkdir -p /home/${HOST_USER}/.cache/uv && \
+    mkdir -p /home/${HOST_USER}/app/.venv
+
+ENV PATH="/home/${HOST_USER}/.local/bin:${PATH}"\
+    UV_CACHE_DIR="/home/${HOST_USER}/.cache/uv" \
+    UV_LINK_MODE=copy
+
 
 CMD [ "/bin/bash" ]

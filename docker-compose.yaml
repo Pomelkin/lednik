@@ -11,16 +11,15 @@ services:
         - HOST_USER=${HOST_USER:?Please set HOST_USER environment variable}
     container_name: flash_attention_builder
     volumes:
-      - ./uv.lock:/home/$HOST_USER/app/uv.lock
-      - ./pyproject.toml:/home/$HOST_USER/app/pyproject.toml
-      - ./.python-version:/home/$HOST_USER/app/.python-version
-      - /home/$HOST_USER/.cache:/home/$HOST_USER/.cache
+      - ${HOME:?HOME is required}/.cache/uv:/home/${HOST_USER}/.cache/uv # uv cache on host FS
+      - ./:/home/${HOST_USER}/app/ # project directory
+      - /home/${HOST_USER}/app/.venv # exclude host .venv from the bind mount
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: [ "5", "6" ]
               capabilities: [ gpu ]
     profiles:
       - flash-attention-builder
@@ -55,9 +54,9 @@ services:
     container_name: "emelyan.egorov-training"
     volumes:
       - ${HOME:?HOME is required}/clearml-pomelk1n.conf:/home/${HOST_USER}/clearml.conf:ro # clearml config file
-      - ${HOME:?HOME is required}/.clearml:/home/${HOST_USER}/.clearml # clearml cache directory
+      - ${HOME:?HOME is required}/.clearml-docker:/home/${HOST_USER}/.clearml # clearml cache directory
       - ${HOME:?HOME is required}/.local/share/fish:/home/${HOST_USER}/.local/share/fish # fish
-      - ${HOME:?HOME is required}/.cache/uv-docker:/home/${HOST_USER}/.cache/uv # uv cache on host FS
+      - ${HOME:?HOME is required}/.cache/uv:/home/${HOST_USER}/.cache/uv # uv cache on host FS
       - ./:/home/${HOST_USER}/lednik/ # project directory
       - /home/${HOST_USER}/lednik/.venv # exclude host .venv from the bind mount
     environment:
@@ -75,7 +74,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: [ "1", "2" ]
+              device_ids: [ "5", "6" ]
               capabilities: [ gpu ]
     ipc: host
     mem_limit: 128G
