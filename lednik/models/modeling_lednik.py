@@ -49,7 +49,7 @@ if is_flash_attn_4_available():
     )
 
 with contextlib.suppress(ImportError):
-    from fla.layers import GatedDeltaNet
+    from fla.layers import GatedDeltaNet2
 
 logger = setup_logger()
 
@@ -660,7 +660,7 @@ class LednikBiGatedDeltaAttention(nn.Module):
                 f"LednikBiGatedDeltaAttention only supports flash attention/torch varlen (sdpa), but got {config._attn_implementation}"
             )
 
-        self.delta_net = GatedDeltaNet(
+        self.delta_net = GatedDeltaNet2(
             hidden_size=config.hidden_size,
             expand_v=config.gdn_expand_v,
             conv_size=config.gdn_conv_size,
@@ -875,7 +875,7 @@ class LednikPreTrainedModel(
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)
 
-        if isinstance(module, GatedDeltaNet):
+        if isinstance(module, GatedDeltaNet2):
             module.q_conv1d.weight.data.normal_(
                 mean=0.0,
                 std=module.config.initializer_range,  # ty:ignore[invalid-argument-type, unresolved-attribute]
