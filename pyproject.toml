@@ -50,13 +50,14 @@ distill = [
   "torchmetrics>=1.8.2",
 ]
 fast-attn = [
+    "causal-conv1d",
     "flash-attn",
     "flash-linear-attention[cuda]>=0.5.1",
 ]
 
 [tool.uv]
 default-groups = ["dev", "distill"]
-no-build-isolation-package = ["flash-attn"]
+no-build-isolation-package = ["flash-attn", "causal-conv1d"]
 
 [tool.uv.workspace]
 members = [
@@ -67,6 +68,7 @@ members = [
 kostyl-toolkit = { workspace = true }
 flash-attn = { path = "wheels/flash_attn-2.8.3-cp313-cp313-linux_x86_64.whl" }
 sage = { git = "https://github.com/Pomelkin/sage" }
+causal-conv1d = { path = "wheels/causal_conv1d-1.6.2.post1-cp313-cp313-linux_x86_64.whl" }
 
 [tool.pyrefly]
 project-excludes = [
