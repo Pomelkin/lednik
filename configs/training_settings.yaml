@@ -13,14 +13,14 @@ runner_config:
   knn_config:
     k: 5
   scatter_num_points: 200
-  device: "cuda:0"
+  device: "cpu"
 
 data:
   datasets:
     ru-HNP: 79fcccb7143c48f79ddf300bfd5ee1e4
     Mixed-Summarization: 173599873b46449fa9b4ad6350a657bf
   aug_prob: 0.35
-  batch_size: 312
+  batch_size: 240
   num_workers: 6
   query_tok_colname: query-tokens
   query_text_colname: query
@@ -33,12 +33,6 @@ data:
   val_label_colname: label
   val_num_labels: 6
 
-early_stopping:
-  monitor: "val_loss"
-  patience: 5
-  mode: "min"
-  min_delta: 0.01
-
 checkpoint:
   save_top_k: 3
   mode: "min"
@@ -46,12 +40,12 @@ checkpoint:
   filename: "|{epoch}|-|{step}|-|{val_loss:.5f}|"
 
 teacher_model_id: af954495ff03440abc58790c4e41ff22
-student_model_id: e25bc585c2664dea9957ba3cb5c4a1e7
+student_model_id: 316e940db6eb4f95a36f67d9dbc77fe8
 tokenizer_id: 34beac693bfa4977b23cafea8b3d6379
 
 trainer:
   accelerator: "cuda"
-  max_epochs: 300
+  max_epochs: 225
   strategy:
     type: "ddp"
   val_check_interval: 1.0
@@ -73,7 +67,7 @@ distill_config:
     bf16_stochastic_round: true
   lr:
     scheduler_type: plateau-with-cosine-annealing
-    warmup_ratio: 0.05
+    warmup_ratio: 0.1
     warmup_value: 1e-5
     base_value: 3e-4
     final_value: 1e-6
