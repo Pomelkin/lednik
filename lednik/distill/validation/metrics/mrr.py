@@ -46,6 +46,12 @@ def _extract_uuids_from_points(
     return results
 
 
+def _collection_exists(client: QdrantClient, collection_names: list[str]) -> bool:
+    coll_resp = client.get_collections()
+    existing_collections = [coll.name for coll in coll_resp.collections]
+    return any(name in existing_collections for name in collection_names)
+
+
 def calculate_mrr(  # noqa: C901
     queries: Tensor,
     positives: Tensor,
@@ -107,65 +113,81 @@ def calculate_mrr(  # noqa: C901
         "pos": id2pos,
     }
 
-    ### Create collections and upload data ###
-    for emb_type in VECTOR_TYPES:
-        collection_name = VECTOR_TYPE_TO_COLLECTION_NAME[emb_type]
-
-        if client.collection_exists(collection_name=collection_name):
-            client.delete_collection(collection_name=collection_name)
-
-        resp = client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(
-                size=queries.shape[-1], distance=Distance.COSINE
-            ),
+    if _collection_exists(client, list(VECTOR_TYPE_TO_COLLECTION_NAME.values())):
+        suffix = f"_{uuid4().hex[:8]}"
+        logger.warning(
+            f"Qdrant collections already exist. Adding suffix to avoid collisions (or race conditions): {suffix}"
         )
-        if not resp:
-            raise RuntimeError(f"Failed to create collection {collection_name}")
+        for emb_type in VECTOR_TYPES:
+            VECTOR_TYPE_TO_COLLECTION_NAME[emb_type] += suffix
+    try:
+        ### Create collections and upload data ###
+        for emb_type in VECTOR_TYPES:
+            collection_name = VECTOR_TYPE_TO_COLLECTION_NAME[emb_type]
 
-        points = []
+            if client.collection_exists(collection_name=collection_name):
+                client.delete_collection(collection_name=collection_name)
 
-        for emb_id, emb in VECTOR_TYPE_TO_VECTOR_MAPPING[emb_type].items():
-            point = PointStruct(id=emb_id, vector=emb)
-            points.append(point)
-
-        for points_batch in _batched(points, _QDRANT_UPLOAD_BATCH_SIZE):
-            client.upload_points(
+            resp = client.create_collection(
                 collection_name=collection_name,
-                points=points_batch,
-                wait=True,
-                parallel=1,
+                vectors_config=VectorParams(
+                    size=queries.shape[-1], distance=Distance.COSINE
+                ),
             )
+            if not resp:
+                raise RuntimeError(f"Failed to create collection {collection_name}")
 
-    ### Calculate MRR ###
-    mrr = 0.0
-    for vec_type in VECTOR_TYPES:
-        uuid_to_vectors = VECTOR_TYPE_TO_VECTOR_MAPPING[vec_type]
+            points = []
 
-        query_requests = []
-        target_ids = []
-        for emb_id, emb in uuid_to_vectors.items():
-            request = QueryRequest(query=emb, limit=config.mrr_top_k)
-            query_requests.append(request)
-            target_ids.append(emb_id)
+            for emb_id, emb in VECTOR_TYPE_TO_VECTOR_MAPPING[emb_type].items():
+                point = PointStruct(id=emb_id, vector=emb)
+                points.append(point)
 
-        mrr_sum = 0.0
+            for points_batch in _batched(points, _QDRANT_UPLOAD_BATCH_SIZE):
+                client.upload_points(
+                    collection_name=collection_name,
+                    points=points_batch,
+                    wait=True,
+                    parallel=1,
+                )
 
-        for request_batch, target_ids_batch in zip(
-            _batched(query_requests, _QDRANT_QUERY_BATCH_SIZE),
-            _batched(target_ids, _QDRANT_QUERY_BATCH_SIZE),
-            strict=True,
-        ):
-            query_responses = client.query_batch_points(
-                collection_name=VECTOR_TYPE_TO_COLLECTION_NAME[
-                    VECTOR_SIMILARITY_MAPPING[vec_type]
-                ],
-                requests=request_batch,
-            )
-            uuids = _extract_uuids_from_points(query_responses)
-            for response_uuids, target_id in zip(uuids, target_ids_batch, strict=True):
-                sample_mrr = _calculate_mrr_for_query(response_uuids, target_id)
-                mrr_sum += sample_mrr
+        ### Calculate MRR ###
+        mrr = 0.0
+        for vec_type in VECTOR_TYPES:
+            uuid_to_vectors = VECTOR_TYPE_TO_VECTOR_MAPPING[vec_type]
 
-        mrr += mrr_sum / len(target_ids) / len(VECTOR_TYPES)
+            query_requests = []
+            target_ids = []
+            for emb_id, emb in uuid_to_vectors.items():
+                request = QueryRequest(query=emb, limit=config.mrr_top_k)
+                query_requests.append(request)
+                target_ids.append(emb_id)
+
+            mrr_sum = 0.0
+
+            for request_batch, target_ids_batch in zip(
+                _batched(query_requests, _QDRANT_QUERY_BATCH_SIZE),
+                _batched(target_ids, _QDRANT_QUERY_BATCH_SIZE),
+                strict=True,
+            ):
+                query_responses = client.query_batch_points(
+                    collection_name=VECTOR_TYPE_TO_COLLECTION_NAME[
+                        VECTOR_SIMILARITY_MAPPING[vec_type]
+                    ],
+                    requests=request_batch,
+                )
+                uuids = _extract_uuids_from_points(query_responses)
+                for response_uuids, target_id in zip(
+                    uuids, target_ids_batch, strict=True
+                ):
+                    sample_mrr = _calculate_mrr_for_query(response_uuids, target_id)
+                    mrr_sum += sample_mrr
+
+            mrr += mrr_sum / len(target_ids) / len(VECTOR_TYPES)
+    finally:
+        # cleanup: delete temporary collections
+        for emb_type in VECTOR_TYPES:
+            collection_name = VECTOR_TYPE_TO_COLLECTION_NAME[emb_type]
+            if client.collection_exists(collection_name=collection_name):
+                client.delete_collection(collection_name=collection_name)
     return {"MRR": mrr}
