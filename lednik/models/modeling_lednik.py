@@ -1850,6 +1850,7 @@ class LednikModel(LednikPreTrainedModel):
             )
         hidden_state = self.output_projection(hidden_state)
         hidden_state = self.final_norm(hidden_state)
+
         sentence_embeddings = self._mean_pool(
             hidden_state=hidden_state,
             attention_mask=attention_mask,
@@ -1883,13 +1884,11 @@ class LednikModel(LednikPreTrainedModel):
                 raise ValueError(
                     f"When cu_seqlens is provided, hidden_state must be 2D, got {hidden_state.ndim}D"
                 )
-            sentence_embeddings = [
-                hidden_state[cu_seqlens[i] : cu_seqlens[i + 1]].mean(
-                    dim=0, keepdim=True
-                )
-                for i in range(cu_seqlens.size(0) - 1)
-            ]
-            sentence_embeddings = torch.cat(sentence_embeddings, dim=0)
+            sentence_embeddings = torch.segment_reduce(
+                hidden_state,
+                "mean",
+                offsets=cu_seqlens,
+            )
         else:
             if attention_mask is None:
                 raise NotImplementedError(
