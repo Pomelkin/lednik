@@ -1,11 +1,12 @@
+from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from typing import override
 
 import polars as pl
 from kostyl.utils import setup_logger
+from kostyl.utils.dirlock import DirLock
 
-from .utils import DirLock
 from .utils import is_empty_dir
 
 
@@ -84,7 +85,9 @@ class CheckpointCallback(Callback):
                         self.checkpoint_dir.glob(f"*{self.ckpt_name}*_ckpt.parquet")
                     )
                     if len(files) > 0:
-                        self.prefix = datetime.now().strftime("%Y|%m|%d_%H|%M|%S.")
+                        self.prefix = datetime.now(tz=UTC).strftime(
+                            "%Y|%m|%d_%H|%M|%S."
+                        )
                         logger.warning(
                             f"Found {len(files)} existing checkpoints with name {self.ckpt_name} in checkpoint directory {self.checkpoint_dir}.\n"
                             f"Prefix {self.prefix} will be added to all checkpoints filenames."

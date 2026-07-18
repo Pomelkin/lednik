@@ -117,9 +117,8 @@ def create_static_embeddings_model(
         }
 
         static_model_cfg = StaticEmbeddingsConfig.from_dict(config_dict)
-        static_model = StaticEmbeddingsModel.initialize(
-            static_model_cfg, embeddings_t
-        ).to(device=output_device, dtype=dtype)
+        static_model = StaticEmbeddingsModel.initialize(static_model_cfg, embeddings_t)
+        static_model.to(dtype=dtype, device=output_device)  # ty:ignore[missing-argument]
 
         if sif_coefficient is not None:
             token_pos_weights = calculate_token_weights(
@@ -135,7 +134,7 @@ def create_static_embeddings_model(
         static_model.replace_pos_weights(token_pos_weights)
 
         if modify_tokenizer:
-            customize_tokenizer(static_model.config, tokenizer)
+            customize_tokenizer(static_model.config, tokenizer)  # ty:ignore[invalid-argument-type]
 
         model.to(device=model_device)  # ty:ignore[missing-argument]
     return static_model
