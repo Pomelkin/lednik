@@ -8,6 +8,7 @@ from .outputs import StaticEmbeddingsOutput, LednikModelOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
 from .auto import get_config_class, AutoLednikModel
 from .auto import get_model_class
+from .auto import is_lednik_checkpoint
 
 __all__ = [
     "AutoLednikModel",
@@ -22,4 +23,5 @@ __all__ = [
     "StaticEmbeddingsSequenceClassifierOutput",
     "get_config_class",
     "get_model_class",
+    "is_lednik_checkpoint",
 ]

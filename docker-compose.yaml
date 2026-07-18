@@ -30,7 +30,7 @@ services:
     ports:
       - '127.0.0.1:6333:6333'
     profiles:
-      - qdrant
+      - training
 
   redis:
     image: redis:8.6.2-trixie
@@ -39,13 +39,51 @@ services:
       - '0.0.0.0:6379:6379'
     command: redis-server
     profiles:
-      - redis
+      - training
+
+  serving:
+    build:
+      context: .
+      dockerfile: docker/serving.Dockerfile
+      network: host
+      args:
+        - HOST_UID=${HOST_UID:?HOST_UID is required}
+        - HOST_GID=${HOST_GID:?HOST_GID is required}
+        - HOST_USER=${HOST_USER:?HOST_USER is required}
+    container_name: lednik-serving
+    volumes:
+      - ${HOME:?HOME is required}/clearml-pomelk1n.conf:/home/${HOST_USER}/clearml.conf:ro # clearml config file
+      - ${HOME:?HOME is required}/.cache/huggingface:/home/${HOST_USER}/.cache/huggingface # HF Hub cache on host FS
+      - ./checkpoints:/home/${HOST_USER}/lednik/checkpoints:ro # local checkpoints for --model/--tokenizer paths
+    ports:
+      - '0.0.0.0:8000:8000'
+    command:
+      - --model
+      - ${SERVING_MODEL:?SERVING_MODEL is required}
+      - --tokenizer
+      - ${SERVING_TOKENIZER:?SERVING_TOKENIZER is required}
+      - --max-batch-size
+      - ${SERVING_MAX_BATCH_SIZE:-1}
+      - --batch-timeout
+      - ${SERVING_BATCH_TIMEOUT:-0.0}
+      - --devices
+      - ${SERVING_DEVICES:-1}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "5", "6" ]
+              capabilities: [ gpu ]
+    profiles:
+      - serving
+    shm_size: 4G
 
   training:
     build:
       context: .
       dockerfile: docker/training.Dockerfile
-      network: host # proxy on host 127.0.0.1 must be reachable from build steps
+      network: host
       args:
         - HOST_UID=${HOST_UID:?HOST_UID is required}
         - HOST_GID=${HOST_GID:?HOST_GID is required}
@@ -78,9 +116,6 @@ services:
               capabilities: [ gpu ]
     ipc: host
     mem_limit: 128G
-
-    profiles:
-      - training
     shm_size: 4G
     stdin_open: true
     tty: true

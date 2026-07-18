@@ -49,6 +49,29 @@ def get_config_class(model_type: str) -> type[PreTrainedConfig]:
         ) from e
 
 
+def is_lednik_checkpoint(path: str | Path) -> bool:
+    """
+    Check whether a checkpoint belongs to a Lednik model (as opposed to a plain Transformers one).
+
+    A Lightning `.ckpt` file is always considered a Lednik checkpoint; for a checkpoint
+    directory the config's `architectures`/`model_type` are matched against the registries.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise ValueError(f"Path '{path}' does not exist.")
+
+    if path.is_file() and path.suffix == ".ckpt":
+        return True
+
+    config_path = path / "config.json"
+    if not config_path.exists():
+        raise ValueError(f"Path '{path}' does not contain a config.json file.")
+
+    config_dict = orjson.loads(config_path.read_bytes())
+    architectures: list[str] = config_dict.get("architectures") or []
+    return any(arch in LEDNIK_MODEL_REGISTRY for arch in architectures)
+
+
 class AutoLednikModel:
     """Factory that resolves a registered Lednik model class from a checkpoint and instantiates it."""
 
@@ -64,13 +87,13 @@ class AutoLednikModel:
         def get_model_class_from_config_dict(
             config_dict: dict,
         ) -> type[LednikPreTrainedModel]:
-            models_arhitectures: list[str] | None = config_dict.get("architectures")
-            if models_arhitectures is None:
+            architectures: list[str] | None = config_dict.get("architectures")
+            if architectures is None:
                 raise KeyError(
                     "The provided configuration dictionary does not contain an 'architectures' key. "
                     "Please ensure that the configuration dictionary is valid and contains the necessary information."
                 )
-            return get_model_class(models_arhitectures[0])
+            return get_model_class(architectures[0])
 
         if isinstance(path, str):
             path = Path(path)
@@ -92,6 +115,7 @@ class AutoLednikModel:
         # Lightning checkpoint format
         elif path.is_file() and path.suffix == ".ckpt":
             ckpt = torch.load(path, map_location="meta", weights_only=False)
+
             config_dict = ckpt.get("config", None)
             if config_dict is None:
                 raise KeyError(
