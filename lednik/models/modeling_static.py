@@ -1,26 +1,23 @@
-from typing import TypeVar
 from typing import override
 
 import torch
 import torch.nn.functional as F
-from kostyl.ml.integrations.lightning import LightningCheckpointModelMixin
 from kostyl.utils import setup_logger
 from torch import nn
-from transformers import PreTrainedModel
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 
+from .base import LednikPreTrainedModel
 from .configuration_static import StaticEmbeddingsConfig
 from .outputs import StaticEmbeddingsOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
+from .auto import register_model
 
 
 logger = setup_logger(fmt="only_message")
 
-TPreTrainedModel = TypeVar("TPreTrainedModel", bound="PreTrainedModel")
 
-
-class StaticEmbeddingsPreTrainedModel(LightningCheckpointModelMixin, PreTrainedModel):
+class StaticEmbeddingsPreTrainedModel(LednikPreTrainedModel):
     """
     An abstract base class for static embedding models, inheriting from `PreTrainedModel`.
 
@@ -28,7 +25,7 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointModelMixin, PreTrainedM
     overridden methods for loading and saving pretrained models that include tokenizer handling.
     """
 
-    config: StaticEmbeddingsConfig
+    config_class: type[StaticEmbeddingsConfig] = StaticEmbeddingsConfig
     base_model_prefix = "model"
 
     @override
@@ -50,6 +47,7 @@ class StaticEmbeddingsPreTrainedModel(LightningCheckpointModelMixin, PreTrainedM
         return
 
 
+@register_model
 class StaticEmbeddingsModel(StaticEmbeddingsPreTrainedModel):
     """Static Embeddings Model."""
 
@@ -182,6 +180,7 @@ class StaticEmbeddingsClassificationHead(nn.Module):
         return logits
 
 
+@register_model
 class StaticEmbeddingsForSequenceClassification(StaticEmbeddingsPreTrainedModel):
     """Static Embeddings Model for sequence classification."""
 

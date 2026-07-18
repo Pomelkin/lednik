@@ -85,7 +85,7 @@ class LednikConfig(PreTrainedConfig):
         """Number of transformer layers."""
         return len(self.layers)
 
-    def __post_init__(self, **kwargs) -> None:  # noqa: D105
+    def __post_init__(self, **kwargs) -> None:
         if self.classifier_pooling not in {"cls", "mean"}:
             raise ValueError(
                 f"Invalid classifier_pooling: {self.classifier_pooling}. "

@@ -25,7 +25,7 @@ class StaticEmbeddingsConfig(PreTrainedConfig):
     # Whether tokenizer was customized.
     is_tokenizer_customized: bool = True
 
-    def __post_init__(self, **kwargs: Any) -> None:  # noqa: D105
+    def __post_init__(self, **kwargs: Any) -> None:
         self.num_attention_heads = 0
         self.num_hidden_layers = 0
         super().__post_init__(**kwargs)

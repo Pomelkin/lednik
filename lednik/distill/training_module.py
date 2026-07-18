@@ -44,14 +44,12 @@ from lednik.dist_utils import get_fsdp2_policies
 from lednik.dist_utils import get_fsdp_wrap_classes
 from lednik.dist_utils import select_wrap_policy
 from lednik.distill.configs import DistillationConfig
-from lednik.distill.validation import (
-    EvaluationDispatcher,
-    EvaluationRunnerConfig,
-    EvaluationRunner,
-)
+from lednik.distill.validation import EvaluationDispatcher
+from lednik.distill.validation import EvaluationRunner
+from lednik.distill.validation import EvaluationRunnerConfig
 from lednik.distill.validation import RedisConfig
 from lednik.distill.validation import ValidationContract
-from lednik.models import LednikModel
+from lednik.models import LednikPreTrainedModel
 from lednik.models import StaticEmbeddingsModel
 from lednik.models.outputs import LednikModelOutput
 from lednik.models.outputs import StaticEmbeddingsOutput
@@ -129,11 +127,11 @@ def _unwrap_model(model: nn.Module) -> nn.Module:
 
 
 class DistillationModule(KostylLightningModule):
-    """A PyTorch Lightning module for fine-tuning a static embeddings model via knowledge distillation."""
+    """A PyTorch Lightning module for distillation Lednik models from teacher models."""
 
     def __init__(
         self,
-        student: StaticEmbeddingsModel | LednikModel,
+        student: LednikPreTrainedModel,
         tokenizer: SentencePieceBackend | TokenizersBackend | PreTrainedTokenizerBase,
         teacher_hidden_size: int,
         train_cfg: DistillationConfig,
@@ -324,7 +322,9 @@ class DistillationModule(KostylLightningModule):
                     mesh=dp_mesh,
                     mp_policy=policies["mp_policy"],
                 )
-        logger.info(f"Using attn implementation: {self.student.config._attn_implementation}")
+        logger.info(
+            f"Using attn implementation: {self.student.config._attn_implementation}"
+        )
         self._model_configured = True
         return
 

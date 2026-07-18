@@ -11,7 +11,6 @@ from kostyl.ml.configs import DDPStrategyConfig
 from kostyl.ml.configs import FSDP1StrategyConfig
 from kostyl.ml.configs import SingleDeviceStrategyConfig
 from kostyl.ml.configs.structs.training_settings import FSDP2StrategyConfig
-from kostyl.ml.integrations.clearml import load_model_from_clearml
 from kostyl.ml.integrations.clearml import load_tokenizer_from_clearml
 from kostyl.ml.integrations.lightning.callbacks import setup_checkpoint_callback
 from kostyl.ml.integrations.lightning.callbacks import setup_early_stopping_callback
@@ -31,7 +30,7 @@ from lightning.pytorch.strategies import Strategy
 from transformers import TokenizersBackend
 
 from lednik.distill.training_module import DistillationModule
-from lednik.models import MODEL_MAPPING
+from lednik.models import AutoLednikModel
 from pipelines.distill.configs import TrainingSettings
 from pipelines.distill.datamodule import DataModule
 
@@ -161,7 +160,6 @@ def _distill_model(
 ) -> None:
     L.seed_everything(42, workers=True)
 
-    
     task: Task = Task.init(
         project_name="Lednik",
         task_name="Model Distillation",
@@ -187,19 +185,19 @@ def _distill_model(
     clearml_teacher = InputModel(model_id=settings.teacher_model_id)
 
     ### Student Model Loading ###
-    model_cls = MODEL_MAPPING[settings.model_cfg.model_type]
+    clearml_student = InputModel(model_id=settings.student_model_id)
+    clearml_student.connect(
+        task=task, name="Student Model", ignore_remote_overrides=True
+    )
+    student_local_path = Path(clearml_student.get_local_copy())
 
     load_kwargs = settings.model_cfg.override_params
     if settings.is_student_lightning_checkpoint:
-        load_kwargs.update({"weights_prefix": settings.checkpoint_weight_prefix})
+        load_kwargs["weights_prefix"] = settings.checkpoint_weight_prefix
+        load_kwargs["strict_prefix"] = True
 
-    student, clearml_student = load_model_from_clearml(
-        model_id=settings.student_model_id,
-        model=model_cls,
-        task=task,
-        name="Model to Distill (Student)",
-        ignore_remote_overrides=True,
-        ignore_mismatched_sizes=True,
+    student = AutoLednikModel.from_pretrained(
+        student_local_path,
         **load_kwargs,
     )
 

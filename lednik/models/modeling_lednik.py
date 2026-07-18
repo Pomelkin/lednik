@@ -8,7 +8,6 @@ from typing import cast
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from kostyl.ml.integrations.lightning import LightningCheckpointModelMixin
 from kostyl.utils import setup_logger
 from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
@@ -21,7 +20,6 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_rope_utils import RopeParameters
 from transformers.modeling_rope_utils import dynamic_rope_update
-from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import is_flash_attn_2_available
 from transformers.utils import is_flash_attn_4_available
 from transformers.utils.generic import is_flash_attention_requested
@@ -29,8 +27,10 @@ from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
 
+from .base import LednikPreTrainedModel as BaseLednikPreTrainedModel
 from .configuration_lednik import LednikConfig
 from .outputs import LednikModelOutput
+from .auto import register_model
 
 
 if is_flash_attn_2_available():
@@ -79,7 +79,7 @@ class LednikRotaryEmbedding(nn.Module):
         self.rope_type = config.rope_parameters["rope_type"]
 
         rope_init_fn = (
-            ROPE_INIT_FUNCTIONS[self.rope_type]  # type: ignore
+            ROPE_INIT_FUNCTIONS[self.rope_type]  # ty:ignore[invalid-argument-type]
             if self.rope_type != "default"
             else self.compute_default_rope_parameters
         )
@@ -162,7 +162,7 @@ class LednikRotaryEmbedding(nn.Module):
         return cos.to(x.dtype), sin.to(x.dtype)
 
     def extra_repr(self) -> str:  # noqa: D102
-        return f"rope_type={self.rope_type}, max_seq_len_cached={self.max_seq_len_cached}, theta={self.config.rope_parameters['rope_theta']}"  # type: ignore
+        return f"rope_type={self.rope_type}, max_seq_len_cached={self.max_seq_len_cached}, theta={self.config.rope_parameters['rope_theta']}"  # ty:ignore[not-subscriptable]
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -252,7 +252,7 @@ class RotaryEmbUnpad(torch.autograd.Function):
             interleaved=False,
         )
         ctx.save_for_backward(cos, sin, cu_seqlens)
-        ctx.max_seqlen = max_seqlen  # type: ignore
+        ctx.max_seqlen = max_seqlen  # ty:ignore[unresolved-attribute]
         q, k = qk.chunk(dim=1, chunks=2)
         return q, k
 
@@ -272,7 +272,7 @@ class RotaryEmbUnpad(torch.autograd.Function):
             cos=cos,
             sin=sin,
             cu_seqlens=cu_seqlens,
-            max_seqlen=ctx.max_seqlen,  # type: ignore
+            max_seqlen=ctx.max_seqlen,  # ty:ignore[unresolved-attribute]
             inplace=True,
             interleaved=False,
             conjugate=True,
@@ -1059,16 +1059,14 @@ class LednikFullAttention(nn.Module):
             if not self.is_moba
             else LEDNIK_ATTENTION_FUNCTION_MOBA
         )
-        attn_output, attention_weights = ATTN_FUNC[
-            self.config._attn_implementation  # pyrefly: ignore
-        ](
+        attn_output, attention_weights = ATTN_FUNC[self.config._attn_implementation](
             q=q,
             k=k,
             v=v,
             module=self,
-            attention_mask=attention_mask,  # type: ignore
-            cu_seqlens=cu_seqlens,  # type: ignore
-            max_seqlen=max_seqlen,  # type: ignore
+            attention_mask=attention_mask,  # ty:ignore[invalid-argument-type]
+            cu_seqlens=cu_seqlens,  # ty:ignore[invalid-argument-type]
+            max_seqlen=max_seqlen,  # ty:ignore[invalid-argument-type]
         )
 
         hidden_state = attn_output.reshape(*target_size)
@@ -1338,10 +1336,7 @@ class LednikEmbeddings(nn.Module):
         return self.dropout(self.emb_norm(hidden_states))
 
 
-class LednikPreTrainedModel(
-    PreTrainedModel,
-    LightningCheckpointModelMixin,  # pyrefly: ignore
-):
+class LednikPreTrainedModel(BaseLednikPreTrainedModel):
     """Lednik PreTrained Model class."""
 
     config_class = LednikConfig
@@ -1462,8 +1457,6 @@ class UnpaddedInputs:
             "cu_seqlens": self.cu_seqlens,
             "max_seqlen": self.max_seqlen,
             "non_pad_indices": self.non_pad_indices,
-            # "position_ids": self.unpadded_position_ids,
-            # "labels": self.unpadded_labels,
         }
         if self.unpadded_position_ids is not None:
             dict_inputs["position_ids"] = self.unpadded_position_ids
@@ -1599,6 +1592,7 @@ def pad_outputs(
     return padded_outputs
 
 
+@register_model
 class LednikModel(LednikPreTrainedModel):
     """Lednik Model."""
 
