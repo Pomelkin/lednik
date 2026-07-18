@@ -160,6 +160,7 @@ ignore = [
   "N817",   # CamelCase import aliased as acronym
   "S311",  # Standard pseudo-random generators are not suitable for security/cryptographic purposes
   "PIE790", # Unnecessary placeholder
+  "W293",  # Blank line contains whitespace
 ]
 
 [tool.ruff.lint.mccabe]
