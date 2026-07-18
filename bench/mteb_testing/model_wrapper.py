@@ -1,17 +1,23 @@
-from typing import Literal, Any, cast
+from typing import Any
 
 import numpy as np
 import torch
-from torch import Tensor
 import torch.nn.functional as F
-from lednik.models import LednikModel, StaticEmbeddingsModel, StaticEmbeddingsOutput
-from transformers import SentencePieceBackend, TokenizersBackend, PreTrainedModel
 from kostyl.utils import setup_logger
-from mteb.types import BatchedInput, PromptType
 from mteb.abstasks.task_metadata import TaskMetadata
-from torch.utils.data import DataLoader
 from mteb.models.model_meta import ModelMeta
-from lednik.emb_utils import get_sentence_embedding
+from mteb.types import BatchedInput
+from mteb.types import PromptType
+from torch import Tensor
+from torch.utils.data import DataLoader
+from transformers import SentencePieceBackend
+from transformers import TokenizersBackend
+
+from lednik.models import LednikModelOutput
+from lednik.models import LednikPreTrainedModel
+from lednik.models import StaticEmbeddingsModel
+from lednik.models import StaticEmbeddingsOutput
+
 
 logger = setup_logger(name="mteb/model_wrapper.py", fmt="default")
 
@@ -59,15 +65,13 @@ class MTEBModelWrapper:
 
     def __init__(
         self,
-        model: LednikModel | StaticEmbeddingsModel | PreTrainedModel,
+        model: LednikPreTrainedModel,
         tokenizer: SentencePieceBackend | TokenizersBackend,
         model_id: str | None = None,
         device: str | torch.device | None = None,
         dtype: torch.dtype | None = None,
         max_length: int | None = 512,
         normalize_default: bool = True,
-        pooling: Literal["mean", "cls", "last"]
-        | None = None,  # для Lednik: "mean" или "cls"
         model_name_for_meta: str | None = None,  # for ModelMeta.name
     ) -> None:
         """Create the wrapper.
@@ -83,8 +87,6 @@ class MTEBModelWrapper:
                 `bfloat16` on CUDA when supported).
             max_length: Max sequence length for tokenization.
             normalize_default: Default L2-normalization behavior for `encode`.
-            pooling: Pooling strategy for models that output token embeddings.
-                Ignored for `StaticEmbeddingsModel`.
             model_name_for_meta: Optional custom name for `ModelMeta.name`. If not provided, defaults to "Lednik/" + model class name.
         """
         self.model = model
@@ -92,7 +94,6 @@ class MTEBModelWrapper:
 
         self.max_length = max_length
         self.normalize_default = normalize_default
-        self.pooling = pooling
         self.special_tokens = _get_tensor_with_spec_tok_ids(tokenizer)
         self.model_id = model_id
         self.model_name_for_meta = model_name_for_meta
@@ -112,23 +113,26 @@ class MTEBModelWrapper:
         if dtype is None:
             dtype = _select_dtype(device)
 
-        self.model.to(device=device, dtype=dtype, non_blocking=True)  # ty:ignore[missing-argument]
+        self.model.to(device=device, dtype=dtype)  # ty:ignore[missing-argument]
         self.model.eval()
 
-        if (
-            self.max_length is not None
-            and self.tokenizer.model_max_length != self.max_length
-        ):
-            logger.warning(
-                f"Tokenizer max_length ({self.tokenizer.model_max_length}) is different from wrapper max_length ({self.max_length})."
-                f" Wrappers max_length will be used."
-            )
+        max_model_length = getattr(
+            self.model.config,
+            "max_position_embeddings",
+            int(self.tokenizer.model_max_length),
+        )
 
-        if self.pooling is not None and isinstance(self.model, StaticEmbeddingsModel):
-            self.pooling = None
-            logger.warning(
-                "Pooling strategy is not applicable for StaticEmbeddingsModel, since the model performs its own pooling in `forward`."
-            )
+        self.max_length = (
+            min(self.max_length, max_model_length)
+            if self.max_length is not None
+            else max_model_length
+        )
+
+        logger.info(
+            "MTEBModelWrapper setup complete, current configuration:\n"
+            f" - Model {type(self.model).__name__} is on device {device} with dtype {dtype}. "
+            f" - Tokenizer max_length={self.tokenizer.model_max_length}, wrapper max_length={self.max_length}."
+        )
         return
 
     @property
@@ -142,7 +146,7 @@ class MTEBModelWrapper:
         return next(self.model.parameters()).dtype
 
     @torch.inference_mode()
-    def encode(  # noqa: C901
+    def encode(
         self,
         inputs: DataLoader[BatchedInput],
         *,
@@ -209,7 +213,7 @@ class MTEBModelWrapper:
             inputs = self.tokenizer(
                 batch_texts,
                 padding=True,
-                truncation=self.max_length is not None,
+                truncation=True,
                 max_length=self.max_length,
                 return_tensors="pt",
                 return_attention_mask=True,
@@ -229,22 +233,11 @@ class MTEBModelWrapper:
                     inputs["attention_mask"] * spec_tok_mask
                 ).long()
 
-            output = self.model(
+            output: LednikModelOutput | StaticEmbeddingsOutput = self.model(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
             )
-
-            if isinstance(self.model, StaticEmbeddingsModel):
-                output = cast(StaticEmbeddingsOutput, output)
-                emb = output.sentence_embeddings
-            else:
-                if self.pooling is None:
-                    raise ValueError(
-                        "Pooling strategy must be specified for non-StaticEmbeddingsModel."
-                    )
-                emb = get_sentence_embedding(
-                    output[0], inputs["attention_mask"], self.pooling
-                )
+            emb = output.sentence_embeddings
 
             if truncate_dim is not None:
                 emb = emb[:, :truncate_dim]
@@ -322,11 +315,9 @@ class MTEBModelWrapper:
     def _collect_texts(
         self, inputs: str | list[str] | DataLoader[BatchedInput]
     ) -> list[str]:
-        # legacy: encode("text")
         if isinstance(inputs, str):
             return [inputs]
 
-        # legacy: encode(["a", "b"])
         if isinstance(inputs, list) and (not inputs or isinstance(inputs[0], str)):
             return inputs  # type: ignore[return-value]  # ty:ignore[invalid-return-type]
 
@@ -382,7 +373,7 @@ class MTEBModelWrapper:
             public_training_code=None,
             public_training_data=True,
             framework=["PyTorch"],
-            similarity_fn_name="cosine",  # ty:ignore[invalid-argument-type]
+            similarity_fn_name="cosine",
             use_instructions=False,
             training_datasets=None,
         )

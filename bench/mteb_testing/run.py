@@ -1,36 +1,24 @@
-import json
 import copy
-from dataclasses import dataclass
-from typing import Literal
+import json
 from collections import defaultdict
-from typing import Any
-from mteb.get_tasks import MTEBTasks
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
 import click
 import mteb
-from kostyl.ml.integrations.clearml import (
-    load_model_from_clearml,
-    load_tokenizer_from_clearml,
-)
-from lednik.models import (
-    LednikModel,
-    StaticEmbeddingsModel,
-    LednikConfig,
-    StaticEmbeddingsConfig,
-)
-from bench.mteb import MTEBModelWrapper
-from clearml import InputModel, Task
+from clearml import InputModel
+from clearml import Task
+from kostyl.ml.integrations.clearml import load_tokenizer_from_clearml
 from kostyl.utils import setup_logger
-from transformers import AutoModel
+from mteb.get_tasks import MTEBTasks
 from mteb.results.model_result import ModelResult
+
+from lednik.models import AutoLednikModel
+from mteb_testing.model_wrapper import MTEBModelWrapper
 
 
 logger = setup_logger()
-
-model_mapping = {
-    StaticEmbeddingsConfig.model_type: StaticEmbeddingsModel,
-    LednikConfig.model_type: LednikModel,
-}
 
 too_big_bench = {
     "MrTidyRetrieval",
@@ -42,6 +30,8 @@ too_big_bench = {
     "NeuCLIR2022RetrievalHardNegatives",
     "NeuCLIR2023Retrieval",
     "NeuCLIR2023RetrievalHardNegatives",
+    "SIB200Classification.v2",
+    "EmotionAnalysisPlus",
 }
 
 
@@ -51,23 +41,6 @@ class MTEBRunScores:  # noqa: D101
     avg_score_per_task: dict[str, float]
     avg_score: float
     avg_score_task: float
-
-
-def _determine_lednik_model_type(
-    model_id: str,
-) -> type[LednikModel] | type[StaticEmbeddingsModel] | type[AutoModel]:
-    clearml_model = InputModel(model_id=model_id)
-    model_type = clearml_model.config_dict.get("model_type", None)
-    if model_type is None:
-        raise ValueError(
-            f"Model type not found in ClearML model config for model_id={model_id}. "
-            "Make sure the model was logged with the correct configuration."
-        )
-    model_class = model_mapping.get(model_type, AutoModel)
-    logger.info(
-        f"Determined model class for model_id={model_id[:10]}: {model_class.__name__}"
-    )
-    return model_class
 
 
 def _setup_output_file(path: Path) -> None:
@@ -162,7 +135,6 @@ def main(
     tokenizer_id: str | None = None,
     max_sequence_length: int | None = None,
     batch_size: int = 128,
-    pooling: Literal["mean", "cls", "last"] = "mean",
 ) -> None:
     """Main function to run MTEB benchmark on Russian text tasks."""
     task: Task = Task.init(
@@ -184,28 +156,23 @@ def main(
             raise ValueError(
                 "tokenizer_id must be provided when is_clearml_model is True"
             )
-        model_cls = _determine_lednik_model_type(model_id)
+        clearml_model = InputModel(model_id=model_id)
+        clearml_model.connect(
+            task=task, name="Model for MTEB Benchmark Run", ignore_remote_overrides=True
+        )
+        local_path = clearml_model.get_local_copy()
 
-        kwargs = (
-            {"weights_prefix": "student"}
-            if "LightningCheckpoint" in InputModel(model_id).tags
-            else {}
-        )  # TODO: remove this kostyl
-        model, clearml_model = load_model_from_clearml(
-            model_id=model_id,
-            model=model_cls,
-            task=task,
-            **kwargs,  # type: ignore
+        model = AutoLednikModel.from_pretrained(
+            local_path, weights_prefix="student.", strict_prefix=True
         )
 
-        tokenizer, _ = load_tokenizer_from_clearml(model_id=tokenizer_id, task=task)
+        tokenizer, _ = load_tokenizer_from_clearml(tokenizer_id=tokenizer_id, task=task)
 
         model_wrapper = MTEBModelWrapper(
             model=model,
             tokenizer=tokenizer,
             max_length=max_sequence_length,
             model_id=model_id,
-            pooling=pooling,
             model_name_for_meta=clearml_model.name,
         )
     else:
@@ -223,7 +190,7 @@ def main(
             )
             if len(task.languages) == 1
             and task.modalities == ["text"]
-            and task.__class__.__name__ not in too_big_bench
+            and task.metadata.name not in too_big_bench
         ]  # ty:ignore[invalid-argument-type]
     )
     run_result = mteb.evaluate(
@@ -248,9 +215,7 @@ def main(
         model_revision=run_result.model_revision,
         output_file=output_file,
         task_id=task.task_id,
-        num_parameters=model_wrapper.mteb_model_meta.n_parameters
-        if getattr(model_wrapper, "mteb_model_meta", None)
-        else None,
+        num_parameters=model_wrapper.mteb_model_meta.n_parameters,
     )
     return
 
@@ -303,13 +268,6 @@ def main(
     show_default=True,
     help="Batch size for MTEB encode() (encode_kwargs.batch_size).",
 )
-@click.option(
-    "--pooling",
-    type=click.Choice(["mean", "cls", "last"], case_sensitive=False),
-    default="mean",
-    show_default=True,
-    help="Pooling strategy to use for the model wrapper when handling token embeddings.",
-)
 def cli(
     model_id: str,
     is_clearml_model: bool,
@@ -317,7 +275,6 @@ def cli(
     tokenizer_id: str | None,
     max_sequence_length: int | None,
     batch_size: int,
-    pooling: Literal["mean", "cls", "last"],
 ) -> None:
     """Run the MTEB benchmark on Russian text-only tasks."""
     main(
@@ -327,7 +284,6 @@ def cli(
         tokenizer_id=tokenizer_id,
         max_sequence_length=max_sequence_length,
         batch_size=batch_size,
-        pooling=pooling,
     )
     return
 
