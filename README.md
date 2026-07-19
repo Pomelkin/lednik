@@ -29,9 +29,7 @@ Three student tiers cover the quality/cost trade-off:
 
 ## Results
 
-Quality on the Russian subset of MTEB (RuMTEB) versus pure forward-pass speed
-(bfloat16, RTX 3080, batch of 8 sequences of 128–4096 tokens, ~10.9k real tokens per batch,
-`triton.testing.do_bench` median):
+Quality on the Russian subset of MTEB (RuMTEB) versus pure forward-pass speed:
 
 | Model | Params | RuMTEB AvgScore | Forward median | Tokens/sec |
 | --- | ---: | ---: | ---: | ---: |
@@ -40,10 +38,11 @@ Quality on the Russian subset of MTEB (RuMTEB) versus pure forward-pass speed
 | Lednik Transformer — full attention (varlen) | 56.0M | 0.490 | 31.0 ms | 349.4k |
 | Static Embeddings | 17.8M | 0.421 | 0.32 ms | 32.3M |
 
+<sub>*Setup: bfloat16 on a single RTX 3080; batches of 8 sequences of 128–4096 tokens
+(~10.9k real tokens per batch); medians reported by `triton.testing.do_bench`.*</sub>
+
 The transformer students keep ~82% of the teacher's RuMTEB score at **6× fewer parameters
-and 13–18× faster forward**; the static model trades another chunk of quality for a
-practically free forward pass. The hybrid's linear-attention advantage grows with sequence
-length — at the 128–4096 range above the full-attention student is still ahead.
+and 13–18× faster forward**.
 
 Raw records live in [`bench/mteb_testing/results/`](./bench/mteb_testing/results) and
 [`bench/forward_testing/results/`](./bench/forward_testing/results).
@@ -72,7 +71,7 @@ Raw records live in [`bench/mteb_testing/results/`](./bench/mteb_testing/results
 Full guides live in [`docs/`](./docs):
 
 - **[Model Initialization](./docs/model_initialization.md)** — create a student from a
-  teacher (the architectures, factory functions, configs, save/reload, inference).
+  teacher: the architectures, factory functions, configs, save/reload and inference.
 - **[Training without ClearML](./docs/training_without_clearml.md)** — build the config,
   instantiate the training module, the collator data format, and a minimal `Trainer` loop.
 - **[Training with ClearML](./docs/training_with_clearml.md)** — the `pipelines/distill/`
@@ -192,11 +191,10 @@ docker compose --profile serving build serving
 docker compose --profile serving up -d
 ```
 
-Configuration goes through `.env` (`SERVING_MODEL`, `SERVING_TOKENIZER`,
-`SERVING_MAX_BATCH_SIZE`, `SERVING_BATCH_TIMEOUT`, `SERVING_NUM_WORKERS`,
-`SERVING_NUM_API_SERVERS`, `SERVING_FAST_QUEUE`, `SERVING_MAX_SEQ_LENGTH`). Model and
-tokenizer references accept a local path, a ClearML model ID, or an HF Hub repo id.
-See [Usage](./docs/usage.md) for the request protocol and scaling knobs.
+Configuration goes through the `SERVING_*` variables in `.env`: the model and tokenizer
+references (a local path, a ClearML model ID, or an HF Hub repo id), dynamic batching,
+worker and API-server counts, and the sequence-length limit. See [Usage](./docs/usage.md)
+for the full variable list, the request protocol and scaling knobs.
 
 ## Models
 
