@@ -1527,6 +1527,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "accelerate" },
+    { name = "einops" },
     { name = "kostyl-toolkit" },
     { name = "liger-kernel" },
     { name = "loguru" },
@@ -1580,10 +1581,16 @@ serving = [
     { name = "lightning" },
     { name = "litserve" },
 ]
+test = [
+    { name = "lightning" },
+    { name = "pytest" },
+    { name = "sage" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.13.0" },
+    { name = "einops", specifier = ">=0.8.2" },
     { name = "kostyl-toolkit", editable = "kostyl_toolkit" },
     { name = "liger-kernel", specifier = ">=0.6.4" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -1636,6 +1643,11 @@ serving = [
     { name = "click", specifier = ">=8.3.1" },
     { name = "lightning", specifier = ">=2.5.6" },
     { name = "litserve", specifier = ">=0.2.17" },
+]
+test = [
+    { name = "lightning", specifier = ">=2.5.6" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "sage", git = "https://github.com/Pomelkin/sage" },
 ]
 
 [[package]]

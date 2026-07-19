@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "accelerate>=1.13.0",
+  "einops>=0.8.2",
   "kostyl-toolkit",
   "liger-kernel>=0.6.4",
   "loguru>=0.7.3",
@@ -59,6 +60,11 @@ serving = [
     "click>=8.3.1",
     "lightning>=2.5.6",
 ]
+test = [
+    "pytest>=9.1.1",
+    "lightning>=2.5.6",
+    "sage",
+]
 
 [tool.uv]
 default-groups = ["dev", "distill"]
@@ -74,6 +80,11 @@ kostyl-toolkit = { workspace = true }
 flash-attn = { path = "wheels/flash_attn-2.8.3-cp313-cp313-linux_x86_64.whl" }
 sage = { git = "https://github.com/Pomelkin/sage" }
 causal-conv1d = { path = "wheels/causal_conv1d-1.6.2.post1-cp313-cp313-linux_x86_64.whl" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--durations=0 --durations-min=0.01"
 
 [tool.pyrefly]
 project-excludes = [
@@ -165,6 +176,14 @@ ignore = [
   "S311",  # Standard pseudo-random generators are not suitable for security/cryptographic purposes
   "PIE790", # Unnecessary placeholder
   "W293",  # Blank line contains whitespace
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "D",  # Docstrings are not required in tests
+  "S101",  # assert statements are fine in tests
+  "S106",  # False positives: pad_token/eos_token kwargs are not passwords
+  "RUF043",  # Plain-string pytest.raises match patterns are fine
 ]
 
 [tool.ruff.lint.mccabe]
