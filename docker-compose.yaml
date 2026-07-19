@@ -56,6 +56,10 @@ services:
       - ${HOME:?HOME is required}/.cache/huggingface:/home/${HOST_USER}/.cache/huggingface # HF Hub cache on host FS
       - ${HOME:?HOME is required}/.clearml-docker:/home/${HOST_USER}/.clearml # clearml cache directory
       - /tmp/nvidia-mps:/tmp/nvidia-mps # NVIDIA MPS socket directory
+      - ${HOME}/.cache/lednik-triton:/home/${HOST_USER}/.triton
+    environment:
+      - TRITON_PRINT_AUTOTUNING=1
+      - TRITON_CACHE_AUTOTUNING=1
     ports:
       - '0.0.0.0:8000:8000'
     command:
@@ -71,8 +75,6 @@ services:
       - ${SERVING_DEVICES:-1}
       - --num-workers
       - ${SERVING_NUM_WORKERS:-1}
-      - --num-api-servers
-      - ${SERVING_NUM_API_SERVERS:-1}
       - --fast-queue
       - ${SERVING_FAST_QUEUE:-false}
       - --max-seq-length

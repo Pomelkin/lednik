@@ -1,3 +1,4 @@
+from tokenizers import Tokenizer
 import torch
 from transformers import AutoModel, AutoTokenizer
 from lednik.models import (
@@ -7,35 +8,55 @@ from lednik.models import (
     LednikModelOutput,
     StaticEmbeddingsOutput,
 )
-from pathlib import Path
+from lednik.path_utils import determine_path
 from litserve.specs.base import LitSpec
 from typing import Union, Optional, TYPE_CHECKING, override, cast
 import litserve as ls
 from litserve import LitAPI
 from kostyl.utils import setup_logger
-from huggingface_hub import repo_exists, snapshot_download
 from transformers.modeling_utils import PreTrainedModel
 from transformers import SentencePieceBackend, TokenizersBackend
 import torch.nn.functional as F
 from transformers.modeling_outputs import ModelOutput as TransformersModelOutput
+from pydantic import BaseModel, Field, model_validator
 import click
 
 if TYPE_CHECKING:
     from litserve.loops.base import LitLoop
     from litserve.mcp import MCP
 
-try:
-    from clearml import InputModel
-
-    CLEAR_ML_AVAILABLE = True
-except ImportError:
-    CLEAR_ML_AVAILABLE = False
-
 logger = setup_logger(fmt="message_only")
 
 type ModelInstance = LednikPreTrainedModel | PreTrainedModel
 type TokenizerInstance = SentencePieceBackend | TokenizersBackend
 type ModelOutput = LednikModelOutput | StaticEmbeddingsOutput | TransformersModelOutput
+
+
+class EmbedRequest(BaseModel):
+    """Temporary tokens-only request payload (bypasses the OpenAI spec for load tests)."""
+
+    token_ids: list[int] | None = Field(
+        default=None,
+        validate_default=False,
+        min_length=1,
+    )
+    text: str | None = Field(
+        default=None,
+        validate_default=False,
+        min_length=1,
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_token_ids_or_text(cls, values: dict) -> dict:
+        # non-dict bodies fall through to pydantic's own validation (422, not 500)
+        if isinstance(values, dict) and (values.get("token_ids") is None) == (
+            values.get("text") is None
+        ):
+            raise ValueError(
+                "Request must contain either 'token_ids' or 'text', but not both."
+            )
+        return values
 
 
 class LednikServer(LitAPI):
@@ -82,11 +103,11 @@ class LednikServer(LitAPI):
             enable_async=enable_async,
         )
 
-        self.model_path = self._determine_path(
+        self.model_path = determine_path(
             model_path_name_or_id,
             is_tokenizer=False,
         )
-        self.tokenizer_path = self._determine_path(
+        self.tokenizer_path = determine_path(
             tokenizer_path_name_or_id,
             is_tokenizer=True,
         )
@@ -94,59 +115,8 @@ class LednikServer(LitAPI):
         self.max_seq_length = max_seq_length
         self.model: ModelInstance | None = None
         self.tokenizer: TokenizerInstance | None = None
+        self.backend_tokenizer: Tokenizer | None = None
         return
-
-    def _determine_path(self, path_name_or_id: str, is_tokenizer: bool) -> str:
-        path: Path | None = None
-        # Then check if it's a ClearML model ID
-        if CLEAR_ML_AVAILABLE:
-            model_id = path_name_or_id
-            try:
-                clearml_model = InputModel(model_id=model_id)
-                local_path = clearml_model.get_local_copy()
-                path = Path(local_path).resolve()
-                logger.info(
-                    f"Resolved ClearML model ID '{model_id}' to local path '{path}'."
-                )
-            except Exception:  # noqa: S110
-                pass
-
-        # If neither, try to check if it's a Hugging Face model ID
-        if repo_exists(path_name_or_id):
-            repo_id = path_name_or_id
-            try:
-                local_path = snapshot_download(repo_id=repo_id)
-                path = Path(local_path).resolve()
-                logger.info(
-                    f"Resolved Hugging Face model ID '{repo_id}' to local path '{path}'."
-                )
-            except Exception:  # noqa: S110
-                pass
-
-        # Check if the provided string is a local path
-        if path is None:
-            path = Path(path_name_or_id)
-            logger.info(f"Using provided local path '{path}'.")
-
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Path '{path}' does not exist. Please provide a valid local path, ClearML model ID, or Hugging Face model ID."
-            )
-
-        # Path content validation
-        # tokenizer validation
-        if is_tokenizer:
-            if not (path.is_dir() and (path / "tokenizer.json").exists()):
-                raise ValueError(f"Path '{path}' is not a valid tokenizer directory.")
-        # model validation
-        elif not (
-            (path.is_dir() and (path / "config.json").exists())
-            or (path.is_file() and path.suffix == ".ckpt")
-        ):
-            raise ValueError(
-                f"Path '{path}' is not a valid Transformers checkpoint directory or Lightning .ckpt file."
-            )
-        return str(path.resolve())
 
     @override
     def setup(self, device: str | torch.device) -> None:
@@ -181,18 +151,20 @@ class LednikServer(LitAPI):
                 f"Failed to load tokenizer from path '{self.tokenizer_path}'."
             )
 
-        # model and tokenizer setup
+        # tokenizer  and model setup
         self.tokenizer = tokenizer
         self.model.to(device=device, dtype=dtype).eval()  # ty:ignore[missing-argument]
         logger.info("Model and tokenizer loaded successfully.")
 
         # Max sequence length setup
-        max_model_length = self.max_seq_length or getattr(
+        # determine values
+        max_model_length = getattr(
             self.model.config,
             "max_position_embeddings",
             int(self.tokenizer.model_max_length),
         )
-        max_seq_length = min(self.max_seq_length or max_model_length, max_model_length)
+        max_seq_length = self.max_seq_length or max_model_length
+        # adjust if needed
         if max_seq_length % 8 != 0:
             max_seq_length = (max_seq_length // 8) * 8
             logger.warning(
@@ -200,31 +172,111 @@ class LednikServer(LitAPI):
             )
         self.max_seq_length = max_seq_length
         logger.info(f"Max sequence length set to {self.max_seq_length}.")
+
+        # Backend tokenizer setup
+        self.backend_tokenizer = self.tokenizer.backend_tokenizer
+        if not isinstance(self.backend_tokenizer, Tokenizer):
+            raise TypeError(
+                f"Expected backend tokenizer to be of type 'Tokenizer', but got '{type(self.backend_tokenizer).__name__}'."
+            )
+        self.backend_tokenizer.no_padding()
+        self.backend_tokenizer.enable_truncation(max_length=self.max_seq_length)
         return
+
+    @override
+    def decode_request(self, request: EmbedRequest) -> list[int] | str:  # ty:ignore[invalid-method-override]
+        """Extract the token sequence from the payload FastAPI already validated."""
+        if request.token_ids is not None:
+            result = request.token_ids
+        elif request.text is not None:
+            result = request.text
+        else:
+            raise ValueError("Request must contain either 'token_ids' or 'text'.")
+        return result
+
+    def _tokenize_texts(self, texts: list[str]) -> list[torch.Tensor]:
+        """Tokenize a list of texts into token ID sequences."""
+        if self.backend_tokenizer is None:
+            raise RuntimeError(
+                "Backend tokenizer must be set up before calling _tokenize_texts."
+            )
+        encoded = self.backend_tokenizer.encode_batch_fast(texts)
+        token_ids_list = [torch.tensor(enc.ids, dtype=torch.long) for enc in encoded]
+        return token_ids_list
+
+    @override
+    def batch(self, inputs: list[list[int] | str]) -> dict[str, torch.Tensor]:
+        """Truncate and pad the requests' token sequences, build the attention mask."""
+        if (
+            self.model is None
+            or self.tokenizer is None
+            or self.backend_tokenizer is None
+        ):
+            raise RuntimeError(
+                "Model, tokenizer, and max_seq_length must be set up before calling batch."
+            )
+
+        texts: list[str] = []
+        text_indices: list[int] = []
+        tokens: list[torch.Tensor | None] = []
+        for i, input_seq in enumerate(inputs):
+            if isinstance(input_seq, str):
+                texts.append(input_seq)
+                text_indices.append(i)
+                tokens.append(None)  # Placeholder for later tokenization
+            else:
+                truncated_seq = input_seq[: self.max_seq_length]
+                tokens.append(torch.tensor(truncated_seq, dtype=torch.long))
+
+        if len(texts) > 0:
+            tokenized_sequences = self._tokenize_texts(texts)
+            for idx, tokenized_seq in zip(
+                text_indices, tokenized_sequences, strict=True
+            ):
+                truncated_seq = tokenized_seq[: self.max_seq_length]
+                tokens[idx] = truncated_seq
+
+        max_seq_length_in_batch = max(len(t) for t in tokens if t is not None)
+        # Round up to nearest multiple of 8
+        pad_len = (-max_seq_length_in_batch % 8) + max_seq_length_in_batch
+
+        input_ids_buff = torch.full(
+            (len(inputs), pad_len),
+            fill_value=int(self.tokenizer.pad_token_id),
+            dtype=torch.long,
+            device="cpu",
+        )
+        attention_mask_buff = torch.zeros(
+            (len(inputs), pad_len),
+            dtype=torch.long,
+            device="cpu",
+        )
+        for i, token_seq in enumerate(tokens):
+            if token_seq is None:
+                raise RuntimeError(f"Token sequence at index {i} is None.")
+            input_ids_buff[i, : len(token_seq)] = token_seq
+            attention_mask_buff[i, : len(token_seq)] = 1
+
+        input_ids = input_ids_buff
+        attention_mask = attention_mask_buff
+        return {
+            "input_ids": input_ids.to(self.model.device),
+            "attention_mask": attention_mask.to(self.model.device),
+        }
 
     @override
     @torch.inference_mode()
     def predict(  # ty:ignore[invalid-method-override]
         self,
-        inputs: list[str],
+        inputs: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Run inference on the model with the provided inputs."""
+        """Run inference on a batch collated by `batch()`."""
         if self.model is None or self.tokenizer is None:
             raise RuntimeError(
                 "Model and tokenizer must be set up before calling predict."
             )
 
-        # Tokenization
-        tokenized_inputs = self.tokenizer(
-            inputs,
-            padding=True,
-            truncation=True,
-            max_length=self.max_seq_length,
-            return_tensors="pt",
-            pad_to_multiple_of=8,
-        ).to(self.model.device)
-
-        outputs: ModelOutput = self.model(**tokenized_inputs)
+        outputs: ModelOutput = self.model(**inputs)
 
         if isinstance(outputs, LednikModelOutput | StaticEmbeddingsOutput):
             sentence_embeddings = outputs.sentence_embeddings
@@ -249,7 +301,7 @@ class LednikServer(LitAPI):
                     f"but got {last_hidden_state.ndim}D."
                 )
 
-            attention_mask: torch.Tensor = tokenized_inputs.get(
+            attention_mask: torch.Tensor = inputs.get(
                 "attention_mask",
                 torch.ones(
                     last_hidden_state.shape[:-1],
@@ -262,6 +314,14 @@ class LednikServer(LitAPI):
             )
         sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=-1)
         return sentence_embeddings.float().cpu()
+
+    @override
+    def encode_response(self, output: torch.Tensor) -> dict[str, list[float]]:  # ty:ignore[invalid-method-override]
+        """Serialize one embedding; the batched loop passes one row per request."""
+        if output.ndim == 2:
+            # the non-batched loop skips unbatch and passes [1, D]
+            output = output.squeeze(0)
+        return {"embedding": output.tolist()}
 
 
 @click.command()
@@ -315,12 +375,6 @@ class LednikServer(LitAPI):
     help="Seconds to wait while collecting a batch before running inference.",
 )
 @click.option(
-    "--num-api-servers",
-    type=click.IntRange(min=1),
-    default=None,
-    help="Number of HTTP API server processes; defaults to the number of workers.",
-)
-@click.option(
     "--fast-queue",
     type=bool,
     default=False,
@@ -335,7 +389,6 @@ def run(
     max_seq_length: int | None = None,
     max_batch_size: int = 1,
     batch_timeout: float = 0.0,
-    num_api_servers: int | None = None,
     fast_queue: bool = False,
 ) -> None:
     """Serve a Lednik or Transformers embedding model via LitServe."""
@@ -354,7 +407,6 @@ def run(
         max_seq_length=max_seq_length,
         max_batch_size=max_batch_size,
         batch_timeout=batch_timeout,
-        spec=ls.OpenAIEmbeddingSpec(),
     )
     server = ls.LitServer(
         api,
@@ -363,7 +415,7 @@ def run(
         workers_per_device=num_workers,
         fast_queue=fast_queue,
     )
-    server.run(num_api_servers=num_api_servers)
+    server.run()
     return
 
 
