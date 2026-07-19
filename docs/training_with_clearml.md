@@ -25,8 +25,8 @@ Almost all ClearML/Lightning glue comes from the
 ## Pipeline at a glance
 
 ```
-                 configs/distill_config.yaml ─┐
-                 configs/training_settings.yaml ┘
+                 configs/training_settings.yaml
+                     (incl. distill_config section)
                               │  connect_as_file (ClearML config sync)
                               ▼
    ClearML registry ──► load teacher (InputModel: hidden_size only)
@@ -76,9 +76,9 @@ The pipeline references three models and N datasets **by ClearML ID**.
   a config that includes `hidden_size`.
 - **Student** (`student_model_id`) — the initialized student from
   [Model Initialization](./model_initialization.md). Save with `save_pretrained(...)` and
-  register the directory as a ClearML model. Its config **must** contain `model_type`
-  (`"lednik"` or `"static_embeddings"`) so the pipeline can resolve the class via
-  `MODEL_MAPPING`.
+  register the directory as a ClearML model. Its config **must** contain `architectures`
+  (written automatically by `save_pretrained`) so the pipeline can resolve the class via
+  `AutoLednikModel` and the model registry.
 - **Tokenizer** (`tokenizer_id`) — the teacher tokenizer, registered as a model;
   loaded with `AutoTokenizer.from_pretrained` under the hood.
 
@@ -124,15 +124,16 @@ Expected on-disk layout per dataset:
 
 ## 3. Configuration files
 
-The pipeline reads two YAMLs from [`configs/`](../configs) at the repo root and connects
-them to the ClearML task with `connect_as_file` (from `ConfigSyncingClearmlMixin`). On a
-remote run, edits made in the ClearML UI override the local file.
+The pipeline reads [`configs/training_settings.yaml`](../configs/training_settings.yaml)
+and connects it to the ClearML task with `connect_as_file` (from
+`ConfigSyncingClearmlMixin`). On a remote run, edits made in the ClearML UI override the
+local file. The distillation hyperparameters live in the `distill_config` **section** of
+that same file.
 
-### 3.1 `configs/distill_config.yaml`
+### 3.1 The `distill_config` section
 
 This is a [`DistillationConfig`](../pipelines/distill/configs.py) — the same schema as the
-[no-ClearML config](./training_without_clearml.md#1-build-the-distillation-config), plus the
-ClearML sync/loading mixins. Example (the repo default):
+[no-ClearML config](./training_without_clearml.md#1-build-the-distillation-config). Example:
 
 ```yaml
 grad_clip_val: 2.0
@@ -159,11 +160,11 @@ weight_decay:
 freeze_student_emb_steps_ratio: 0.1
 ```
 
-### 3.2 `configs/training_settings.yaml`
+### 3.2 The rest of `configs/training_settings.yaml`
 
-This is a [`TrainingSettings`](../pipelines/distill/configs.py) model — it ties together
-artifact IDs, the student build config, trainer/strategy settings, checkpointing, data and
-(optional) Redis. Example (the repo default):
+The top level is a [`TrainingSettings`](../pipelines/distill/configs.py) model — it ties
+together artifact IDs, the student build config, trainer/strategy settings, checkpointing,
+data and (optional) Redis. Example (the repo default):
 
 ```yaml
 redis:                               # optional; enables online validation dispatch
@@ -249,37 +250,34 @@ wrapping.
 
 ## How model / checkpoint loading works
 
-The student is loaded by `kostyl.ml.integrations.clearml.load_model_from_clearml`:
+The student artifact is fetched from ClearML and loaded by
+[`AutoLednikModel`](../lednik/models/auto.py):
 
 ```python
-model_cls = MODEL_MAPPING[training_settings.model_cfg.model_type]   # LednikModel | StaticEmbeddingsModel
+clearml_student = InputModel(model_id=settings.student_model_id)
+clearml_student.connect(task=task, name="Student Model", ignore_remote_overrides=True)
+student_local_path = Path(clearml_student.get_local_copy())
 
-load_kwargs = training_settings.model_cfg.model_dump(exclude={"model_type"})  # dropout overrides
-if training_settings.is_student_lightning_checkpoint:
-    load_kwargs["weights_prefix"] = training_settings.checkpoint_weight_prefix
+load_kwargs = settings.model_cfg.override_params
+if settings.is_student_lightning_checkpoint:
+    load_kwargs["weights_prefix"] = settings.checkpoint_weight_prefix
+    load_kwargs["strict_prefix"] = True
 
-student, clearml_student = load_model_from_clearml(
-    model_id=training_settings.student_model_id,
-    model=model_cls,
-    task=task,
-    name="Model to Distill (Student)",
-    **load_kwargs,
-)
+student = AutoLednikModel.from_pretrained(student_local_path, **load_kwargs)
 ```
 
-`load_model_from_clearml` returns `(model_instance, InputModel)` and dispatches on the
-artifact shape:
+`AutoLednikModel.from_pretrained` resolves the concrete class from the checkpoint config's
+`architectures` via the model registry
+(see [Model Initialization → Saving and reloading](./model_initialization.md#saving-and-reloading))
+and dispatches on the artifact shape:
 
 - **HF package directory** → `model_cls.from_pretrained(local_path, **load_kwargs)`. The
-  `model_cfg` dropout overrides are applied here.
-- **Lightning `.ckpt`** → `model_cls.from_lightning_checkpoint(local_path, ...)` (from
-  `LightningCheckpointModelMixin`, which both `LednikModel` and `StaticEmbeddingsModel` mix
-  in). Key arguments:
-  - `weights_prefix` (default `"model."`) — prefix stripped from state-dict keys. The
-    `DistillationModule` stores the student under `student.*`, so when resuming from a
-    distillation checkpoint set `checkpoint_weight_prefix: student`.
-  - the model `config` is read from the checkpoint's `"config"` key (saved by
-    `DistillationModule.on_save_checkpoint`).
+  `model_cfg` overrides are applied here (`weights_prefix`/`strict_prefix` are dropped).
+- **Lightning `.ckpt`** → the model config is read from the checkpoint's `"config"` key
+  (saved by `DistillationModule.on_save_checkpoint`), and `weights_prefix` selects the
+  student weights from the training-module state dict. The `DistillationModule` stores the
+  student under `student.*`, so when resuming from a distillation checkpoint set
+  `checkpoint_weight_prefix: student`.
 
 This is why `on_save_checkpoint` both **saves the config dict** and **drops `teacher.*`
 keys**: it makes every produced checkpoint directly reloadable as a bare student model, for
@@ -291,35 +289,30 @@ The tokenizer is loaded with `load_tokenizer_from_clearml(model_id=tokenizer_id,
 
 ## Checkpoint uploading
 
-During `fit`, checkpoints are written locally and pushed back to ClearML by
-`ClearMLCheckpointUploader`, wired through `pipelines.utils.setup_callbacks`:
+During `fit`, checkpoints are written locally (to `checkpoints/<task-name>/<task-id>/`, per
+the `checkpoint:` section of `training_settings.yaml`) and pushed back to ClearML through
+the `kostyl` `ClearMLLogger`, which wraps an `OutputModel`:
 
 ```python
-ckpt_uploader_config = CheckpointUploaderConfig(
-    model_name=clearml_student.name,
-    config_dict=student.config.to_diff_dict(),
-    upload_as_new_model=False,                 # update the same model vs. create a new one each time
-    tags=[t for t in clearml_student.tags if t != "Not Distilled"],
+output_model = OutputModel(
+    task=task,
+    name=clearml_student.name,
+    tags=[tag for tag in clearml_student.tags if tag != "Not Distilled"],
     framework="PyTorch",
     comment=f"Model distilled from {clearml_teacher.id}.",
-    # upload_strategy="only-best",             # "only-best" | "every-checkpoint"
+)
+logger = ClearMLLogger(
+    task=task,
+    output_model=output_model,
+    upload_checkpoints=True,
+    upload_strategy="best",                # upload only improved checkpoints
+    model_config_provider=lambda: distillation_module.model_config,
 )
 ```
 
-`CheckpointUploaderConfig` ([`pipelines/utils.py`](../pipelines/utils.py)) fields of note:
-
-| Field | Default | Description |
-| --- | --- | --- |
-| `model_name` | — | Name for the uploaded model. |
-| `config_dict` | `None` | Config attached to the uploaded model. |
-| `upload_as_new_model` | `True` | `True`: each checkpoint becomes a new model version (timestamped name). `False`: update the same model's weights. |
-| `upload_strategy` | `"only-best"` | `"only-best"` uploads only improved checkpoints; `"every-checkpoint"` uploads each saved one. |
-| `tags`, `comment`, `framework`, `base_model_id`, `verbose` | — | Registry metadata. |
-
-Alongside the uploader, `setup_callbacks` adds a `LearningRateMonitor` and (optionally) an
-`EarlyStopping` callback; `setup_loggers` adds a TensorBoard logger. All of these are
-`kostyl` helpers (`setup_checkpoint_callback`, `setup_early_stopping_callback`,
-`setup_tb_logger`).
+Alongside the logger, the pipeline wires a `LearningRateMonitor`, the checkpoint callback
+(`setup_checkpoint_callback`) and, if `early_stopping` is configured, an `EarlyStopping`
+callback (`setup_early_stopping_callback`) — all `kostyl` helpers.
 
 ---
 
@@ -414,8 +407,8 @@ The worker creates the consumer group, blocks on the stream, evaluates each
 
 ## Benchmarking with MTEB
 
-[`bench/mteb/run.py`](../bench/mteb/run.py) evaluates a model on Russian MTEB tasks, using
-the [`MTEBModelWrapper`](../bench/mteb/model_wrapper.py) adapter. It can load either a
+[`bench/mteb_testing/run.py`](../bench/mteb_testing/run.py) evaluates a model on Russian MTEB tasks, using
+the [`MTEBModelWrapper`](../bench/mteb_testing/model_wrapper.py) adapter. It can load either a
 ClearML model or a HuggingFace model.
 
 ```bash

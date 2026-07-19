@@ -10,7 +10,7 @@ Lednik ships two student architectures:
 | Student | Class | What it is | When to use it |
 | --- | --- | --- | --- |
 | **Static Embeddings** | [`StaticEmbeddingsModel`](../lednik/models/modeling_static.py) | A lookup table (`vocab_size × hidden_size`) plus per-token weights, RMSNorm and mean pooling. No attention, no context. | Extremely low-latency / CPU-only inference where contextualization is not required. |
-| **Lednik Transformer** | [`LednikModel`](../lednik/models/modeling_lednik.py) | A tiny encoder transformer (RoPE, RMSNorm, SwiGLU/GeGLU MLP, Flash-Attention / varlen SDPA). | When you need contextual embeddings but a fraction of the teacher's size. |
+| **Lednik Transformer** | [`LednikModel`](../lednik/models/modeling_lednik.py) | A tiny encoder built from an explicit per-layer stack: `full-attention` blocks (RoPE, optional attention gating, SwiGLU/GeGLU MLP), bidirectional `gated-delta-net` blocks (linear attention), and experimental `moba` blocks. Flash-Attention / varlen SDPA fast paths. | When you need contextual embeddings but a fraction of the teacher's size. Mix in `gated-delta-net` layers for linear scaling with sequence length. |
 
 Both students are standard `transformers.PreTrainedModel` subclasses, so `from_pretrained`
 / `save_pretrained` work as usual. They also mix in
@@ -141,13 +141,12 @@ from lednik.initialization.factory import create_lednik_transformer
 
 config = LednikConfig(
     hidden_size=384,
-    num_hidden_layers=2,
-    num_attention_heads=6,        # head_dim = hidden_size / heads must be in {32,64,128,256}
+    num_attention_heads=6,
     intermediate_size=1152,
     max_position_embeddings=1024,
     hidden_act="silu",            # "silu" -> SwiGLU MLP, "gelu" -> GeGLU MLP
-    rope_parameters={"rope_type": "default", "rope_theta": 10000.0},
-    # vocab_size / pad_token_id are auto-aligned to the tokenizer below
+    rope_parameters={"rope_type": "default", "rope_theta": 10000.0}, # the layer stack is explicit; mix attention kinds freely:
+    layers=["full-attention", "gated-delta-net", "full-attention"], # vocab_size / pad_token_id are auto-aligned to the tokenizer below
 )
 
 lednik_model = create_lednik_transformer(
@@ -188,11 +187,14 @@ See [`configuration_lednik.py`](../lednik/models/configuration_lednik.py) for th
 | `vocab_size` | `30522` | Overwritten to match the tokenizer by the factory. |
 | `hidden_size` | `384` | Auto-rounded up to a multiple of 8. |
 | `output_hidden_size` | `None` | If set, a final `Linear(hidden_size → output_hidden_size)` is added; sentence-embedding dim becomes this. |
-| `num_attention_heads` | `6` | `hidden_size % num_attention_heads == 0` and resulting `head_dim ∈ {32,64,128,256}`. |
-| `num_hidden_layers` | `1` | Number of encoder blocks. |
+| `layers` | `[]` | **The layer stack.** A list of `"full-attention"` / `"gated-delta-net"` / `"moba"` entries; `num_hidden_layers` is derived from its length. |
+| `num_attention_heads` / `head_dim` | `6` / `64` | For full-attention blocks; `head_dim` is auto-rounded up to a multiple of 8. |
+| `use_gated_attention` | `True` | Output gating for full-attention blocks. |
+| `gdn_*` | — | Gated DeltaNet block parameters: `gdn_bidir`, `gdn_num_heads`, `gdn_head_dim`, `gdn_expand_v`, `gdn_use_short_conv`, `gdn_conv_size`, `use_mlp_after_gdn`, … |
+| `moba_chunk_size` / `moba_topk` | `32` / `3` | MoBA block parameters. |
 | `intermediate_size` | `576` | MLP hidden dim; auto-rounded up to a multiple of 8. |
 | `hidden_act` | `"silu"` | `"silu"` ⇒ `LigerSwiGLUMLP`, `"gelu"` ⇒ `LigerGEGLUMLP`. |
-| `max_position_embeddings` | `1024` | RoPE max length. |
+| `max_position_embeddings` | `1024` | RoPE max length; also the serving truncation limit. |
 | `rope_parameters` | `None` | **Required.** e.g. `{"rope_type": "default", "rope_theta": 10000.0}`. |
 | `embedding_dropout` / `attention_dropout` / `out_attn_dropout` / `mlp_dropout` | `0.0` | Regularization knobs (typically set during training, not at init). |
 
@@ -248,8 +250,9 @@ mean-pooled `sentence_embeddings`.
 > CPU runs pass `attn_implementation="eager"`.
 
 For benchmarking either model on MTEB, the repo provides a ready adapter,
-[`MTEBModelWrapper`](../bench/mteb/model_wrapper.py); see
+[`MTEBModelWrapper`](../bench/mteb_testing/model_wrapper.py); see
 [Training with ClearML → Benchmarking](./training_with_clearml.md#benchmarking-with-mteb).
+For loading trained checkpoints and serving, see [Usage](./usage.md).
 
 ---
 
@@ -260,17 +263,27 @@ For benchmarking either model on MTEB, the repo provides a ready adapter,
 model.save_pretrained("weights/my_student")
 tokenizer.save_pretrained("weights/my_student")
 
-# Reload
+# Reload with a concrete class...
 from lednik.models import LednikModel, StaticEmbeddingsModel
 model = LednikModel.from_pretrained("weights/my_student")
-# or
-model = StaticEmbeddingsModel.from_pretrained("weights/my_student")
+
+# ...or let AutoLednikModel resolve the class from the checkpoint config
+from lednik.models import AutoLednikModel
+model = AutoLednikModel.from_pretrained("weights/my_student")
+
+# Lightning .ckpt files from distillation runs work too (weights live under
+# the "student." prefix inside the training module's state dict):
+model = AutoLednikModel.from_pretrained(
+    "checkpoints/last.ckpt", weights_prefix="student.", strict_prefix=True
+)
 ```
 
-The mapping `MODEL_MAPPING` / `CONFIG_MAPPING` in
-[`lednik/models/__init__.py`](../lednik/models/__init__.py) resolves the
-`"lednik"` / `"static_embeddings"` model-type strings to their classes — this is what the
-ClearML pipeline uses to pick the right class from a config dict.
+Every model/config class is registered via the `@register_model` / `@register_config`
+decorators in [`lednik/models/auto.py`](../lednik/models/auto.py);
+[`AutoLednikModel`](../lednik/models/auto.py) resolves the concrete class from a
+checkpoint's `architectures` through these registries — this is what the ClearML pipeline,
+the serving stack and the benches use to load any Lednik checkpoint. The companion
+`is_lednik_checkpoint(path)` distinguishes Lednik checkpoints from plain Transformers ones.
 
 ---
 
