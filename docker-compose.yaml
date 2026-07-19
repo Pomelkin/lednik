@@ -58,7 +58,6 @@ services:
       - /tmp/nvidia-mps:/tmp/nvidia-mps # NVIDIA MPS socket directory
       - ${HOME}/.cache/lednik-triton:/home/${HOST_USER}/.triton
     environment:
-      - TRITON_PRINT_AUTOTUNING=1
       - TRITON_CACHE_AUTOTUNING=1
     ports:
       - '0.0.0.0:8000:8000'
