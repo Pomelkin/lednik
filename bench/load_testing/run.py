@@ -12,8 +12,10 @@ from typing import Any, Literal
 import click
 import httpx
 from kostyl.utils import setup_logger
-from openai import AsyncOpenAI, DefaultAsyncHttpxClient, OpenAIError
 from tqdm import tqdm
+from transformers import AutoTokenizer
+
+from lednik.path_utils import determine_path
 
 
 logger = setup_logger(fmt="message_only")
@@ -66,56 +68,72 @@ def _load_texts(input_path: Path) -> list[str]:
         texts = [row["text"] for row in reader if row["text"]]
     if not texts:
         raise ValueError(f"Input file '{input_path}' contains no texts.")
+    return texts
 
-    expanded_texts = texts * 10
-    gen = random.Random(42)
-    gen.shuffle(expanded_texts)
-    return expanded_texts
+
+def _sample_inputs(
+    lengths: list[int],
+    vocab_ids: list[int],
+    num_samples: int,
+    scale_factor: float,
+    max_seq_length: int | None,
+    seed: int = 42,
+) -> list[list[int]]:
+    """Generate random-id sequences whose lengths follow the scaled production distribution.
+
+    Embedding quality is irrelevant for throughput measurements, so token ids
+    are sampled uniformly; only the varlen length profile matters.
+    """
+    gen = random.Random(seed)
+    inputs: list[list[int]] = []
+    for _ in range(num_samples):
+        length = max(1, round(gen.choice(lengths) * scale_factor))
+        if max_seq_length is not None:
+            length = min(length, max_seq_length)
+        inputs.append(gen.choices(vocab_ids, k=length))
+    return inputs
 
 
 async def _send_request(
-    client: AsyncOpenAI,
-    text: str,
-    model: str,
+    client: httpx.AsyncClient,
+    token_ids: list[int],
 ) -> RequestResult:
     start = time.perf_counter()
     try:
-        await client.embeddings.create(model=model, input=text, encoding_format="float")
-        ok = True
-    except OpenAIError:
+        response = await client.post("/predict", json={"token_ids": token_ids})
+        ok = response.status_code == httpx.codes.OK
+    except httpx.HTTPError:
         ok = False
     return RequestResult(start=start, end=time.perf_counter(), ok=ok)
 
 
 async def _run_warmup(
-    client: AsyncOpenAI,
-    texts: list[str],
-    model: str,
+    client: httpx.AsyncClient,
+    inputs: list[list[int]],
     num_requests: int,
 ) -> None:
-    warmup_texts = texts[:num_requests]
-    progress = tqdm(total=len(warmup_texts), desc="Warmup", leave=False)
-    for offset in range(0, len(warmup_texts), WARMUP_CONCURRENCY):
-        chunk = warmup_texts[offset : offset + WARMUP_CONCURRENCY]
-        await asyncio.gather(*[_send_request(client, text, model) for text in chunk])
+    warmup_inputs = inputs[:num_requests]
+    progress = tqdm(total=len(warmup_inputs), desc="Warmup", leave=False)
+    for offset in range(0, len(warmup_inputs), WARMUP_CONCURRENCY):
+        chunk = warmup_inputs[offset : offset + WARMUP_CONCURRENCY]
+        await asyncio.gather(*[_send_request(client, ids) for ids in chunk])
         progress.update(len(chunk))
     progress.close()
     return
 
 
 async def _run_open_loop(
-    client: AsyncOpenAI,
-    texts: list[str],
-    model: str,
+    client: httpx.AsyncClient,
+    inputs: list[list[int]],
     rps: int,
 ) -> LoadTestResult:
     """Fire one request per 1/rps seconds on an absolute schedule, not waiting for responses."""
     interval = 1.0 / rps
-    progress = tqdm(total=len(texts), desc=f"Open-loop (target {rps} rps)")
+    progress = tqdm(total=len(inputs), desc=f"Open-loop (target {rps} rps)")
     tasks: list[asyncio.Task[RequestResult]] = []
     lateness: list[float] = []
     loop_start = time.perf_counter()
-    for i, text in enumerate(texts):
+    for i, token_ids in enumerate(inputs):
         # absolute schedule from a fixed start: one late dispatch
         # doesn't shift the rest and drift doesn't accumulate
         target = loop_start + i * interval
@@ -127,7 +145,7 @@ async def _run_open_loop(
             # in-flight request tasks are not starved
             await asyncio.sleep(0)
         lateness.append(time.perf_counter() - target)
-        task = asyncio.create_task(_send_request(client, text, model))
+        task = asyncio.create_task(_send_request(client, token_ids))
         task.add_done_callback(lambda _: progress.update(1))
         tasks.append(task)
     results = list(await asyncio.gather(*tasks))
@@ -144,20 +162,19 @@ async def _run_open_loop(
 
 
 async def _run_closed_loop(
-    client: AsyncOpenAI,
-    texts: list[str],
-    model: str,
+    client: httpx.AsyncClient,
+    inputs: list[list[int]],
     concurrency: int,
 ) -> LoadTestResult:
     """Send waves of `concurrency` parallel requests, next wave starts after the previous completes."""
-    progress = tqdm(total=len(texts), desc=f"Closed-loop (waves of {concurrency})")
+    progress = tqdm(total=len(inputs), desc=f"Closed-loop (waves of {concurrency})")
     results: list[RequestResult] = []
     request_time = 0.0
-    for offset in range(0, len(texts), concurrency):
-        chunk = texts[offset : offset + concurrency]
+    for offset in range(0, len(inputs), concurrency):
+        chunk = inputs[offset : offset + concurrency]
         wave_start = time.perf_counter()
         wave_results = await asyncio.gather(
-            *[_send_request(client, text, model) for text in chunk]
+            *[_send_request(client, ids) for ids in chunk]
         )
         # accumulate only the in-flight window of each wave,
         # excluding the pipeline overhead between waves
@@ -225,42 +242,41 @@ def _dump_record(record: dict[str, Any], output_file: Path | None) -> None:
 async def _main(
     base_url: str,
     mode: Literal["open", "closed", "both"],
-    texts: list[str],
-    model: str,
+    inputs: list[list[int]],
     rps: int,
     concurrency: int,
     warmup_requests: int,
     timeout: float,
     run_name: str,
     output_file: Path | None,
+    scale_factor: float,
 ) -> None:
-    # max_retries=0: retries would silently inflate the measured latencies;
+    mean_tokens = round(statistics.fmean(len(ids) for ids in inputs), 1)
     # unlimited connections: the default pool of 100 would queue requests
-    # client-side under heavy load and pollute the measured latencies
-    async with AsyncOpenAI(
-        base_url=f"{base_url}/v1",
-        api_key="required-not-used",
+    # client-side under heavy load and pollute the measured latencies;
+    # trust_env=False: localhost traffic must never go through HTTP(S)_PROXY
+    async with httpx.AsyncClient(
+        base_url=base_url,
         timeout=timeout,
-        max_retries=0,
-        http_client=DefaultAsyncHttpxClient(
-            limits=httpx.Limits(max_connections=None, max_keepalive_connections=None),
-            timeout=timeout,
-        ),
+        limits=httpx.Limits(max_connections=None, max_keepalive_connections=None),
+        trust_env=False,
     ) as client:
-        await _run_warmup(client, texts, model, warmup_requests)
+        await _run_warmup(client, inputs, warmup_requests)
 
         if mode in ("open", "both"):
-            load_result = await _run_open_loop(client, texts, model, rps)
+            load_result = await _run_open_loop(client, inputs, rps)
             record = _build_record(
                 run_name, "open-loop", load_result, target_rps=rps, concurrency=None
             )
+            record["ScaleFactor"] = scale_factor
+            record["MeanTokensPerRequest"] = mean_tokens
             _dump_record(record, output_file)
             logger.info(
                 f"Open-loop: {json.dumps(record, ensure_ascii=False, indent=2)}"
             )
 
         if mode in ("closed", "both"):
-            load_result = await _run_closed_loop(client, texts, model, concurrency)
+            load_result = await _run_closed_loop(client, inputs, concurrency)
             record = _build_record(
                 run_name,
                 "closed-loop",
@@ -268,6 +284,8 @@ async def _main(
                 target_rps=None,
                 concurrency=concurrency,
             )
+            record["ScaleFactor"] = scale_factor
+            record["MeanTokensPerRequest"] = mean_tokens
             _dump_record(record, output_file)
             logger.info(
                 f"Closed-loop: {json.dumps(record, ensure_ascii=False, indent=2)}"
@@ -330,11 +348,33 @@ async def _main(
     help="Per-request timeout in seconds; timed out requests count as errors.",
 )
 @click.option(
-    "--model",
+    "--tokenizer",
+    "tokenizer_path_name_or_id",
     type=str,
-    default="lednik",
+    required=True,
+    help="Local path, ClearML model ID or HF Hub repo id of the tokenizer "
+    "(must match the one the server was started with).",
+)
+@click.option(
+    "--max-seq-length",
+    type=int,
+    default=None,
     show_default=True,
-    help="Model name sent in the OpenAI embeddings payload.",
+    help="Cap on sampled sequence lengths; should match the server's truncation.",
+)
+@click.option(
+    "--scale-factor",
+    type=click.FloatRange(min=0.01),
+    default=1.0,
+    show_default=True,
+    help="Multiplier applied to the production token-length distribution.",
+)
+@click.option(
+    "--num-samples",
+    type=click.IntRange(min=1),
+    default=5000,
+    show_default=True,
+    help="Number of synthetic requests generated for the run.",
 )
 def run(
     host: str,
@@ -347,7 +387,10 @@ def run(
     run_name: str,
     warmup_requests: int,
     timeout: float,
-    model: str,
+    tokenizer_path_name_or_id: str,
+    max_seq_length: int | None,
+    scale_factor: float,
+    num_samples: int,
 ) -> None:
     """Measure latency percentiles and throughput of an embedding server."""
     if output_file is not None:
@@ -355,18 +398,43 @@ def run(
     texts = _load_texts(input_path)
     logger.info(f"Loaded {len(texts)} texts from '{input_path}'.")
 
+    tokenizer_path = determine_path(tokenizer_path_name_or_id, is_tokenizer=True)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    if tokenizer is None:
+        raise ValueError(f"Failed to load tokenizer from path '{tokenizer_path}'.")
+
+    # texts are only the source of the production length distribution;
+    # the actual payloads are synthesized to keep the varlen profile at any scale
+    lengths = [len(ids) for ids in tokenizer(texts)["input_ids"]]
+    special_ids = set(tokenizer.all_special_ids)
+    vocab_ids = [i for i in range(len(tokenizer)) if i not in special_ids]
+    inputs = _sample_inputs(
+        lengths,
+        vocab_ids,
+        num_samples,
+        scale_factor,
+        max_seq_length or tokenizer.model_max_length,
+    )
+    sampled_lengths = sorted(len(ids) for ids in inputs)
+    logger.info(
+        f"Sampled {num_samples} sequences (scale x{scale_factor}): "
+        f"mean {statistics.fmean(sampled_lengths):.1f}, "
+        f"p50 {sampled_lengths[len(sampled_lengths) // 2]}, "
+        f"max {sampled_lengths[-1]} tokens."
+    )
+
     asyncio.run(
         _main(
             base_url=f"http://{host}:{port}",
             mode=mode,
-            texts=texts,
-            model=model,
+            inputs=inputs,
             rps=rps,
             concurrency=concurrency,
             warmup_requests=warmup_requests,
             timeout=timeout,
             run_name=run_name,
             output_file=output_file,
+            scale_factor=scale_factor,
         )
     )
     return
