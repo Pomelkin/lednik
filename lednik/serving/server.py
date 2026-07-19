@@ -16,6 +16,7 @@ from kostyl.utils import setup_logger
 from huggingface_hub import repo_exists, snapshot_download
 from transformers.modeling_utils import PreTrainedModel
 from transformers import SentencePieceBackend, TokenizersBackend
+import torch.nn.functional as F
 from transformers.modeling_outputs import ModelOutput as TransformersModelOutput
 import click
 
@@ -30,7 +31,7 @@ try:
 except ImportError:
     CLEAR_ML_AVAILABLE = False
 
-logger = setup_logger(fmt="only_message")
+logger = setup_logger(fmt="message_only")
 
 type ModelInstance = LednikPreTrainedModel | PreTrainedModel
 type TokenizerInstance = SentencePieceBackend | TokenizersBackend
@@ -54,7 +55,22 @@ class LednikServer(LitAPI):
         mcp: Optional["MCP"] = None,
         enable_async: bool = False,
     ) -> None:
-        """Initialize LitAPI with configuration options."""
+        """
+        Initialize LitAPI with configuration options.
+
+        Args:
+            model_path_name_or_id: Local path, ClearML model ID or HF Hub repo id of the model checkpoint.
+            tokenizer_path_name_or_id: Local path, ClearML model ID or HF Hub repo id of the tokenizer.
+            max_seq_length: Maximum sequence length for tokenization. Defaults to None (use model's max).
+            max_batch_size: Batch multiple requests for better GPU utilization. Defaults to 1.
+            batch_timeout: Wait time for batch to fill (seconds). Defaults to 0.0.
+            stream: Enable streaming responses for real-time output. Defaults to False.
+            api_path: URL endpoint path. Defaults to "/predict".
+            enable_async: Enable async/await for non-blocking operations. Defaults to False.
+            spec: API specification (e.g., OpenAISpec for OpenAI compatibility). Defaults to None.
+            mcp: Model Context Protocol integration for AI assistants. Defaults to None.
+            loop: Event loop for async operations. Defaults to "auto" (auto-detect).
+        """
         super().__init__(
             max_batch_size=max_batch_size,
             batch_timeout=batch_timeout,
@@ -81,56 +97,72 @@ class LednikServer(LitAPI):
         return
 
     def _determine_path(self, path_name_or_id: str, is_tokenizer: bool) -> str:
-        # Check if the provided string is a local path
-        path = Path(path_name_or_id)
-        if path.exists():
-            if is_tokenizer:
-                if not (path.is_dir() and (path / "tokenizer.json").exists()):
-                    raise ValueError(
-                        f"Path '{path}' is not a valid tokenizer directory."
-                    )
-            elif not (
-                (path.is_dir() and (path / "config.json").exists())
-                or (path.is_file() and path.suffix == ".ckpt")
-            ):
-                raise ValueError(
-                    f"Path '{path}' is not a valid Transformers checkpoint directory or Lightning .ckpt file."
-                )
-            return str(path.resolve())
-
+        path: Path | None = None
         # Then check if it's a ClearML model ID
         if CLEAR_ML_AVAILABLE:
             model_id = path_name_or_id
             try:
                 clearml_model = InputModel(model_id=model_id)
                 local_path = clearml_model.get_local_copy()
-                return str(Path(local_path).resolve())
+                path = Path(local_path).resolve()
+                logger.info(
+                    f"Resolved ClearML model ID '{model_id}' to local path '{path}'."
+                )
             except Exception:  # noqa: S110
                 pass
 
         # If neither, try to check if it's a Hugging Face model ID
         if repo_exists(path_name_or_id):
+            repo_id = path_name_or_id
             try:
-                local_path = snapshot_download(repo_id=path_name_or_id)
-                return str(Path(local_path).resolve())
+                local_path = snapshot_download(repo_id=repo_id)
+                path = Path(local_path).resolve()
+                logger.info(
+                    f"Resolved Hugging Face model ID '{repo_id}' to local path '{path}'."
+                )
             except Exception:  # noqa: S110
                 pass
-        # If all attempts fail, raise an error
-        raise ValueError(
-            f"'{path_name_or_id}' is neither a valid local path, ClearML model ID, nor Hugging Face model ID."
-        )
+
+        # Check if the provided string is a local path
+        if path is None:
+            path = Path(path_name_or_id)
+            logger.info(f"Using provided local path '{path}'.")
+
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Path '{path}' does not exist. Please provide a valid local path, ClearML model ID, or Hugging Face model ID."
+            )
+
+        # Path content validation
+        # tokenizer validation
+        if is_tokenizer:
+            if not (path.is_dir() and (path / "tokenizer.json").exists()):
+                raise ValueError(f"Path '{path}' is not a valid tokenizer directory.")
+        # model validation
+        elif not (
+            (path.is_dir() and (path / "config.json").exists())
+            or (path.is_file() and path.suffix == ".ckpt")
+        ):
+            raise ValueError(
+                f"Path '{path}' is not a valid Transformers checkpoint directory or Lightning .ckpt file."
+            )
+        return str(path.resolve())
 
     @override
-    def setup(self, device: str) -> None:
-        t_device = torch.device(device)
-        if t_device.type != "cuda":
+    def setup(self, device: str | torch.device) -> None:
+        # Device and dtype setup
+        if isinstance(device, str):
+            device = torch.device(device)
+        if device.type != "cuda":
             raise ValueError(
                 f"Device '{device}' is not a CUDA device. Only CUDA devices are supported."
             )
-        torch.set_default_device(t_device)
-        torch.cuda.set_device(t_device)
-
+        torch.set_default_device(device)
+        torch.cuda.set_device(device)
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        logger.info(
+            f"Using device: {device} ({torch.cuda.get_device_name(device)}) with dtype: {dtype}."
+        )
 
         # model loading
         if is_lednik_checkpoint(self.model_path):
@@ -151,22 +183,31 @@ class LednikServer(LitAPI):
 
         # model and tokenizer setup
         self.tokenizer = tokenizer
-        self.model.to(device=t_device, dtype=dtype).eval()  # ty:ignore[missing-argument]
+        self.model.to(device=device, dtype=dtype).eval()  # ty:ignore[missing-argument]
+        logger.info("Model and tokenizer loaded successfully.")
 
         # Max sequence length setup
-        max_model_length = getattr(
+        max_model_length = self.max_seq_length or getattr(
             self.model.config,
             "max_position_embeddings",
             int(self.tokenizer.model_max_length),
         )
-        self.max_seq_length = min(
-            self.max_seq_length or max_model_length, max_model_length
-        )
+        max_seq_length = min(self.max_seq_length or max_model_length, max_model_length)
+        if max_seq_length % 8 != 0:
+            max_seq_length = (max_seq_length // 8) * 8
+            logger.warning(
+                f"Adjusted max_seq_length to {max_seq_length} to be a multiple of 8 for better GPU performance."
+            )
+        self.max_seq_length = max_seq_length
+        logger.info(f"Max sequence length set to {self.max_seq_length}.")
         return
 
     @override
     @torch.inference_mode()
-    def predict(self, inputs: list[str]) -> torch.Tensor:  # ty:ignore[invalid-method-override]
+    def predict(  # ty:ignore[invalid-method-override]
+        self,
+        inputs: list[str],
+    ) -> torch.Tensor:
         """Run inference on the model with the provided inputs."""
         if self.model is None or self.tokenizer is None:
             raise RuntimeError(
@@ -186,9 +227,9 @@ class LednikServer(LitAPI):
         outputs: ModelOutput = self.model(**tokenized_inputs)
 
         if isinstance(outputs, LednikModelOutput | StaticEmbeddingsOutput):
-            return outputs.sentence_embeddings
+            sentence_embeddings = outputs.sentence_embeddings
         elif hasattr(outputs, "pooler_output"):
-            return cast(torch.Tensor, outputs.pooler_output)
+            sentence_embeddings = cast(torch.Tensor, outputs.pooler_output)
         else:  # Fallback to mean pooling of the last hidden state
             logger.warning_once(
                 "Model output does not have 'sentence_embeddings' or 'pooler_output'. "
@@ -219,7 +260,8 @@ class LednikServer(LitAPI):
             sentence_embeddings = last_hidden_state.sum(dim=1) / attention_mask.sum(
                 dim=1, keepdim=True
             )
-            return sentence_embeddings
+        sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=-1)
+        return sentence_embeddings.float().cpu()
 
 
 @click.command()
@@ -245,6 +287,13 @@ class LednikServer(LitAPI):
     help="Number of CUDA devices to serve on.",
 )
 @click.option(
+    "--num-workers",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Number of worker processes to spawn for serving.",
+)
+@click.option(
     "--max-seq-length",
     type=int,
     default=None,
@@ -265,13 +314,29 @@ class LednikServer(LitAPI):
     show_default=True,
     help="Seconds to wait while collecting a batch before running inference.",
 )
+@click.option(
+    "--num-api-servers",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Number of HTTP API server processes; defaults to the number of workers.",
+)
+@click.option(
+    "--fast-queue",
+    type=bool,
+    default=False,
+    show_default=True,
+    help="Use ZMQ transport between API servers and workers instead of multiprocessing manager queues.",
+)
 def run(
     model_path_name_or_id: str,
     tokenizer_path_name_or_id: str,
     devices: int,
+    num_workers: int = 1,
     max_seq_length: int | None = None,
     max_batch_size: int = 1,
     batch_timeout: float = 0.0,
+    num_api_servers: int | None = None,
+    fast_queue: bool = False,
 ) -> None:
     """Serve a Lednik or Transformers embedding model via LitServe."""
     if not torch.cuda.is_available():
@@ -291,8 +356,14 @@ def run(
         batch_timeout=batch_timeout,
         spec=ls.OpenAIEmbeddingSpec(),
     )
-    server = ls.LitServer(api, accelerator="cuda", devices=devices)
-    server.run()
+    server = ls.LitServer(
+        api,
+        accelerator="cuda",
+        devices=devices,
+        workers_per_device=num_workers,
+        fast_queue=fast_queue,
+    )
+    server.run(num_api_servers=num_api_servers)
     return
 
 

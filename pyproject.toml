@@ -14,7 +14,6 @@ dependencies = [
   "pydantic>=2.12.3",
   "scikit-learn>=1.7.2",
   "torch==2.10.0",
-  "torchao>=0.15.0",
   "tqdm>=4.67.1",
   "transformers>=4.57.1",
 ]
@@ -22,6 +21,7 @@ dependencies = [
 [dependency-groups]
 bench = [
     "mteb[faiss-cpu]>=2.12.30",
+    "openai>=2.45.0",
 ]
 dev = [
   "filelock>=3.25.2",
@@ -38,6 +38,7 @@ dev = [
 distill = [
   "clearml[s3]>=2.1.3",
   "click>=8.3.1",
+  "torchao>=0.15.0",
   "datasets>=4.4.1",
   "lightning>=2.5.6",
   "pacmap>=0.9.1",
@@ -54,6 +55,9 @@ fast-attn = [
 ]
 serving = [
     "litserve>=0.2.17",
+    "clearml[s3]>=2.1.3",
+    "click>=8.3.1",
+    "lightning>=2.5.6",
 ]
 
 [tool.uv]

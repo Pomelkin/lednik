@@ -22,7 +22,7 @@ services:
               device_ids: [ "5", "6" ]
               capabilities: [ gpu ]
     profiles:
-      - flash-attention-builder
+      - interactive
 
   qdrant:
     image: qdrant/qdrant:v1.17
@@ -52,9 +52,10 @@ services:
         - HOST_USER=${HOST_USER:?HOST_USER is required}
     container_name: lednik-serving
     volumes:
-      - ${HOME:?HOME is required}/clearml-pomelk1n.conf:/home/${HOST_USER}/clearml.conf:ro # clearml config file
+      - ${HOME:?HOME is required}/clearml.conf:/home/${HOST_USER}/clearml.conf:ro # clearml config file
       - ${HOME:?HOME is required}/.cache/huggingface:/home/${HOST_USER}/.cache/huggingface # HF Hub cache on host FS
-      - ./checkpoints:/home/${HOST_USER}/lednik/checkpoints:ro # local checkpoints for --model/--tokenizer paths
+      - ${HOME:?HOME is required}/.clearml-docker:/home/${HOST_USER}/.clearml # clearml cache directory
+      - /tmp/nvidia-mps:/tmp/nvidia-mps # NVIDIA MPS socket directory
     ports:
       - '0.0.0.0:8000:8000'
     command:
@@ -68,12 +69,20 @@ services:
       - ${SERVING_BATCH_TIMEOUT:-0.0}
       - --devices
       - ${SERVING_DEVICES:-1}
+      - --num-workers
+      - ${SERVING_NUM_WORKERS:-1}
+      - --num-api-servers
+      - ${SERVING_NUM_API_SERVERS:-1}
+      - --fast-queue
+      - ${SERVING_FAST_QUEUE:-false}
+      - --max-seq-length
+      - ${SERVING_MAX_SEQ_LENGTH:-8192}
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: [ "5", "6" ]
+              device_ids: [ "0" ]
               capabilities: [ gpu ]
     profiles:
       - serving
@@ -116,6 +125,8 @@ services:
               capabilities: [ gpu ]
     ipc: host
     mem_limit: 128G
+    profiles:
+      - interactive
     shm_size: 4G
     stdin_open: true
     tty: true

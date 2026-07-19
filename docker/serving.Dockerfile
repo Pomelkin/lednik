@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates=20260601~22.04.1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Build-time user mapping (pass via --build-arg)
 ARG HOST_UID=""
 ARG HOST_GID=""
 ARG HOST_USER=""
@@ -34,18 +33,19 @@ ENV PATH="/home/${HOST_USER}/.local/bin:${PATH}" \
     UV_CACHE_DIR="/home/${HOST_USER}/.cache/uv" \
     UV_LINK_MODE=copy
 
-# Dependencies first: this layer is cached until pyproject/lock/wheels change
+# install dependencies first to leverage Docker cache
 COPY --chown=${HOST_UID}:${HOST_GID} pyproject.toml uv.lock ./
 COPY --chown=${HOST_UID}:${HOST_GID} kostyl_toolkit/ kostyl_toolkit/
 COPY --chown=${HOST_UID}:${HOST_GID} wheels/ wheels/
-# distill group is needed for ClearML model-id resolution in LednikServer
-RUN uv sync --frozen --no-install-project --no-default-groups \
-    --group serving --group distill --group fast-attn
+RUN --mount=type=cache,target=/home/${HOST_USER}/.cache/uv,uid=${HOST_UID},gid=${HOST_GID} \
+    uv sync --locked --no-install-project --no-default-groups \
+    --group serving --group fast-attn
 
-# Project code last: changing it only invalidates this cheap layer
+# project code last: changing it only invalidates this cheap layer
 COPY --chown=${HOST_UID}:${HOST_GID} lednik/ lednik/
-RUN uv sync --frozen --no-default-groups \
-    --group serving --group distill --group fast-attn
+RUN --mount=type=cache,target=/home/${HOST_USER}/.cache/uv,uid=${HOST_UID},gid=${HOST_GID} \
+    uv sync --compile-bytecode --locked --no-default-groups \
+    --group serving --group fast-attn
 
 ENV FLA_CONV_BACKEND=cuda
 
