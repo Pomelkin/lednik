@@ -3,6 +3,8 @@ from typing import Any
 
 import torch
 from kostyl.utils.logging import setup_logger
+from tokenizers import Regex
+from tokenizers import Tokenizer
 from tokenizers.normalizers import Replace
 from tokenizers.normalizers import Sequence
 from tokenizers.normalizers import Strip
@@ -11,8 +13,6 @@ from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 
 from lednik.models.configuration_static import StaticEmbeddingsConfig
-from tokenizers import Regex
-from tokenizers import Tokenizer
 
 
 logger = setup_logger(fmt="only_message")

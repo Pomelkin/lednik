@@ -7,11 +7,11 @@ from torch import nn
 from transformers import SentencePieceBackend
 from transformers import TokenizersBackend
 
+from .auto import register_model
 from .base import LednikPreTrainedModel
 from .configuration_static import StaticEmbeddingsConfig
 from .outputs import StaticEmbeddingsOutput
 from .outputs import StaticEmbeddingsSequenceClassifierOutput
-from .auto import register_model
 
 
 logger = setup_logger(fmt="only_message")

@@ -1,7 +1,8 @@
 import math
 import random
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 from typing import Any
 from typing import TypedDict
 
@@ -274,7 +275,7 @@ class ContrastiveCollator:
                 )
 
             index = (
-                random.randint(0, len(tokens_list) - 1) if len(tokens_list) > 1 else 0  # noqa: S311
+                random.randint(0, len(tokens_list) - 1) if len(tokens_list) > 1 else 0
             )
 
             item_tokens = tokens_list[index]
@@ -334,7 +335,7 @@ class ContrastiveCollator:
                     "Some items are still None. Please check the augmentation logic."
                 )
 
-            tok = self._postprocess_tokens(tok)
+            tok = self._postprocess_tokens(tok)  # noqa: PLW2901
             tokens_l.append(torch.tensor(tok, dtype=torch.long))
         return tokens_l, embeddings_l
 

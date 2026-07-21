@@ -1,5 +1,8 @@
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING
+
+from typing import TYPE_CHECKING
+from typing import Any
+
 
 if TYPE_CHECKING:
     from .training_module import DistillationModule

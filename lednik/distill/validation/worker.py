@@ -5,9 +5,9 @@ import click
 from kostyl.utils import setup_logger
 from redis import Redis
 
+from lednik.distill.validation.runner import EvaluationRunner
 from lednik.distill.validation.structs import EvaluationWorkerConfig
 from lednik.distill.validation.structs import ValidationContract
-from lednik.distill.validation.runner import EvaluationRunner
 
 
 logger = setup_logger(fmt="default")
@@ -91,12 +91,12 @@ class EvaluationWorker:
         try:
             logger.info("Evaluation worker started.")
             while True:
-                response: list = self.redis_client.xreadgroup(  # type: ignore
+                response: list = self.redis_client.xreadgroup(
                     groupname=self.group_name,
                     consumername=self.consumer_name,
                     streams={self.stream_name: ">"},
                     block=1000,
-                )
+                )  # ty:ignore[invalid-assignment]
 
                 if len(response) == 0:
                     continue

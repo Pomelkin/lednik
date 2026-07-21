@@ -1,4 +1,5 @@
-from typing import Literal, Any
+from typing import Any
+from typing import Literal
 
 from kostyl.ml.configs import CheckpointConfig
 from kostyl.ml.configs import EarlyStoppingConfig
