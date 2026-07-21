@@ -9,15 +9,14 @@ from kostyl.utils import setup_logger
 from plotly.subplots import make_subplots
 from torch import Tensor
 
-from lednik.distill.validation.structs import KNNConfig
-from lednik.distill.validation.structs import LogRegConfig
-
-from lednik.distill.validation.structs import EvaluationRunnerConfig
-from lednik.distill.validation.structs import MRRConfig
-from lednik.distill.validation.structs import ValidationContract
 from lednik.distill.validation.metrics import calculate_logreg_metrics
 from lednik.distill.validation.metrics import calculate_mrr
 from lednik.distill.validation.metrics import calculate_self_exc_knn_metrics
+from lednik.distill.validation.structs import EvaluationRunnerConfig
+from lednik.distill.validation.structs import KNNConfig
+from lednik.distill.validation.structs import LogRegConfig
+from lednik.distill.validation.structs import MRRConfig
+from lednik.distill.validation.structs import ValidationContract
 
 
 logger = setup_logger(fmt="only_message")

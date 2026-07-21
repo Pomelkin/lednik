@@ -27,10 +27,10 @@ from transformers.utils.generic import maybe_autocast
 from transformers.utils.generic import merge_with_config_defaults
 from transformers.utils.output_capturing import capture_outputs
 
+from .auto import register_model
 from .base import LednikPreTrainedModel as BaseLednikPreTrainedModel
 from .configuration_lednik import LednikConfig
 from .outputs import LednikModelOutput
-from .auto import register_model
 
 
 if is_flash_attn_2_available():

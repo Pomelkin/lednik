@@ -1,8 +1,11 @@
-from pathlib import Path
-from abc import ABC, abstractmethod
-from collections import defaultdict
-from kostyl.utils import setup_logger
 import datetime
+from abc import ABC
+from abc import abstractmethod
+from collections import defaultdict
+from pathlib import Path
+from datetime import UTC
+from kostyl.utils import setup_logger
+
 
 logger = setup_logger(fmt="default")
 
@@ -81,7 +84,7 @@ class JsonlLogger(Logger):
 
     def _log_metrics_impl(self, step: int) -> None:
         metrics2log: dict[str, float | str] = {
-            "datetime": datetime.datetime.now().isoformat(),
+            "datetime": datetime.datetime.now(UTC).isoformat(),
             "step": step,
         }
         for metric_name, values in self.metrics_buffer.items():

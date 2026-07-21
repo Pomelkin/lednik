@@ -1,6 +1,9 @@
 from pathlib import Path
+
+from huggingface_hub import repo_exists
+from huggingface_hub import snapshot_download
 from kostyl.utils import setup_logger
-from huggingface_hub import snapshot_download, repo_exists
+
 
 try:
     from clearml import InputModel
