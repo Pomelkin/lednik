@@ -319,7 +319,7 @@ class LednikServer(LitAPI):
                 ),
             )
             sentence_embeddings = (
-                last_hidden_state.sum(dim=1) * attention_mask.unsqueeze(-1)
+                (last_hidden_state * attention_mask.unsqueeze(-1)).sum(dim=1)
             ) / attention_mask.sum(dim=1, keepdim=True)
         sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=-1)
         return sentence_embeddings.float().cpu()
