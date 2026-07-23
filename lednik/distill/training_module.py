@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Any
-from typing import Literal
 from typing import cast
 from typing import override
 
@@ -109,7 +108,7 @@ def _get_special_tokens_ids(
     tokenizer: SentencePieceBackend | TokenizersBackend,
 ) -> list[int]:
     special_tokens = tokenizer.special_tokens_map.values()
-    return [tokenizer.convert_tokens_to_ids(token) for token in special_tokens]  # type: ignore
+    return [tokenizer.convert_tokens_to_ids(token) for token in special_tokens]  # ty:ignore[invalid-return-type]
 
 
 def _unwrap_model(model: nn.Module) -> nn.Module:
@@ -120,7 +119,7 @@ def _unwrap_model(model: nn.Module) -> nn.Module:
 
         # для некоторых wrappers / accelerate-like объектов
         if hasattr(model, "_orig_mod"):
-            model = model._orig_mod  # type: ignore
+            model = model._orig_mod  # ty:ignore[invalid-assignment]
             continue
 
         return model
@@ -170,7 +169,7 @@ class DistillationModule(KostylLightningModule):
         self.student = student
         self.register_buffer(
             "spec_tok_buff",
-            torch.tensor(_get_special_tokens_ids(tokenizer), dtype=torch.long),  # type: ignore
+            torch.tensor(_get_special_tokens_ids(tokenizer), dtype=torch.long),  # ty:ignore[invalid-argument-type]
             persistent=False,
         )
 
@@ -185,8 +184,8 @@ class DistillationModule(KostylLightningModule):
             if self.student.device != torch.device("meta"):
                 nn.init.trunc_normal_(self.student_to_teacher_proj.weight, std=0.02)
                 nn.init.zeros_(self.student_to_teacher_proj.bias)
-                self.student_to_teacher_proj.weight._is_hf_initialized = True  # type: ignore
-                self.student_to_teacher_proj.bias._is_hf_initialized = True  # type: ignore
+                self.student_to_teacher_proj.weight._is_hf_initialized = True  # ty:ignore[unresolved-attribute]
+                self.student_to_teacher_proj.bias._is_hf_initialized = True  # ty:ignore[unresolved-attribute]
         else:
             self.student_to_teacher_proj = nn.Identity()
 
@@ -383,7 +382,7 @@ class DistillationModule(KostylLightningModule):
             param.requires_grad_(not freeze)
         return
 
-    def is_frozen(self, target_model: Literal["teacher", "student"]) -> bool:
+    def is_frozen(self) -> bool:
         """Return True if all parameters of the specified model are frozen."""
         frozen_flag = all(
             not param.requires_grad for param in self.student.parameters()
@@ -445,8 +444,8 @@ class DistillationModule(KostylLightningModule):
                     apply_if_field="is_embedding",
                     multiplier_field="lr_multiplier",
                     freeze_ratio=self.train_cfg.freeze_student_emb_steps_ratio,
-                    plateau_ratio=self.train_cfg.lr.plateau_ratio  # type: ignore
-                    - self.train_cfg.freeze_student_emb_steps_ratio,
+                    plateau_ratio=self.train_cfg.lr.plateau_ratio
+                    - self.train_cfg.freeze_student_emb_steps_ratio,  # ty:ignore[unsupported-operator]
                 )
                 schedulers["embedding_lr"] = emb_scheduler
 

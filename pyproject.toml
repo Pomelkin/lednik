@@ -1,7 +1,7 @@
 [project]
 name = "lednik"
 version = "0.1.0"
-description = "Add your description here"
+description = "Full-cycle framework for distilling large transformer encoders into compact, fast embedding models — with training, serving, and benchmarking (RuMTEB, latency, load)"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
