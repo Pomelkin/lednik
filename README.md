@@ -27,6 +27,23 @@ Three student tiers cover the quality/cost trade-off:
   [flash-linear-attention](https://github.com/fla-org/flash-linear-attention) kernels):
   linear instead of quadratic scaling with sequence length.
 
+## Documentation
+
+Full guides live in [`docs/`](./docs):
+
+- **[Model Initialization](./docs/model_initialization.md)** — create a student from a
+  teacher: the architectures, factory functions, configs, save/reload and inference.
+- **[Training without ClearML](./docs/training_without_clearml.md)** — build the config,
+  instantiate the training module, the collator data format, and a minimal `Trainer` loop.
+- **[Training with ClearML](./docs/training_with_clearml.md)** — the `pipelines/distill/`
+  pipeline: checkpoint loading, config/dataset wiring, checkpoint uploads, remote queues,
+  the online validation worker, and MTEB benchmarking.
+- **[Usage](./docs/usage.md)** — using trained models: checkpoint loading with
+  `AutoLednikModel`, the LitServe server, the request protocol, scaling knobs and Docker
+  deployment.
+- **[JMLC](./docs/jmlc/README.md)** — the repository mapped onto the Junior ML Contest
+  evaluation criteria: engineering, data science, AI tooling, product.
+
 ## Results
 
 Quality on the Russian subset of MTEB (RuMTEB) versus pure forward-pass speed:
@@ -65,21 +82,6 @@ Raw records live in [`bench/mteb_testing/results/`](./bench/mteb_testing/results
   transport, and a benchmark-oriented request protocol (raw texts or pre-tokenized ids).
 - **Benchmark suite** — RuMTEB quality runs, pure forward-pass measurements
   (`do_bench` + VRAM + tokens/sec), and an open-loop/closed-loop HTTP load generator.
-
-## Documentation
-
-Full guides live in [`docs/`](./docs):
-
-- **[Model Initialization](./docs/model_initialization.md)** — create a student from a
-  teacher: the architectures, factory functions, configs, save/reload and inference.
-- **[Training without ClearML](./docs/training_without_clearml.md)** — build the config,
-  instantiate the training module, the collator data format, and a minimal `Trainer` loop.
-- **[Training with ClearML](./docs/training_with_clearml.md)** — the `pipelines/distill/`
-  pipeline: checkpoint loading, config/dataset wiring, checkpoint uploads, remote queues,
-  the online validation worker, and MTEB benchmarking.
-- **[Usage](./docs/usage.md)** — using trained models: checkpoint loading with
-  `AutoLednikModel`, the LitServe server, the request protocol, scaling knobs and Docker
-  deployment.
 
 ## Project structure
 
@@ -165,8 +167,9 @@ Then distill it — see [Training without ClearML](./docs/training_without_clear
 pure-Python loop, or run the ClearML pipeline:
 
 ```bash
-python -m pipelines.distill.run                              # local
-python -m pipelines.distill.run --remote-execution-queue q   # remote ClearML agent
+uv run python -m pipelines.distill.run --config-path configs/training_settings.yaml   # local
+uv run python -m pipelines.distill.run --config-path configs/training_settings.yaml \
+    --remote-execution-queue q                               # remote ClearML agent
 ```
 
 Load any trained checkpoint back without knowing its concrete class:

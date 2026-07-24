@@ -115,7 +115,7 @@ convenient production-style entry.
 ### CLI and scaling knobs
 
 ```bash
-python -m lednik.serving.server \
+uv run python -m lednik.serving.server \
   --model <path|clearml-id|hf-repo> \
   --tokenizer <path|clearml-id|hf-repo> \
   --max-batch-size 512 --batch-timeout 0.001 \
