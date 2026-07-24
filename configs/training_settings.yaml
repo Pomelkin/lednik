@@ -57,7 +57,7 @@ distill_config:
   grad_clip_val: 2.0
   distillation_method:
     type: direct-distillation
-    loss_type: cosine
+    distill_loss_type: cosine
     contrastive_loss_weight: 0.7
     temperature: 0.07
   optimizer:
