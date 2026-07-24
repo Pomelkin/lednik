@@ -62,7 +62,6 @@ train_cfg = DistillationConfig.model_validate(
             "contrastive_loss_weight": 0.7,     # 0..1, see "How the loss works" below
             "temperature": 0.07,                # required when contrastive_loss_weight > 0
         },
-        "teacher_pooling_method": "mean",       # how teacher embeddings were pooled offline
 
         # ---- optimization (schemas come from kostyl) ----
         "optimizer": {
@@ -85,28 +84,25 @@ train_cfg = DistillationConfig.model_validate(
         "grad_clip_val": 2.0,
         "freeze_student_emb_steps_ratio": 0.1,  # freeze student embeddings for first 10% of steps
         "embeddings_lr_multiplier": None,
-        "attn_proj_wd_multiplier": None,
     }
 )
 ```
 
 ### Field reference
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `distillation_method` | `DirectDistillationConfig` | ✓ | The objective (see below). |
-| `distillation_method.type` | `"direct-distillation"` | ✓ | Only method currently available. |
-| `distillation_method.distill_loss_type` | `"cosine" \| "mse"` | — | Token/sentence regression loss (default `"cosine"`). |
-| `distillation_method.contrastive_loss_weight` | `float` 0–1 | — | Mix between contrastive and regression loss (default `0.7`). |
-| `distillation_method.temperature` | `float > 0` | conditional | **Required** when `contrastive_loss_weight > 0`. |
-| `teacher_pooling_method` | `"cls" \| "mean" \| "last"` | ✓ | How the stored teacher embeddings were pooled (metadata for reproducibility). |
-| `optimizer` | optimizer config | ✓ | `kostyl` optimizer schema; `type` selects Adam/AdamW/8-bit/Muon variants. |
-| `lr` | `Lr` | ✓ | Learning-rate schedule (see [scheduling](#learning-rate--weight-decay-scheduling)). |
-| `weight_decay` | `WeightDecay` | ✓ | Same schedule schema as `lr`; usually just `base_value`. |
-| `grad_clip_val` | `float > 0 \| None` | — | Gradient-norm clip (applied by the Lightning module, not the Trainer). |
-| `freeze_student_emb_steps_ratio` | `float` 0–1 \| `None` | — | Fraction of total steps to keep the student embedding table frozen. |
-| `embeddings_lr_multiplier` | `float > 0 \| None` | — | Separate LR multiplier for the embedding table. |
-| `attn_proj_wd_multiplier` | `float > 0 \| None` | — | Weight-decay multiplier for `q_proj`/`k_proj` (Lednik only). |
+| Field                                           | Type                         | Required    | Description                                                                       |
+| ----------------------------------------------- | ---------------------------- | ----------- | --------------------------------------------------------------------------------- |
+| `distillation_method`                         | `DirectDistillationConfig` | ✓          | The objective (see below).                                                        |
+| `distillation_method.type`                    | `"direct-distillation"`    | ✓          | Only method currently available.                                                  |
+| `distillation_method.distill_loss_type`       | `"cosine" \| "mse"`         | —          | Token/sentence regression loss (default`"cosine"`).                             |
+| `distillation_method.contrastive_loss_weight` | `float` 0–1               | —          | Mix between contrastive and regression loss (default`0.7`).                     |
+| `distillation_method.temperature`             | `float > 0`                | conditional | **Required** when `contrastive_loss_weight > 0`.                          |
+| `optimizer`                                   | optimizer config             | ✓          | `kostyl` optimizer schema; `type` selects Adam/AdamW/8-bit/Muon variants.     |
+| `lr`                                          | `Lr`                       | ✓          | Learning-rate schedule (see[scheduling](#learning-rate--weight-decay-scheduling)). |
+| `weight_decay`                                | `WeightDecay`              | ✓          | Same schedule schema as`lr`; usually just `base_value`.                       |
+| `grad_clip_val`                               | `float > 0 \| None`         | —          | Gradient-norm clip (applied by the Lightning module, not the Trainer).            |
+| `freeze_student_emb_steps_ratio`              | `float` 0–1 \| `None`   | —          | Fraction of total steps to keep the student embedding table frozen.               |
+| `embeddings_lr_multiplier`                    | `float > 0 \| None`         | —          | Separate LR multiplier for the embedding table.                                   |
 
 ### Learning-rate / weight-decay scheduling
 
@@ -144,9 +140,10 @@ loss = contrastive_loss_weight       * contrastive_loss
   positive sentence embeddings (plus optional hard negatives), gathered across ranks when
   distributed. Skipped when `contrastive_loss_weight == 0.0`. Requires `temperature`.
 
-Special tokens are kept in the forward pass but **excluded from token-level distillation**.
-For a `StaticEmbeddingsModel` student they are additionally excluded from pooling (static
-vectors can't be sentence-dependent).
+Both losses operate on **sentence embeddings** — there is no token-level term. Special
+tokens participate normally for a `LednikModel` student; for a `StaticEmbeddingsModel`
+they are masked out of mean pooling (a lookup table has no contextual vector for
+`[CLS]`/`[SEP]`, they would only add noise).
 
 ---
 
@@ -158,43 +155,54 @@ provide, and the **batched tensors** the collator emits (which `_base_step` cons
 ### 2.1 Raw dataset rows (input to the collator)
 
 [`ContrastiveCollator`](../lednik/distill/collator.py) reads each row by **column name**.
-Column names are configurable via the collator's constructor arguments. A row is a `dict`
-with:
+Column names are configurable via the collator's constructor arguments. Every logical
+field is a **triple**: token ids, the raw text, and the precomputed teacher embedding.
+A row is a `dict` with:
 
-| Logical field | Constructor arg | Type | Notes |
-| --- | --- | --- | --- |
-| Query tokens | `query_tok_colname` | `list[int]` **or** `list[list[int]]` | Token ids **without** special tokens. If a list of lists, one variant is sampled at random per epoch. |
-| Query teacher embedding | `query_teacher_embedding_colname` | `list[float]` **or** `list[list[float]]` | Precomputed teacher sentence vector; must align with the token variant. |
-| Positive tokens | `pos_tok_colname` | `list[int]` / `list[list[int]]` | Same as query. |
-| Positive teacher embedding | `pos_teacher_embedding_colname` | `list[float]` / `list[list[float]]` | — |
-| Negative tokens *(optional)* | `neg_tok_colname` | `list[int]` / `list[list[int]]` | Hard negatives. Must be provided **together with** `neg_teacher_embedding_colname`. |
-| Negative teacher embedding *(optional)* | `neg_teacher_embedding_colname` | `list[float]` / `list[list[float]]` | — |
-| Label *(optional)* | `label_colname` | `int` or `list[int]` | Only used for KNN-style validation metrics; ignored if not set. |
+| Logical field                                    | Constructor arg                                                              | Type                                               | Notes                                                                                                      |
+| ------------------------------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Query tokens                                     | `query_tok_colname`                                                        | `list[int]` **or** `list[list[int]]`     | Token ids**without** special tokens. If a list of lists, one variant is sampled at random per epoch. |
+| Query text                                       | `query_text_colname`                                                       | `str` **or** `list[str]`                 | Raw text of the same query; used for typo augmentation (re-tokenized on the fly).                          |
+| Query teacher embedding                          | `query_teacher_embedding_colname`                                          | `list[float]` **or** `list[list[float]]` | Precomputed teacher sentence vector of the**clean** text.                                            |
+| Positive tokens / text / embedding               | `pos_tok_colname`, `pos_text_colname`, `pos_teacher_embedding_colname` | same as query                                      | —                                                                                                         |
+| Negative tokens / text / embedding*(optional)* | `neg_tok_colname`, `neg_text_colname`, `neg_teacher_embedding_colname` | same as query                                      | Hard negatives. All three must be provided**together** or omitted together.                          |
+| Label*(optional)*                              | `label_colname`                                                            | `int` or `list[int]`                           | Only used for KNN-style validation metrics; ignored if not set.                                            |
 
 Important details:
 
 - **Token ids carry no special tokens.** The collator's post-processor adds them:
   `[CLS] … [SEP]` if the tokenizer has `cls`/`sep`, otherwise `… [EOS]`. Sequences are
   truncated to `max_len` (defaults to `tokenizer.model_max_length`).
-- **Variants.** If a token field is a `list[list[int]]` (multiple paraphrases/crops), the
-  collator picks one index at random and uses the **matching** teacher embedding index.
+- **Variants.** If a field holds multiple variants (paraphrases/crops), tokens, text and
+  embedding must have the **same variant count**; the collator samples one index per row
+  and uses it for all three.
 - **Teacher embedding dimensionality** must equal the `teacher_hidden_size` you pass to the
   module.
 
-A minimal raw row (single variant, BERT-style tokenizer, teacher dim 1024):
+A minimal raw row (single variant, teacher dim 1024):
 
 ```python
 row = {
-    "query-tokens":     [101, 2054, 2003, ...],     # no [CLS]/[SEP]; collator adds them
+    "query":            "как оформить возврат товара",
+    "query-tokens":     [4211, 8765, 1289, 6710],   # no [CLS]/[SEP]; collator adds them
     "query-embedding":  [0.012, -0.4, ...],         # length == teacher_hidden_size
-    "pos-tokens":       [101, 1037, 4937, ...],
+    "pos":              "процедура возврата покупки",
+    "pos-tokens":       [5012, 990, 15672],
     "pos-embedding":    [0.10, 0.02, ...],
     # optional:
+    # "neg":            "...",
     # "neg-tokens":     [...],
     # "neg-embedding":  [...],
     # "label":          3,
 }
 ```
+
+**Typo augmentation.** With `aug_prob > 0` (and a `corruptor` provided —
+[SAGE](https://github.com/ai-forever/sage) `SBSCCorruptor`), that fraction of rows per
+batch gets its *text* corrupted with realistic typos and re-tokenized; the teacher
+embedding stays the clean-text vector, so the student learns to map noisy input onto
+clean embeddings. Texts that fail corruption `max_aug_attempts` times are blacklisted
+and used verbatim. Keep `aug_prob=0.0` for validation collators.
 
 ### 2.2 Batched output (`CollatorOutput`)
 
@@ -205,15 +213,15 @@ corresponds to row `i` of `teacher_sentence_embeddings`.
 
 For a batch of `B` rows (so `B` queries + `B` positives, `Bn` negatives, padded length `L`):
 
-| Key | Shape | dtype | Meaning |
-| --- | --- | --- | --- |
-| `input_ids` | `(N, L)` | `long` | Padded token ids. `N = B + B (+ Bn)`. `L` is padded to a multiple of 8. |
-| `attention_mask` | `(N, L)` | `long` | `1` for real tokens, `0` for padding. |
-| `queries_mask` | `(N,)` | `bool` | `True` on the query rows (first block). |
-| `positives_mask` | `(N,)` | `bool` | `True` on the positive rows (second block). |
-| `negatives_mask` | `(N,)` or `None` | `bool` | `True` on the negative rows, or `None` when no negatives. |
-| `labels` | `(B,)` | `long` | Per-query labels, or a `-1` fill tensor when no labels. |
-| `teacher_sentence_embeddings` | `(N, teacher_hidden_size)` | float | Teacher vectors aligned row-for-row with `input_ids`. |
+| Key                             | Shape                        | dtype    | Meaning                                                                    |
+| ------------------------------- | ---------------------------- | -------- | -------------------------------------------------------------------------- |
+| `input_ids`                   | `(N, L)`                   | `long` | Padded token ids.`N = B + B (+ Bn)`. `L` is padded to a multiple of 8. |
+| `attention_mask`              | `(N, L)`                   | `long` | `1` for real tokens, `0` for padding.                                  |
+| `queries_mask`                | `(N,)`                     | `bool` | `True` on the query rows (first block).                                  |
+| `positives_mask`              | `(N,)`                     | `bool` | `True` on the positive rows (second block).                              |
+| `negatives_mask`              | `(N,)` or `None`         | `bool` | `True` on the negative rows, or `None` when no negatives.              |
+| `labels`                      | `(B,)`                     | `long` | Per-query labels, or a`-1` fill tensor when no labels.                   |
+| `teacher_sentence_embeddings` | `(N, teacher_hidden_size)` | float    | Teacher vectors aligned row-for-row with`input_ids`.                     |
 
 `drop_last=True` plus equal-count query/positive blocks is assumed by the contrastive loss
 (it builds an identity target `arange` aligning query `i` to positive `i`).
@@ -226,14 +234,19 @@ from lednik.distill.collator import ContrastiveCollator
 collator = ContrastiveCollator(
     tokenizer=tokenizer,
     query_tok_colname="query-tokens",
+    query_text_colname="query",
     query_teacher_embedding_colname="query-embedding",
     pos_tok_colname="pos-tokens",
+    pos_text_colname="pos",
     pos_teacher_embedding_colname="pos-embedding",
-    # neg_tok_colname="neg-tokens",                       # optional, with the next line
+    # neg_tok_colname="neg-tokens",                       # optional, all three together
+    # neg_text_colname="neg",
     # neg_teacher_embedding_colname="neg-embedding",
     label_colname=None,                                   # set to enable KNN-val labels
     pad_to_multiple_of=8,
     max_len=None,                                         # None -> tokenizer.model_max_length
+    aug_prob=0.0,                                         # >0 needs a corruptor:
+    # corruptor=SBSCCorruptor.from_config(SBSCConfig(min_typos=5)),  # from sage
 )
 ```
 
@@ -243,6 +256,7 @@ collator = ContrastiveCollator(
 
 ```python
 from lednik.distill.training_module import DistillationModule
+from lednik.distill.validation import EvaluationRunnerConfig
 from kostyl.ml.configs.training_settings import SingleDeviceStrategyConfig
 
 module = DistillationModule(
@@ -251,24 +265,38 @@ module = DistillationModule(
     teacher_hidden_size=1024,              # dim of stored teacher embeddings
     train_cfg=train_cfg,                   # the DistillationConfig from step 1
     strategy_config=SingleDeviceStrategyConfig(type="single_device"),
-    task=None,                             # no ClearML task
-    redis_config=None,                     # disables online validation dispatch
-    num_labels=None,                       # set with redis_config for KNN metrics
+    task=None,                             # online validation is ClearML-only -> losses only
+    runner_config=EvaluationRunnerConfig(  # required by the module, unused without a task
+        scatter_num_points=200,
+    ),
+    redis_config=None,
+    num_labels=None,
 )
 ```
 
+**Online validation (KNN / LogReg / MRR) is not supported in this path** — it is a
+ClearML feature: the dispatched `ValidationContract` carries a task id, and the metric
+scalars are logged into that ClearML task. With `task=None` the module skips dispatch
+entirely, so validation logs only the losses (`loss`, `CosineSimilarity`, `RMSE`). The
+`runner_config` / `redis_config` parameters still have to satisfy the module's
+validator — at least one must be provided; a minimal
+`EvaluationRunnerConfig(scatter_num_points=200)` does the job and stays unused. For the
+online metrics, use the ClearML pipeline — see
+[Training with ClearML → Online validation](./training_with_clearml.md#8-online-validation).
+
 ### `DistillationModule` parameters
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `student` | `StaticEmbeddingsModel \| LednikModel` | Model to train. |
-| `tokenizer` | tokenizer | Used to find special-token ids (excluded from token-level distillation). |
-| `teacher_hidden_size` | `int` | Teacher embedding dim; sizes the `student → teacher` projection. |
-| `train_cfg` | `DistillationConfig` | Hyperparameters/objective. |
-| `strategy_config` | `SUPPORTED_STRATEGIES` | `kostyl` strategy config: `SingleDeviceStrategyConfig`, `DDPStrategyConfig`, `FSDP1StrategyConfig`, or `FSDP2StrategyConfig`. Must match the Lightning strategy you pass to the `Trainer`. |
-| `task` | `clearml.Task \| None` | `None` for the no-ClearML path. When set together with `redis_config`, enables online validation dispatch. |
-| `redis_config` | `RedisConfig \| None` | `None` to disable the evaluation dispatcher. |
-| `num_labels` | `int \| None` | Number of classes for KNN validation; only meaningful with `redis_config`. |
+| Parameter               | Type                                    | Description                                                                                                                                                                                            |
+| ----------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `student`             | `StaticEmbeddingsModel \| LednikModel` | Model to train.                                                                                                                                                                                        |
+| `tokenizer`           | tokenizer                               | Used to find special-token ids (masked out of pooling for a static student).                                                                                                                           |
+| `teacher_hidden_size` | `int`                                 | Teacher embedding dim; sizes the`student → teacher` projection.                                                                                                                                     |
+| `train_cfg`           | `DistillationConfig`                  | Hyperparameters/objective.                                                                                                                                                                             |
+| `strategy_config`     | `SUPPORTED_STRATEGIES`                | `kostyl` strategy config: `SingleDeviceStrategyConfig`, `DDPStrategyConfig`, `FSDP1StrategyConfig`, or `FSDP2StrategyConfig`. Must match the Lightning strategy you pass to the `Trainer`. |
+| `task`                | `clearml.Task \| None`                 | Online metrics run only when set (scalars are logged to this task); `None` → dispatch is skipped, validation logs only losses.                                                                        |
+| `runner_config`       | `EvaluationRunnerConfig \| None`       | Local in-process evaluation: optional`knn_config` / `logreg_config` / `mrr_config`, `scatter_num_points`, `device`.                                                                          |
+| `redis_config`        | `RedisConfig \| None`                  | Dispatch target (`host`, `port`, `stream_name`) for a separate validation worker. At least one of `runner_config` / `redis_config` is required.                                              |
+| `num_labels`          | `int \| None`                          | Number of classes for the KNN / LogReg validation metrics.                                                                                                                                             |
 
 > The class imports `from clearml import Task` at module load, so the `clearml` package
 > must be installed (it ships in the `distill` dependency group) even when you pass
@@ -324,8 +352,8 @@ Notes:
 
 - Keep `gradient_clip_val=None` on the `Trainer`. Clipping is driven by
   `train_cfg.grad_clip_val` inside the `KostylLightningModule`.
-- When `task`/`redis_config` are `None`, `validation_step` only logs `loss`,
-  `CosineSimilarity` and `RMSE`; the KNN/LogReg/MRR online evaluation is skipped.
+- Online KNN / LogReg / MRR validation is ClearML-only (see the note in §3); in this
+  path validation logs `loss`, `CosineSimilarity` and `RMSE`.
 - `on_save_checkpoint` stores the model `config` dict in the checkpoint and strips any
   `teacher.*` keys, so the resulting `.ckpt` can later be loaded into a bare model via
   `Model.from_lightning_checkpoint(...)` (see

@@ -525,8 +525,8 @@ class DistillationModule(KostylLightningModule):
 
     def _calculate_distill_loss(
         self,
-        student_embeddings: torch.Tensor,  # [b*seq_len, dim]
-        teacher_embeddings: torch.Tensor,  # [b*seq_len, dim]
+        student_embeddings: torch.Tensor,  # [b, dim]
+        teacher_embeddings: torch.Tensor,  # [b, dim]
     ) -> torch.Tensor:
         if isinstance(self.direct_loss, nn.CosineEmbeddingLoss):
             loss = self.direct_loss(
